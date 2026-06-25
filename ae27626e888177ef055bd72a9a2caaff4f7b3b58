@@ -1,0 +1,95 @@
+CLAUDE.md
+  ed7b70e68fc154e7 1-6,8-10,12-15
+docs/PROGRESS.md
+  ed7b70e68fc154e7 1-87
+db/init.sql
+  ed7b70e68fc154e7 1-117
+9router-config.yaml
+  ed7b70e68fc154e7 1-33
+src/agents/risk_manager.py
+  ed7b70e68fc154e7 1-61
+src/agents/idx_analyst.py
+  ed7b70e68fc154e7 1-126
+src/models/tables.py
+  ed7b70e68fc154e7 1-164
+src/data/mcp_client.py
+  ed7b70e68fc154e7 1-119
+src/bot/approval.py
+  ed7b70e68fc154e7 1-184
+src/data/idx_adapter.py
+  ed7b70e68fc154e7 1-121
+src/utils/logging.py
+  ed7b70e68fc154e7 1-40
+src/bot/main.py
+  ed7b70e68fc154e7 1-111
+Dockerfile.orchestrator
+  ed7b70e68fc154e7 1-15
+src/backtest/engine.py
+  ed7b70e68fc154e7 1-162
+pyproject.toml
+  ed7b70e68fc154e7 1-31
+src/config.py
+  ed7b70e68fc154e7 1-58
+src/utils/rate_limit.py
+  ed7b70e68fc154e7 1-100
+src/bot/handlers.py
+  ed7b70e68fc154e7 1-122
+src/agents/base.py
+  ed7b70e68fc154e7 1-134
+deploy.sh
+  ed7b70e68fc154e7 1-39
+src/execution/idx_broker.py
+  ed7b70e68fc154e7 1-97
+monitoring/prometheus.yml
+  ed7b70e68fc154e7 1-19
+.gitignore
+  ed7b70e68fc154e7 1-41
+src/execution/base.py
+  ed7b70e68fc154e7 1-45
+Dockerfile.bot
+  ed7b70e68fc154e7 1-14
+docker-compose.prod.yml
+  ed7b70e68fc154e7 1-58
+src/agents/etf_analyst.py
+  ed7b70e68fc154e7 1-67
+src/main.py
+  ed7b70e68fc154e7 1-216
+monitoring/grafana-dashboard.json
+  ed7b70e68fc154e7 1-102
+src/utils/market_hours.py
+  ed7b70e68fc154e7 1-122
+src/agents/orchestrator.py
+  ed7b70e68fc154e7 1-105
+README.md
+  ed7b70e68fc154e7 1-66
+src/data/cache.py
+  ed7b70e68fc154e7 1-97
+src/agents/us_analyst.py
+  ed7b70e68fc154e7 1-70
+src/execution/us_broker.py
+  ed7b70e68fc154e7 1-118
+src/models/schemas.py
+  ed7b70e68fc154e7 1-197
+src/models/database.py
+  ed7b70e68fc154e7 1-57
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "ae27626e888177ef055bd72a9a2caaff4f7b3b58",
+  "prompts": {
+    "ed7b70e68fc154e7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "74e48026-06d9-4a1f-aed8-e38396e1c535",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 3500,
+      "total_deletions": 170,
+      "accepted_lines": 3328,
+      "overriden_lines": 2
+    }
+  }
+}
