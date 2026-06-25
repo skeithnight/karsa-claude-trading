@@ -1,0 +1,102 @@
+{
+  "dashboard": {
+    "title": "Karsa Trading System",
+    "timezone": "browser",
+    "panels": [
+      {
+        "title": "System Health",
+        "type": "row",
+        "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0}
+      },
+      {
+        "title": "Service Status",
+        "type": "stat",
+        "datasource": "Prometheus",
+        "targets": [{"expr": "up{job=~\"karsa.*\"}"}],
+        "gridPos": {"h": 4, "w": 6, "x": 0, "y": 1}
+      },
+      {
+        "title": "9Router Fallbacks",
+        "type": "stat",
+        "datasource": "Prometheus",
+        "targets": [{"expr": "increase(fallback_triggered_total[1h])"}],
+        "gridPos": {"h": 4, "w": 6, "x": 6, "y": 1}
+      },
+      {
+        "title": "Redis Memory",
+        "type": "gauge",
+        "datasource": "Prometheus",
+        "targets": [{"expr": "redis_memory_used_bytes / redis_memory_max_bytes * 100"}],
+        "gridPos": {"h": 4, "w": 6, "x": 12, "y": 1}
+      },
+      {
+        "title": "Postgres Connections",
+        "type": "stat",
+        "datasource": "Prometheus",
+        "targets": [{"expr": "pg_stat_activity_count"}],
+        "gridPos": {"h": 4, "w": 6, "x": 18, "y": 1}
+      },
+      {
+        "title": "Trading Performance",
+        "type": "row",
+        "gridPos": {"h": 1, "w": 24, "x": 0, "y": 5}
+      },
+      {
+        "title": "Equity Curve (USD)",
+        "type": "timeseries",
+        "datasource": "PostgreSQL",
+        "targets": [{"rawSql": "SELECT created_at, SUM(filled_price * filled_quantity) as equity FROM trades WHERE status='FILLED' GROUP BY created_at ORDER BY created_at"}],
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6}
+      },
+      {
+        "title": "Signals Today",
+        "type": "stat",
+        "datasource": "PostgreSQL",
+        "targets": [{"rawSql": "SELECT COUNT(*) FROM signals WHERE created_at::date = CURRENT_DATE"}],
+        "gridPos": {"h": 4, "w": 6, "x": 12, "y": 6}
+      },
+      {
+        "title": "Trades Today",
+        "type": "stat",
+        "datasource": "PostgreSQL",
+        "targets": [{"rawSql": "SELECT COUNT(*) FROM trades WHERE created_at::date = CURRENT_DATE AND status='FILLED'"}],
+        "gridPos": {"h": 4, "w": 6, "x": 18, "y": 6}
+      },
+      {
+        "title": "Win Rate by Market",
+        "type": "piechart",
+        "datasource": "PostgreSQL",
+        "targets": [{"rawSql": "SELECT market, COUNT(*) FILTER (WHERE filled_price > 0) * 100.0 / NULLIF(COUNT(*), 0) as win_rate FROM trades WHERE status='FILLED' GROUP BY market"}],
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 10}
+      },
+      {
+        "title": "Cost Efficiency",
+        "type": "row",
+        "gridPos": {"h": 1, "w": 24, "x": 0, "y": 18}
+      },
+      {
+        "title": "Tokens Saved by RTK",
+        "type": "stat",
+        "datasource": "Prometheus",
+        "targets": [{"expr": "tokens_saved_by_rtk_total"}],
+        "gridPos": {"h": 4, "w": 8, "x": 0, "y": 19}
+      },
+      {
+        "title": "API Cost (USD/month)",
+        "type": "stat",
+        "datasource": "Prometheus",
+        "targets": [{"expr": "api_cost_usd"}],
+        "gridPos": {"h": 4, "w": 8, "x": 8, "y": 19}
+      },
+      {
+        "title": "Cost per Trade Signal",
+        "type": "stat",
+        "datasource": "Prometheus",
+        "targets": [{"expr": "api_cost_usd / max(signals_total, 1)"}],
+        "gridPos": {"h": 4, "w": 8, "x": 16, "y": 19}
+      }
+    ],
+    "refresh": "30s",
+    "time": {"from": "now-24h", "to": "now"}
+  }
+}

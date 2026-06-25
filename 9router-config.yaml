@@ -1,0 +1,33 @@
+server:
+  port: 20128
+
+combos:
+  # Used by: Lead Orchestrator, Risk Manager (Requires deep reasoning)
+  - name: "karsa-critical"
+    models:
+      - provider: anthropic
+        model: claude-3-5-sonnet-20241022
+        tier: subscription
+      - provider: deepseek
+        model: deepseek-v3
+        tier: cheap
+        fallback_on: [rate_limit, error]
+
+  # Used by: Data Agents, Technical Analysts (High volume, lower reasoning need)
+  - name: "karsa-routine"
+    models:
+      - provider: anthropic
+        model: claude-3-haiku-20240307
+        tier: subscription
+      - provider: deepseek
+        model: deepseek-v3
+        tier: cheap
+        fallback_on: [rate_limit, error]
+
+# Cost management
+cost:
+  monthly_ceiling_usd: 150
+  daily_limit_usd: 10
+  circuit_breaker:
+    enabled: true
+    action: block_routine  # Block karsa-routine when daily limit hit
