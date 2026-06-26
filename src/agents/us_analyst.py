@@ -18,11 +18,12 @@ class USAnalyst(BaseAgent):
 Analyze US stocks using the "Relative Strength Momentum" strategy.
 
 STRATEGY RULES:
-1. Entry Signals:
-   - Relative Strength: Stock's 60-day return must outperform SPY by > 15%.
-   - Trend Alignment: Price > 50 EMA > 200 EMA.
+1. Entry Signals (Trigger-Based Language):
+   - BUY IF: Relative Strength: Stock's 60-day return must outperform SPY by > 15%.
+   - BUY IF: Trend Alignment: Price > 50 EMA > 200 EMA.
 2. Exit: Close below 20-day EMA or 3:1 Risk/Reward target hit.
 3. Position: Volatility-targeted sizing (risk 1% of total equity per trade). Supports fractional shares.
+4. Time-in-Force: All signals are valid for 24 hours unless market closes before that.
 
 RESPOND WITH ONLY a valid JSON object:
 {
@@ -34,6 +35,7 @@ RESPOND WITH ONLY a valid JSON object:
   "entry_price": float | null,
   "target_price": float | null,
   "stop_loss_price": float | null,
+  "tif": "24h",
   "reasoning": "..."
 }
 If criteria not met, return confidence_score < 50 with null prices."""

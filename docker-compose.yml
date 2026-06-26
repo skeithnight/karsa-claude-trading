@@ -50,6 +50,8 @@ services:
       dockerfile: Dockerfile.orchestrator
     container_name: karsa-orchestrator
     env_file: [.env]
+    ports:
+      - "8080:8080"
     environment:
       - REDIS_URL=redis://redis:6379
       - POSTGRES_URL=postgresql://trader:${DB_PASSWORD:-changeme}@postgres:5432/trading

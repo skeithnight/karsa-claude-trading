@@ -21,11 +21,12 @@ class IDXAnalyst(BaseAgent):
 Analyze Indonesian stocks for investment opportunities.
 
 STRATEGY RULES:
-1. Entry Signals:
-   - Technical: Price breaks above the 20-day Bollinger Band upper limit with volume > 1.5x average.
-   - Trend: Price above 20-day moving average.
+1. Entry Signals (Trigger-Based Language):
+   - BUY IF: Price breaks above the 20-day Bollinger Band upper limit with volume > 1.5x average.
+   - BUY IF: Price above 20-day moving average.
 2. Exit: Target +10% from entry. Stop loss -5% from entry.
 3. Position: Max 15% of portfolio per stock. Minimum 1 lot (100 shares).
+4. Time-in-Force: All signals are valid for 24 hours unless market closes before that.
 
 RESPOND WITH ONLY a valid JSON object:
 {
@@ -37,6 +38,7 @@ RESPOND WITH ONLY a valid JSON object:
   "entry_price": float | null,
   "target_price": float | null,
   "stop_loss_price": float | null,
+  "tif": "24h",
   "reasoning": "..."
 }
 If criteria not met, return confidence_score < 50 with null prices."""

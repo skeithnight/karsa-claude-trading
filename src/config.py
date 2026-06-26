@@ -26,6 +26,9 @@ class Settings(BaseSettings):
 
     # Market Data
     TRADINGVIEW_MCP_URL: str = "http://tradingview-mcp:8080"
+    MASSIVE_API_KEY: str = ""
+    MASSIVE_BASE_URL: str = "https://api.massive.com/v3"
+    FINNHUB_API_KEY: str = ""
 
     # Trading Parameters
     MAX_PORTFOLIO_RISK_PCT: float = 2.0

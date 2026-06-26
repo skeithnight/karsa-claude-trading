@@ -28,23 +28,9 @@ class SignalStatus(str, Enum):
     EXECUTED = "EXECUTED"
 
 
-class TradeSide(str, Enum):
-    BUY = "BUY"
-    SELL = "SELL"
-
-
-class OrderType(str, Enum):
-    LIMIT = "LIMIT"
-    MARKET = "MARKET"
-    STOP = "STOP"
-
-
-class TradeStatus(str, Enum):
-    PENDING = "PENDING"
-    FILLED = "FILLED"
-    PARTIAL = "PARTIAL"
-    REJECTED = "REJECTED"
-    CANCELLED = "CANCELLED"
+class PaperSide(str, Enum):
+    LONG = "LONG"
+    SHORT = "SHORT"
 
 
 class SignalCreate(BaseModel):
@@ -91,42 +77,58 @@ class SignalResponse(BaseModel):
         from_attributes = True
 
 
-class TradeCreate(BaseModel):
-    """Schema for creating a trade execution."""
+class PaperPositionCreate(BaseModel):
+    """Schema for creating a paper position (Shadow Execution)."""
     signal_id: uuid.UUID
     ticker: str
     market: Market
-    side: TradeSide
+    side: PaperSide
     quantity: Decimal = Field(..., gt=0)
-    order_type: OrderType = OrderType.LIMIT
-    limit_price: Decimal | None = None
-
-    @field_validator("limit_price")
-    @classmethod
-    def validate_limit_price(cls, v, info):
-        if info.data.get("order_type") == OrderType.LIMIT and v is None:
-            raise ValueError("limit_price is required for LIMIT orders")
-        return v
+    entry_price: Decimal = Field(..., gt=0)
+    target_price: Decimal | None = None
+    stop_loss_price: Decimal | None = None
+    atr_at_entry: Decimal | None = None
+    sizing_method: str = "volatility_target"
+    notes: str | None = None
 
 
-class TradeResponse(BaseModel):
-    """Schema for trade response."""
+class PaperPositionResponse(BaseModel):
+    """Schema for paper position response."""
     id: uuid.UUID
     signal_id: uuid.UUID | None
     ticker: str
     market: str
     side: str
     quantity: Decimal
-    order_type: str
-    limit_price: Decimal | None
-    filled_price: Decimal | None
-    filled_quantity: Decimal | None
-    status: str
-    broker_order_id: str | None
-    idempotency_key: uuid.UUID
-    rejection_reason: str | None
-    created_at: datetime
-    updated_at: datetime
+    entry_price: Decimal
+    current_price: Decimal | None
+    target_price: Decimal | None
+    stop_loss_price: Decimal | None
+    unrealized_pnl: Decimal | None
+    unrealized_pnl_pct: Decimal | None
+    entry_date: datetime
+    notes: str | None
+
+    class Config:
+        from_attributes = True
+
+
+class ClosedPaperTradeResponse(BaseModel):
+    """Schema for closed paper trade response."""
+    id: uuid.UUID
+    ticker: str
+    market: str
+    side: str
+    quantity: Decimal
+    entry_price: Decimal
+    exit_price: Decimal
+    realized_pnl: Decimal | None
+    realized_pnl_pct: Decimal | None
+    entry_date: datetime | None
+    exit_date: datetime
+    exit_reason: str | None
+    strategy: str | None
+    notes: str | None
 
     class Config:
         from_attributes = True
