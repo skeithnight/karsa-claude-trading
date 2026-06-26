@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     IDX_DATA_API_URL: str = "https://api.stockbit.com/v1"
     IDX_DATA_API_KEY: str = ""
 
+    # Trading Mode
+    TRADING_MODE: str = "paper"  # "paper" = mock execution, "live" = real broker calls
+
     # Trading Parameters
     MAX_PORTFOLIO_RISK_PCT: float = 2.0
     MAX_POSITION_SIZE_PCT: float = 15.0

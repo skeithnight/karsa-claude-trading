@@ -3,12 +3,24 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
+from src.config import settings
 from src.utils.logging import get_logger
 
 logger = get_logger("telegram_handlers")
 
 
+def _is_authorized(update: Update) -> bool:
+    """Check if message is from authorized chat (works in both polling and webhook mode)."""
+    chat_id = str(update.effective_chat.id) if update.effective_chat else ""
+    if settings.TELEGRAM_CHAT_ID and chat_id != str(settings.TELEGRAM_CHAT_ID):
+        logger.warning("unauthorized_chat", chat_id=chat_id)
+        return False
+    return True
+
+
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_authorized(update):
+        return
     await update.message.reply_text(
         "🤖 *Karsa Trading System*\n\n"
         "Commands:\n"
@@ -22,6 +34,8 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /scan <market> <ticker> command."""
+    if not _is_authorized(update):
+        return
     logger.info("scan_cmd_received", user=update.effective_user.id, args=context.args)
     if not context.args or len(context.args) < 2:
         await update.message.reply_text(
@@ -71,7 +85,8 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ponytail: real status from Redis/Postgres once wired up
+    if not _is_authorized(update):
+        return
     await update.message.reply_text(
         "📊 *System Status*\n━━━━━━━━━━━━━━━━\n"
         "🟢 Orchestrator: Online\n🟢 9Router: Connected\n"
@@ -82,6 +97,8 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def portfolio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /portfolio command — show current positions from Postgres."""
+    if not _is_authorized(update):
+        return
     from src.models.database import async_session
     from src.models.tables import PortfolioState
     from sqlalchemy import select
@@ -111,6 +128,8 @@ async def portfolio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def trades_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /trades command — show recent trades from Postgres."""
+    if not _is_authorized(update):
+        return
     from src.models.database import async_session
     from src.models.tables import Trade
     from sqlalchemy import select
@@ -201,9 +220,16 @@ async def handle_approval_callback(update: Update, context: ContextTypes.DEFAULT
         await query.edit_message_text(text=query.message.text + "\n\n⚠️ *System error: approval manager not configured*", parse_mode="Markdown")
         return
 
-    # Determine which broker to use (needs market from signal — fetch from DB)
-    # For now, try both; approval manager will resolve the market from the signal record
-    broker = brokers.get("IDX") or brokers.get("US")
+    # P0-4: Look up signal market from DB to pick correct broker
+    from src.models.database import async_session
+    from src.models.tables import Signal
+    from sqlalchemy import select
+    import uuid as _uuid
+    async with async_session() as session:
+        sig_result = await session.execute(select(Signal).where(Signal.id == _uuid.UUID(signal_id)))
+        sig = sig_result.scalar_one_or_none()
+    market = sig.market if sig else "IDX"
+    broker = brokers.get(market) or brokers.get("IDX") or brokers.get("US")
 
     if action == "approve":
         result = await approval_mgr.process_approval(signal_id, "APPROVE", broker)

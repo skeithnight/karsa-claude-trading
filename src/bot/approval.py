@@ -11,6 +11,7 @@ Signal lifecycle:
 
 import uuid
 from datetime import datetime, timedelta
+from src.config import settings
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -137,14 +138,24 @@ class ApprovalManager:
         session.add(trade)
         await session.flush()
 
-        result = await broker.place_order(
-            ticker=signal.ticker,
-            side=trade.side,
-            quantity=trade.quantity,
-            order_type=trade.order_type,
-            limit_price=trade.limit_price,
-            idempotency_key=idempotency_key,
-        )
+        # P0-6: Paper mode — mock execution, no broker HTTP call
+        if settings.TRADING_MODE == "paper":
+            result = {
+                "broker_order_id": f"PAPER-{idempotency_key.hex[:8]}",
+                "status": "FILLED",
+                "filled_price": float(signal.entry_price or 0),
+                "reason": None,
+            }
+            logger.info("paper_trade_executed", ticker=signal.ticker, side=trade.side, qty=trade.quantity)
+        else:
+            result = await broker.place_order(
+                ticker=signal.ticker,
+                side=trade.side,
+                quantity=trade.quantity,
+                order_type=trade.order_type,
+                limit_price=trade.limit_price,
+                idempotency_key=idempotency_key,
+            )
 
         trade.broker_order_id = result.get("broker_order_id")
         trade.status = result.get("status", "PENDING")

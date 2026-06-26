@@ -128,33 +128,26 @@ class KarsaApp:
     # --- Job implementations ---
 
     async def _job_scan_idx(self):
-        """Scan IDX market during IDX trading hours."""
+        """Scan IDX market — full pipeline: agents → risk → persist → notify."""
         try:
             from src.utils.market_hours import is_idx_open
             if not is_idx_open():
                 logger.info("idx_market_closed_skip")
                 return
-            signals = await self.orchestrator._scan_market(
-                "IDX", self.orchestrator.idx_agent, IDX_UNIVERSE
-            )
+            signals = await self.orchestrator.scan_all_markets("IDX")
             logger.info("idx_scan_done", signals=len(signals))
         except Exception as e:
             logger.error("idx_scan_failed", error=str(e))
 
     async def _job_scan_us_etf(self):
-        """Scan US + ETF markets during US trading hours."""
+        """Scan US + ETF markets — full pipeline: agents → risk → persist → notify."""
         try:
             from src.utils.market_hours import is_us_open
             if not is_us_open():
                 logger.info("us_market_closed_skip")
                 return
-            # Run both in parallel
-            await asyncio.gather(
-                self.orchestrator._scan_market("US", self.orchestrator.us_agent, US_UNIVERSE),
-                self.orchestrator._scan_market("ETF", self.orchestrator.etf_agent, ETF_UNIVERSE),
-                return_exceptions=True,
-            )
-            logger.info("us_etf_scan_done")
+            signals = await self.orchestrator.scan_all_markets("US_ETF")
+            logger.info("us_etf_scan_done", signals=len(signals))
         except Exception as e:
             logger.error("us_etf_scan_failed", error=str(e))
 

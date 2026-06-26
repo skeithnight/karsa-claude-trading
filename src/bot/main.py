@@ -5,6 +5,8 @@ Supports two modes:
 - Webhook: Requires a public domain + HTTPS. Faster, lower latency.
 """
 
+import asyncio
+import json as _json
 from contextlib import asynccontextmanager
 
 import redis.asyncio as redis
@@ -68,7 +70,36 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("telegram_bot_webhook_mode", url=settings.TELEGRAM_WEBHOOK_URL)
 
+    # P0-3: Subscribe to Redis signal channel for automated alerts
+    async def _signal_listener():
+        """Listen for signals published by orchestrator and send Telegram alerts."""
+        from src.bot.handlers import format_trade_alert
+        pubsub = redis_client.pubsub()
+        await pubsub.subscribe(settings.REDIS_PREFIX + ":signals")
+        logger.info("signal_listener_started")
+        async for msg in pubsub.listen():
+            if msg["type"] != "message":
+                continue
+            try:
+                signal = _json.loads(msg["data"])
+                alert_text, keyboard = format_trade_alert(signal)
+                await telegram_app.bot.send_message(
+                    chat_id=settings.TELEGRAM_CHAT_ID,
+                    text=alert_text,
+                    reply_markup=keyboard,
+                    parse_mode="Markdown",
+                )
+                logger.info("alert_sent", ticker=signal.get("ticker"))
+            except Exception as e:
+                logger.error("alert_send_failed", error=str(e))
+
+    app.state._signal_task = asyncio.create_task(_signal_listener())
+
     yield
+
+    # Stop Redis subscriber
+    if hasattr(app.state, "_signal_task") and not app.state._signal_task.done():
+        app.state._signal_task.cancel()
 
     try:
         if telegram_app.updater:

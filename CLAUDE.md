@@ -4,77 +4,127 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-**karsa-claude-trading** — A Claude Code-native, multi-market AI trading system targeting IDX (Indonesia), US Equities, and Global ETFs. It utilizes Claude Agent Teams for parallel analysis, 9Router for LLM cost optimization/fallback, and TradingView MCP for unified market data.
+**Karsa** — AI-driven multi-market trading system for IDX (Indonesia), US Equities, and Global ETFs. Uses Anthropic SDK tool-use agents routed through 9Router for cost-optimized LLM calls with fallback.
 
-## Status
+## Dev Tooling
 
-Repository is freshly initialized with no source code, build system, or dependencies. `DESIGN.md` contains the comprehensive architectural blueprint.
+### rtk (Rust Token Killer)
+CLI proxy that filters and compresses shell command output before it reaches LLM context — 60-90% token savings. Installed globally; auto-rewrites Bash tool calls via PreToolUse hook.
 
-## Git
+```bash
+# Setup (one-time)
+rtk init -g          # installs Claude Code hook + RTK.md
 
-- Remote: `git@github.com-personal:skeithnight/karsa-claude-trading.git`
-- Branching: `main` (production), `develop` (integration), `feature/*`, `fix/*`.
-- Commits: Strictly follow [Conventional Commits](https://www.conventionalcommits.org/) (e.g., `feat: add IDX foreign flow strategy`, `fix: handle ARA limit edge case`, `chore: update 9router config`).
+# rtk is transparent after setup — these run automatically:
+docker compose ps    # -> rtk docker compose ps  (compact)
+docker logs karsa-orchestrator --tail 20  # -> deduplicated
+git status           # -> compact
+pytest               # -> failures only
 
----
+# Explicit calls when needed
+rtk docker ps                          # compact container list
+rtk docker logs karsa-orchestrator    # deduplicated logs
+rtk docker compose ps                  # compose services
+rtk pytest                             # Python tests, -90% output
+rtk git diff                           # condensed diff
+rtk gain                               # token savings stats
+rtk gain --graph                       # ASCII graph last 30 days
+```
 
-## Governance & Security
+> Note: rtk only intercepts Bash tool calls. Claude Code built-in tools (Read, Grep, Glob) bypass the hook — use shell commands (`cat`, `rg`, `find`) or `rtk read`/`rtk grep` explicitly when you want filtering there.
 
-As a financial trading system, security and compliance are paramount. Claude must strictly adhere to these rules:
+### graphify
+Turns the Karsa codebase into a queryable knowledge graph — code, SQL schema (`db/init.sql`), docs, all in one graph. Use it to navigate agent relationships and data flows without reading every file.
 
-1. **Zero Hardcoded Secrets:** NEVER commit API keys, broker tokens, Telegram tokens, or database passwords to the repository. All secrets must be injected via `.env` files (excluded in `.gitignore`) or Docker Secrets.
-2. **Human-in-the-Loop (HITL) Mandate:** No trade execution logic should bypass the Telegram HITL approval flow in live environments. Paper trading modes must be explicitly flagged via environment variables (`TRADING_MODE=paper`).
-3. **Immutable Audit Logs:** Database tables for `trade_history` and `audit_logs` are strictly append-only. NEVER write `UPDATE` or `DELETE` SQL queries for these tables.
-4. **Market Compliance Hard Limits:** 
-   - **IDX:** Always enforce lot size conversions (1 lot = 100 shares). Always check Auto-Rejection Upper (ARA) limits before generating limit orders.
-   - **US:** Enforce Pattern Day Trader (PDT) rules if account equity < $25,000.
-5. **Secret Isolation:** The `claude-agent` container must never know the actual Anthropic/DeepSeek API keys. It must only communicate with the local `9router` gateway.
+```bash
+# Setup (one-time)
+uv tool install graphifyy
+graphify install          # registers Claude Code skill
+graphify claude install   # writes CLAUDE.md hook + always-on graph reminder
+```
 
----
+```
+# In Claude Code sessions
+/graphify .                                   # build/rebuild the graph
+/graphify . --update                          # re-extract only changed files
+/graphify query "how does signal flow from analyst to Telegram?"
+/graphify query "what connects BaseAgent to MCPClient?"
+/graphify path "Orchestrator" "ApprovalManager"
+/graphify explain "BaseAgent"
+graphify export callflow-html                 # Mermaid architecture page
+```
 
-## Engineering Standards
+Graph output lives in `graphify-out/` (commit this):
+- `graph.html` — interactive browser view
+- `GRAPH_REPORT.md` — key concepts, surprising connections, suggested questions
+- `graph.json` — queryable via `graphify query` anytime
 
-### Code Quality & Style
-- **Language:** Python 3.11+.
-- **Formatting & Linting:** Use `ruff` for all formatting and linting. 
-- **Type Checking:** Use `mypy` with strict mode enabled. All function signatures must be fully typed.
-- **Async-First:** All I/O bound operations (Broker APIs, Telegram bot, Redis, Postgres, MCP calls) MUST be asynchronous using `asyncio`, `aiohttp`, `asyncpg`, and `redis.asyncio`.
+> Use `/graphify query` before grepping files for architecture questions. The graph already knows how `src/agents/`, `src/bot/`, `src/data/`, and `db/init.sql` connect.
 
-### Architecture & Design Patterns
-- **MCP-First Data:** NEVER write custom web scrapers for Yahoo Finance or TradingView. All market data must be fetched via the `tradingview-mcp` tools.
-- **Pydantic Validation:** All data models, environment variables, and Agent JSON outputs must be validated using `pydantic` (v2+).
-- **Agent Design:** Sub-agents (defined in `.claude/agents/`) must be instructed to return strictly formatted JSON. Use Pydantic models in the orchestrator to parse and validate their outputs.
-- **Circuit Breakers:** Implement circuit breakers for all external API calls (Brokers, 9Router). If 3 consecutive failures occur, halt the specific subsystem and trigger a Telegram alert.
+## Build & Run
 
----
+```bash
+# Development
+cp .env.example .env        # fill in API keys
+docker compose up --build   # starts all 5 services
 
-## Workflow & Development
+# Rebuild single service
+docker compose up -d --build karsa-orchestrator
+docker compose up -d --build karsa-telegram-bot
 
-### Adding a New Sub-Agent
-1. Create the agent prompt in `.claude/agents/[name].md` with strict JSON output instructions.
-2. Define the expected output schema as a Pydantic model in `src/models/agents.py`.
-3. Update the Lead Orchestrator's routing logic in `src/orchestrator/` to dispatch tasks to the new agent.
-4. Assign the appropriate 9Router combo (`karsa-critical` or `karsa-routine`) based on the agent's cognitive load.
+# Restart without rebuild
+docker compose restart karsa-orchestrator karsa-telegram-bot
 
-### Testing
-- Use `pytest` with `pytest-asyncio` for all tests.
-- **Mocking:** NEVER make real API calls to Brokers, 9Router, or the MCP server during unit tests. Use `unittest.mock` or `pytest-mock` to simulate MCP tool results and Broker responses.
-- Test edge cases for market rules (e.g., passing a 50-share order for an IDX stock should raise a validation error).
+# Check status
+docker compose ps
 
-### Local Development & Deployment
-- Always test infrastructure changes locally using `docker-compose up --build` before pushing.
-- Ensure the `9router-config.yaml` and `.env` files are correctly mapped in `docker-compose.yml`.
-- Check container logs (`docker-compose logs -f claude-agent`) to verify 9Router fallback events and MCP connectivity.
+# Logs
+docker logs karsa-orchestrator --tail 20
+docker logs karsa-telegram-bot --tail 20
 
----
+# Test inside container
+docker exec karsa-orchestrator python3 -c "from src.config import settings; print(settings.LLM_BASE_URL)"
+```
 
-## Architecture Context
+## Architecture
 
-When writing code, keep the following stack in mind:
+**Two main containers** share the same Python package (`src/`):
 
-- **LLM Gateway:** `9Router` (Port 20128). Handles token compression (RTK) and 3-tier fallbacks. Agents point to `http://9router:20128/v1`.
-- **Market Data:** `tradingview-mcp` (Port 8080). Provides unified data for IDX (.JK), US, and ETFs.
-- **State & Cache:** `Redis` (Port 6379) for fast caching and agent pub/sub.
-- **Persistence:** `PostgreSQL` (Port 5432) for immutable audit logs and portfolio state.
-- **Execution:** IDX Broker API (IPOT/Mirae) and US Broker API (Alpaca/IBKR).
-- **Interface:** `python-telegram-bot` for HITL alerts and approvals.
+1. **karsa-orchestrator** (`src/main.py`) — APScheduler runs 5 cron jobs. Each job dispatches agents via `Orchestrator.scan_all_markets()` which runs IDX/US/ETF analysts in parallel (`asyncio.gather`). Signals ≥60 confidence get risk-checked, then published to Redis.
+
+2. **karsa-telegram-bot** (`src/bot/main.py`) — FastAPI webhook + python-telegram-bot polling. Commands: `/start`, `/status`, `/scan <market> <ticker>`, `/portfolio`, `/trades`. The bot creates its own `Orchestrator` instance for ad-hoc `/scan` commands.
+
+**Agent loop** (`src/agents/base.py`): Each agent is a `BaseAgent` subclass with a system prompt, tool definitions, and an `_handle_tool_call` override. The `run()` method implements the Anthropic SDK tool-use loop — call LLM, process tool calls, repeat until `end_turn`.
+
+**Data flow for tools**: Agent calls tool → `BaseAgent._handle_tool_call()` → specific agent override → `MCPClient` method → `tradingview_ta` (direct Python import, no MCP protocol).
+
+**Market data** (`src/data/mcp_client.py`): Uses `tradingview_ta.TA_Handler` directly (not MCP protocol). IDX uses `screener='indonesia', exchange='IDX'`. US/ETF tries NASDAQ → NYSE → AMEX fallback. Data cached in Redis (60s quotes, 1h OHLCV).
+
+**HITL flow**: Signal → `signals` table (PENDING) → Redis pub/sub → Telegram alert with APPROVE/REJECT buttons → `ApprovalManager.process_approval()` → broker execution → `trades` table + `audit_logs`.
+
+## Key Config
+
+- **9Router**: Agents use `settings.LLM_BASE_URL` / `LLM_AUTH_TOKEN` / `LLM_MODEL` (resolved from `9ROUTER_*` env vars, falling back to `ANTHROPIC_*`).
+- **Combo override**: `Orchestrator` sets `combo_name = settings.NROUTER_MODEL` on all agents, so a single 9Router combo handles all LLM routing.
+- **Telegram**: Polling mode (no domain needed). Set `TELEGRAM_TOKEN` and `TELEGRAM_CHAT_ID` in `.env`.
+- **Database**: PostgreSQL via asyncpg + SQLAlchemy async. Schema in `db/init.sql` auto-applied on first start.
+
+## File Map (non-obvious)
+
+- `src/agents/orchestrator.py` — universe lists (IDX_UNIVERSE, US_UNIVERSE, ETF_UNIVERSE), combo name assignment, parallel market scan
+- `src/agents/base.py` — Anthropic SDK tool-use loop, `getattr()` guards for 9Router response quirks
+- `src/bot/approval.py` — HITL lifecycle: PendingApproval → Trade → AuditLog, expiry via scheduler
+- `src/bot/handlers.py` — Telegram command handlers, `format_trade_alert()` builds inline keyboard
+- `src/data/cache.py` — Redis wrapper with pub/sub for signal/approval channels
+- `src/utils/rate_limit.py` — Lua-based token bucket in Redis
+- `src/backtest/engine.py` — RSI + Bollinger mean reversion backtester (Sharpe > 1.2 gate)
+- `graphify-out/` — committed knowledge graph; query before reading source files
+
+## Gotchas
+
+- Dockerfiles `COPY src/` — must `--build` after code changes, `restart` alone won't pick up new code.
+- `tradingview_ta` is imported lazily inside the container (not at module level) to avoid startup failures if the package isn't installed yet.
+- IDX lot size is always 100 shares. `IDXBroker` enforces this.
+- The `karsa-9router` service was removed from docker-compose — the system uses the user's existing 9Router instance via `host.docker.internal:20128`.
+- rtk hook only applies to Bash tool calls — Claude Code built-in Read/Grep/Glob bypass it.
+- graphify code extraction is fully local (tree-sitter, no API calls); docs/PDFs use the active model session.

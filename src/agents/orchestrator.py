@@ -43,16 +43,23 @@ class Orchestrator:
         self.risk_manager = RiskManager(mcp, rate_limiter)
         self.risk_manager.combo_name = CRITICAL_COMBO
 
-    async def scan_all_markets(self) -> list[dict]:
-        """Run all market scans in parallel and return validated signals."""
-        logger.info("scan_started")
+    async def scan_all_markets(self, market_filter: str | None = None) -> list[dict]:
+        """Run market scans in parallel, risk-check, persist to Postgres, and notify.
 
-        results = await asyncio.gather(
-            self._scan_market("IDX", self.idx_agent, IDX_UNIVERSE),
-            self._scan_market("US", self.us_agent, US_UNIVERSE),
-            self._scan_market("ETF", self.etf_agent, ETF_UNIVERSE),
-            return_exceptions=True,
-        )
+        Args:
+            market_filter: "IDX", "US_ETF", or None (all markets)
+        """
+        logger.info("scan_started", filter=market_filter)
+
+        tasks = []
+        if market_filter in (None, "IDX"):
+            tasks.append(self._scan_market("IDX", self.idx_agent, IDX_UNIVERSE))
+        if market_filter in (None, "US_ETF", "US"):
+            tasks.append(self._scan_market("US", self.us_agent, US_UNIVERSE))
+        if market_filter in (None, "US_ETF", "ETF"):
+            tasks.append(self._scan_market("ETF", self.etf_agent, ETF_UNIVERSE))
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
         all_signals = []
         for result in results:
@@ -69,6 +76,8 @@ class Orchestrator:
             risk_result = await self._check_risk(signal)
             if risk_result.get("approved"):
                 signal["risk_check"] = risk_result
+                signal_id = await self._persist_signal(signal)
+                signal["id"] = str(signal_id)
                 validated.append(signal)
                 await self.cache.publish_signal(signal)
                 logger.info("signal_approved", ticker=signal["ticker"], confidence=signal["confidence_score"])
@@ -77,6 +86,37 @@ class Orchestrator:
                             reason=risk_result.get("rejection_reason"))
 
         return validated
+
+    async def _persist_signal(self, signal: dict):
+        """Insert signal into Postgres and return UUID."""
+        import uuid as _uuid
+        from src.models.database import async_session
+        from src.models.tables import Signal, AuditLog
+
+        signal_id = _uuid.uuid4()
+        async with async_session() as session:
+            db_signal = Signal(
+                id=signal_id,
+                ticker=signal.get("ticker", ""),
+                market=signal.get("market", ""),
+                strategy=signal.get("strategy", ""),
+                direction=signal.get("direction", "LONG"),
+                confidence_score=signal.get("confidence_score", 0),
+                entry_price=signal.get("entry_price"),
+                target_price=signal.get("target_price"),
+                stop_loss_price=signal.get("stop_loss_price"),
+                reasoning=signal.get("reasoning", ""),
+                status="PENDING",
+            )
+            session.add(db_signal)
+            session.add(AuditLog(
+                component="ORCHESTRATOR", action="SIGNAL_CREATED",
+                entity_type="signal", entity_id=signal_id,
+                payload=signal,
+            ))
+            await session.commit()
+            logger.info("signal_persisted", signal_id=str(signal_id), ticker=signal.get("ticker"))
+        return signal_id
 
     async def _scan_market(self, market: str, agent: BaseAgent, universe: list[str]) -> list[dict]:
         signals = []
