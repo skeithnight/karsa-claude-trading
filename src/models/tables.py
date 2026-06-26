@@ -66,7 +66,7 @@ class Signal(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime)
 
-    trades: Mapped[list["Trade"]] = relationship(back_populates="signal")
+    paper_positions: Mapped[list["PaperPosition"]] = relationship(back_populates="signal")
     approval: Mapped["PendingApproval | None"] = relationship(back_populates="signal")
 
     __table_args__ = (
@@ -77,34 +77,60 @@ class Signal(Base):
     )
 
 
-class Trade(Base):
-    """Trade execution records."""
-    __tablename__ = "trades"
+class PaperPosition(Base):
+    """Paper trading positions (Shadow Execution Engine)."""
+    __tablename__ = "paper_positions"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    signal_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("signals.id"))
+    signal_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("signals.id"), unique=True)
     ticker: Mapped[str] = mapped_column(String(20), nullable=False)
     market: Mapped[str] = mapped_column(String(10), nullable=False)
     side: Mapped[str] = mapped_column(String(10), nullable=False)
     quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
-    order_type: Mapped[str] = mapped_column(String(20), default="LIMIT")
-    limit_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
-    filled_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
-    filled_quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
-    status: Mapped[str] = mapped_column(String(20), default="PENDING")
-    broker_order_id: Mapped[str | None] = mapped_column(String(100))
-    idempotency_key: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), unique=True, default=uuid.uuid4)
-    rejection_reason: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    entry_price: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    current_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    target_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    stop_loss_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    atr_at_entry: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    sizing_method: Mapped[str] = mapped_column(String(50), default="volatility_target")
+    unrealized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    unrealized_pnl_pct: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
+    max_drawdown_pct: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
+    entry_date: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    notes: Mapped[str | None] = mapped_column(Text)
 
-    signal: Mapped["Signal | None"] = relationship(back_populates="trades")
+    signal: Mapped["Signal | None"] = relationship(back_populates="paper_positions")
 
     __table_args__ = (
-        CheckConstraint("market IN ('IDX', 'US', 'ETF')", name="ck_trade_market"),
-        CheckConstraint("side IN ('BUY', 'SELL')", name="ck_trade_side"),
-        CheckConstraint("order_type IN ('LIMIT', 'MARKET', 'STOP')", name="ck_trade_order_type"),
-        CheckConstraint("status IN ('PENDING', 'FILLED', 'PARTIAL', 'REJECTED', 'CANCELLED')", name="ck_trade_status"),
+        CheckConstraint("market IN ('IDX', 'US', 'ETF')", name="ck_paper_market"),
+        CheckConstraint("side IN ('LONG', 'SHORT')", name="ck_paper_side"),
+    )
+
+
+class ClosedPaperTrade(Base):
+    """Archive of closed paper trades for P&L tracking."""
+    __tablename__ = "closed_paper_trades"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    signal_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    ticker: Mapped[str] = mapped_column(String(20), nullable=False)
+    market: Mapped[str] = mapped_column(String(10), nullable=False)
+    side: Mapped[str] = mapped_column(String(10), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    entry_price: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    exit_price: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    realized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    realized_pnl_pct: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
+    entry_date: Mapped[datetime | None] = mapped_column(DateTime)
+    exit_date: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    hold_duration: Mapped[datetime | None] = mapped_column(DateTime)  # Interval not supported well in SQLAlchemy
+    exit_reason: Mapped[str | None] = mapped_column(String(50))
+    strategy: Mapped[str | None] = mapped_column(String(50))
+    notes: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (
+        CheckConstraint("market IN ('IDX', 'US', 'ETF')", name="ck_closed_market"),
+        CheckConstraint("side IN ('LONG', 'SHORT')", name="ck_closed_side"),
     )
 
 

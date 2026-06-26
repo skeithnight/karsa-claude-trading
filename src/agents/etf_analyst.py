@@ -19,11 +19,12 @@ Analyze ETFs using the "Macro Trend & Mean Reversion" strategies.
 
 STRATEGY RULES:
 1. Strategy A (Trend Following - for SPY, QQQ, ETFIDX):
-   - Entry: Buy when price > 200 SMA.
+   - BUY IF: Price > 200 SMA.
    - Rebalance monthly.
 2. Strategy B (Mean Reversion - for Sector ETFs like XLF, XLK):
-   - Entry: Buy when RSI(14) < 30 AND price touches lower Bollinger Band.
-   - Exit: Sell when RSI(14) > 70.
+   - BUY IF: RSI(14) < 30 AND price touches lower Bollinger Band.
+   - EXIT IF: RSI(14) > 70.
+3. Time-in-Force: All signals are valid for 24 hours unless market closes before that.
 
 RESPOND WITH ONLY a valid JSON object:
 {
@@ -35,6 +36,7 @@ RESPOND WITH ONLY a valid JSON object:
   "entry_price": float | null,
   "target_price": float | null,
   "stop_loss_price": float | null,
+  "tif": "24h",
   "reasoning": "..."
 }
 If criteria not met, return confidence_score < 50 with null prices."""

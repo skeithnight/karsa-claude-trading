@@ -92,7 +92,40 @@ class Orchestrator:
             return {"error": f"Unknown market: {market}"}
 
         result = await agent.run(f"Analyze {ticker} for trading opportunities right now.")
+
+        # Persist signal to database for /audit command (all signals, not just high confidence)
+        if not result.get("error"):
+            await self._save_signal(result)
+
         return result
+
+    async def _save_signal(self, signal_data: dict):
+        """Save a signal to the database."""
+        try:
+            from src.models.database import async_session
+            from src.models.tables import Signal
+            from datetime import datetime, timedelta
+
+            async with async_session() as session:
+                signal = Signal(
+                    ticker=signal_data.get("ticker"),
+                    market=signal_data.get("market"),
+                    strategy=signal_data.get("strategy", "Unknown"),
+                    direction=signal_data.get("direction", "LONG"),
+                    confidence_score=signal_data.get("confidence_score", 0),
+                    entry_price=signal_data.get("entry_price"),
+                    target_price=signal_data.get("target_price"),
+                    stop_loss_price=signal_data.get("stop_loss_price"),
+                    risk_reward_ratio=signal_data.get("risk_reward_ratio"),
+                    reasoning=signal_data.get("reasoning"),
+                    status="PENDING",
+                    expires_at=datetime.utcnow() + timedelta(hours=24),
+                )
+                session.add(signal)
+                await session.commit()
+                logger.info("signal_saved", ticker=signal_data.get("ticker"))
+        except Exception as e:
+            logger.error("signal_save_failed", error=str(e))
 
     async def analyze_portfolio(self, portfolio_data: dict) -> dict:
         """Run deep analysis on the current portfolio holdings."""

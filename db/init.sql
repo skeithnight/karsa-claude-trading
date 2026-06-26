@@ -44,24 +44,46 @@ CREATE TABLE IF NOT EXISTS signals (
     expires_at TIMESTAMP
 );
 
--- 3. Trades (Execution Records)
-CREATE TABLE IF NOT EXISTS trades (
+-- 3. Paper Positions (Shadow Execution Engine)
+CREATE TABLE IF NOT EXISTS paper_positions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     signal_id UUID REFERENCES signals(id),
     ticker VARCHAR(20) NOT NULL,
     market VARCHAR(10) NOT NULL CHECK (market IN ('IDX', 'US', 'ETF')),
-    side VARCHAR(10) NOT NULL CHECK (side IN ('BUY', 'SELL')),
+    side VARCHAR(10) NOT NULL CHECK (side IN ('LONG', 'SHORT')),
     quantity DECIMAL(18, 4) NOT NULL,
-    order_type VARCHAR(20) DEFAULT 'LIMIT' CHECK (order_type IN ('LIMIT', 'MARKET', 'STOP')),
-    limit_price DECIMAL(18, 4),
-    filled_price DECIMAL(18, 4),
-    filled_quantity DECIMAL(18, 4),
-    status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'FILLED', 'PARTIAL', 'REJECTED', 'CANCELLED')),
-    broker_order_id VARCHAR(100),
-    idempotency_key UUID NOT NULL UNIQUE,
-    rejection_reason TEXT,
-    created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP DEFAULT NOW()
+    entry_price DECIMAL(18, 4) NOT NULL,
+    current_price DECIMAL(18, 4),
+    target_price DECIMAL(18, 4),
+    stop_loss_price DECIMAL(18, 4),
+    atr_at_entry DECIMAL(18, 4),
+    sizing_method VARCHAR(50) DEFAULT 'volatility_target',
+    unrealized_pnl DECIMAL(18, 4),
+    unrealized_pnl_pct DECIMAL(8, 4),
+    max_drawdown_pct DECIMAL(8, 4),
+    entry_date TIMESTAMP DEFAULT NOW(),
+    notes TEXT,
+    UNIQUE(signal_id)
+);
+
+-- 4. Closed Paper Trades (Archive for P&L Tracking)
+CREATE TABLE IF NOT EXISTS closed_paper_trades (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    signal_id UUID,
+    ticker VARCHAR(20) NOT NULL,
+    market VARCHAR(10) NOT NULL CHECK (market IN ('IDX', 'US', 'ETF')),
+    side VARCHAR(10) NOT NULL CHECK (side IN ('LONG', 'SHORT')),
+    quantity DECIMAL(18, 4) NOT NULL,
+    entry_price DECIMAL(18, 4) NOT NULL,
+    exit_price DECIMAL(18, 4) NOT NULL,
+    realized_pnl DECIMAL(18, 4),
+    realized_pnl_pct DECIMAL(8, 4),
+    entry_date TIMESTAMP,
+    exit_date TIMESTAMP DEFAULT NOW(),
+    hold_duration INTERVAL,
+    exit_reason VARCHAR(50),
+    strategy VARCHAR(50),
+    notes TEXT
 );
 
 -- 4. Immutable Audit Logs
@@ -112,8 +134,10 @@ CREATE TABLE IF NOT EXISTS pending_approvals (
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_signals_status ON signals(status);
 CREATE INDEX IF NOT EXISTS idx_signals_created ON signals(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
-CREATE INDEX IF NOT EXISTS idx_trades_signal ON trades(signal_id);
+CREATE INDEX IF NOT EXISTS idx_paper_positions_ticker ON paper_positions(ticker, market);
+CREATE INDEX IF NOT EXISTS idx_paper_positions_entry ON paper_positions(entry_date DESC);
+CREATE INDEX IF NOT EXISTS idx_closed_paper_trades_ticker ON closed_paper_trades(ticker, market);
+CREATE INDEX IF NOT EXISTS idx_closed_paper_trades_exit ON closed_paper_trades(exit_date DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_component ON audit_logs(component);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ohlcv_ticker ON ohlcv_cache(ticker, market, timeframe);
