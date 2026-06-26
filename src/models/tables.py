@@ -11,8 +11,23 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from src.models.database import Base
 
 
+class CashBalance(Base):
+    """Cash balance per currency."""
+    __tablename__ = "cash_balance"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    currency: Mapped[str] = mapped_column(String(5), nullable=False)
+    balance: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("currency", name="uq_cash_balance_currency"),
+        CheckConstraint("currency IN ('IDR', 'USD')", name="ck_cash_currency"),
+    )
+
+
 class PortfolioState(Base):
-    """Current portfolio positions synced from brokers."""
+    """Portfolio positions — manually managed."""
     __tablename__ = "portfolio_state"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -22,6 +37,8 @@ class PortfolioState(Base):
     avg_cost: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     current_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
     unrealized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    notes: Mapped[str | None] = mapped_column(Text)
+    added_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     last_synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (

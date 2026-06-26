@@ -12,9 +12,7 @@ from src.config import settings
 from src.models.database import init_db, close_db, DATABASE_URL
 from src.data.cache import CacheManager
 from src.data.mcp_client import MCPClient
-from src.data.idx_adapter import IDXDataAdapter
 from src.agents.orchestrator import Orchestrator, IDX_UNIVERSE, US_UNIVERSE, ETF_UNIVERSE
-from src.bot.approval import ApprovalManager
 from src.models.database import async_session
 from src.utils.logging import setup_logging, get_logger
 from src.utils.rate_limit import RateLimiter
@@ -33,10 +31,8 @@ class KarsaApp:
         self.redis_client: redis.Redis | None = None
         self.cache: CacheManager | None = None
         self.mcp: MCPClient | None = None
-        self.idx_adapter: IDXDataAdapter | None = None
         self.rate_limiter: RateLimiter | None = None
         self.orchestrator: Orchestrator | None = None
-        self.approval_manager: ApprovalManager | None = None
         self.scheduler: AsyncIOScheduler | None = None
         self._shutdown = asyncio.Event()
 
@@ -58,11 +54,9 @@ class KarsaApp:
             sys.exit(1)
 
         self.mcp = MCPClient(self.cache)
-        self.idx_adapter = IDXDataAdapter(self.cache)
 
         # Agents & orchestrator
-        self.orchestrator = Orchestrator(self.mcp, self.idx_adapter, self.cache, self.rate_limiter)
-        self.approval_manager = ApprovalManager(self.cache, async_session)
+        self.orchestrator = Orchestrator(self.mcp, self.cache, self.rate_limiter)
         logger.info("orchestrator_ready")
 
         # APScheduler with in-memory job store
@@ -105,14 +99,6 @@ class KarsaApp:
             "cron", hour=8, minute=0,
             id="reconcile", name="Position Reconciliation",
             replace_existing=True, misfire_grace_time=600,
-        )
-
-        # Expire stale approvals: every 5 min
-        s.add_job(
-            self._job_expire_approvals,
-            "interval", minutes=5,
-            id="expire_approvals", name="Expire Stale Approvals",
-            replace_existing=True,
         )
 
         # Flush OHLCV cache to Postgres: hourly
@@ -160,10 +146,7 @@ class KarsaApp:
 
     async def _job_expire_approvals(self):
         """Expire stale approvals and mark signals as EXPIRED."""
-        try:
-            await self.approval_manager.expire_stale_approvals()
-        except Exception as e:
-            logger.error("expire_approvals_failed", error=str(e))
+        pass
 
     async def _job_flush_cache(self):
         """Flush cached OHLCV data from Redis to Postgres."""
@@ -179,8 +162,6 @@ class KarsaApp:
             self.scheduler.shutdown(wait=False)
         if self.mcp:
             await self.mcp.close()
-        if self.idx_adapter:
-            await self.idx_adapter.close()
         if self.redis_client:
             await self.redis_client.close()
         await close_db()

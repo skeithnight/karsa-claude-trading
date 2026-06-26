@@ -1,16 +1,18 @@
 """Karsa Trading System - Telegram Bot Command Handlers"""
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from decimal import Decimal
+from telegram import Update
 from telegram.ext import ContextTypes
+import httpx
 
-from src.config import settings
+from src.config import settings, LLM_BASE_URL
 from src.utils.logging import get_logger
 
 logger = get_logger("telegram_handlers")
 
 
 def _is_authorized(update: Update) -> bool:
-    """Check if message is from authorized chat (works in both polling and webhook mode)."""
+    """Check if message is from authorized chat."""
     chat_id = str(update.effective_chat.id) if update.effective_chat else ""
     if settings.TELEGRAM_CHAT_ID and chat_id != str(settings.TELEGRAM_CHAT_ID):
         logger.warning("unauthorized_chat", chat_id=chat_id)
@@ -22,12 +24,17 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
     await update.message.reply_text(
-        "🤖 *Karsa Trading System*\n\n"
+        "🤖 *Karsa Portfolio Analyst*\n\n"
         "Commands:\n"
-        "/status - Portfolio & system status\n"
-        "/scan <market> <ticker> - Scan a single ticker\n"
-        "/portfolio - View positions\n"
-        "/trades - Recent trades\n",
+        "/portfolio - View full portfolio & cash\n"
+        "/add <market> <ticker> <qty> <price> - Add position\n"
+        "/add cash <currency> <amount> - Set cash balance\n"
+        "/remove <market> <ticker> - Remove position\n"
+        "/edit <market> <ticker> qty|price <value> - Edit position\n"
+        "/analyze - Analyze entire portfolio vs market\n"
+        "/analyze <ticker> - Deep dive on single holding\n"
+        "/scan <market> <ticker> - Quick market readout\n"
+        "/status - System status\n",
         parse_mode="Markdown",
     )
 
@@ -36,49 +43,33 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /scan <market> <ticker> command."""
     if not _is_authorized(update):
         return
-    logger.info("scan_cmd_received", user=update.effective_user.id, args=context.args)
     if not context.args or len(context.args) < 2:
-        await update.message.reply_text(
-            "⚠️ Usage: `/scan <market> <ticker>`\n"
-            "Example: `/scan IDX BBCA`",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("⚠️ Usage: `/scan <market> <ticker>`\nExample: `/scan IDX BBCA`", parse_mode="Markdown")
         return
 
-    market = context.args[0].upper()
-    ticker = context.args[1].upper()
-
+    market, ticker = context.args[0].upper(), context.args[1].upper()
     msg = await update.message.reply_text(f"🔍 Scanning {ticker} ({market})...")
-    logger.info("scan_cmd_started", market=market, ticker=ticker)
 
-    # Orchestrator is passed via bot_data
     orchestrator = context.bot_data.get("orchestrator")
     if not orchestrator:
-        logger.error("scan_cmd_no_orchestrator")
         await msg.edit_text("⚠️ System error: Orchestrator not connected.")
         return
 
     try:
         result = await orchestrator.scan_single(market, ticker)
-        logger.info("scan_cmd_finished", result=result.get("status", "ok") if isinstance(result, dict) else "unknown")
 
         if result.get("error"):
             await msg.edit_text(f"❌ Scan failed: {result['error']}\n\nDetail: {result.get('detail', '')}")
             return
 
-        if result.get("confidence_score", 0) < 60:
-            await msg.edit_text(
-                f"ℹ️ Scan complete for {ticker}.\n\n"
-                f"No strong trade setup found.\n"
-                f"Confidence: {result.get('confidence_score', 0)}/100\n"
-                f"Reasoning: {result.get('reasoning', 'No clear setup.')}"
-            )
-            return
-
-        # High confidence -> format as alert
-        alert_text, keyboard = format_trade_alert(result)
-        await msg.edit_text(text=alert_text, reply_markup=keyboard, parse_mode="Markdown")
-
+        text = (
+            f"ℹ️ *Scan: {ticker} ({market})*\n"
+            f"Strategy: {result.get('strategy', 'Unknown')}\n"
+            f"Confidence: {result.get('confidence_score', 0)}/100\n"
+            f"Direction: {result.get('direction', 'N/A')}\n\n"
+            f"📝 *Reasoning:*\n{result.get('reasoning', 'No reasoning provided.')}"
+        )
+        await msg.edit_text(text, parse_mode="Markdown")
     except Exception as e:
         logger.error("scan_cmd_failed", error=str(e), exc_info=True)
         await msg.edit_text(f"❌ Scan error: {str(e)}")
@@ -87,168 +78,345 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
+
+    # Check DB
+    db_ok = False
+    try:
+        from src.models.database import async_session
+        from sqlalchemy import text
+        async with async_session() as session:
+            await session.execute(text("SELECT 1"))
+            db_ok = True
+    except Exception:
+        pass
+
+    # Check Redis
+    redis_ok = False
+    try:
+        import redis.asyncio as redis
+        r = redis.from_url(settings.REDIS_URL)
+        redis_ok = await r.ping()
+        await r.close()
+    except Exception:
+        pass
+
+    # Check 9Router
+    router_ok = False
+    router_url = LLM_BASE_URL
+    if not router_url:
+        router_status = "⚪️ 9Router (Not Configured)"
+    else:
+        try:
+            async with httpx.AsyncClient(timeout=3.0, verify=False) as client:
+                # Try /v1/models (standard OpenAI endpoint)
+                # We don't care about 401/404, just if we can reach it.
+                await client.get(f"{router_url}/v1/models")
+                router_ok = True
+        except Exception:
+            pass
+        router_status = f"{'🟢' if router_ok else '🔴'} 9Router (`{router_url}`)"
+
     await update.message.reply_text(
         "📊 *System Status*\n━━━━━━━━━━━━━━━━\n"
-        "🟢 Orchestrator: Online\n🟢 9Router: Connected\n"
-        "🟢 MCP: Connected\n🟢 Redis: Connected\n🟢 PostgreSQL: Connected\n",
+        f"{'🟢' if db_ok else '🔴'} PostgreSQL\n"
+        f"{'🟢' if redis_ok else '🔴'} Redis\n"
+        f"{router_status}\n"
+        "🟢 Orchestrator\n",
         parse_mode="Markdown",
     )
 
 
 async def portfolio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /portfolio command — show current positions from Postgres."""
+    """View full portfolio & cash."""
     if not _is_authorized(update):
         return
     from src.models.database import async_session
-    from src.models.tables import PortfolioState
+    from src.models.tables import PortfolioState, CashBalance
     from sqlalchemy import select
 
-    async with async_session() as session:
-        result = await session.execute(
-            select(PortfolioState).order_by(PortfolioState.last_synced_at.desc())
-        )
-        positions = result.scalars().all()
+    try:
+        async with async_session() as session:
+            port_result = await session.execute(select(PortfolioState).order_by(PortfolioState.market, PortfolioState.ticker))
+            positions = port_result.scalars().all()
 
-    if not positions:
-        await update.message.reply_text(
-            "💼 *Portfolio*\n━━━━━━━━━━━━━━━━\nNo positions open.",
-            parse_mode="Markdown",
-        )
+            cash_result = await session.execute(select(CashBalance))
+            cash_balances = cash_result.scalars().all()
+    except Exception as e:
+        logger.error("portfolio_db_error", error=str(e), exc_info=True)
+        await update.message.reply_text(f"❌ Database error: {str(e)}", parse_mode="Markdown")
         return
 
     lines = ["💼 *Portfolio*\n━━━━━━━━━━━━━━━━"]
-    for p in positions:
-        pnl = ""
-        if p.unrealized_pnl and p.unrealized_pnl != 0:
-            emoji = "🟢" if p.unrealized_pnl > 0 else "🔴"
-            pnl = f" {emoji} {p.unrealized_pnl:,.0f}"
-        lines.append(f"*{p.ticker}* ({p.market}) — {p.quantity:.0f} @ {p.avg_cost:,.0f}{pnl}")
+
+    # Cash
+    for cash in cash_balances:
+        lines.append(f"💵 *Cash*: {cash.balance:,.2f} {cash.currency}")
+
+    if cash_balances:
+        lines.append("━━━━━━━━━━━━━━━━")
+
+    # Positions
+    if not positions:
+        lines.append("No positions open.")
+    else:
+        for p in positions:
+            pnl = ""
+            if p.unrealized_pnl and p.unrealized_pnl != 0:
+                emoji = "🟢" if p.unrealized_pnl > 0 else "🔴"
+                pnl = f" {emoji} {p.unrealized_pnl:,.0f}"
+            lines.append(f"*{p.ticker}* ({p.market}) — {p.quantity:,.0f} @ {p.avg_cost:,.0f}{pnl}")
+
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /add <market> <ticker> <qty> <price> or /add cash <currency> <amount>."""
+    if not _is_authorized(update):
+        return
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ Usage:\n"
+            "`/add <market> <ticker> <qty> <price>` - Add position\n"
+            "`/add cash <currency> <amount>` - Set cash balance",
+            parse_mode="Markdown"
+        )
+        return
+
+    args = context.args
+
+    if args[0].upper() == "CASH":
+        # /add cash IDR 50000000
+        if len(args) < 3:
+            await update.message.reply_text("⚠️ Usage: `/add cash IDR 50000000`", parse_mode="Markdown")
+            return
+        currency = args[1].upper()
+        amount = Decimal(args[2].replace(",", "").replace(".", ""))
+        try:
+            from src.models.database import async_session
+            from src.models.tables import CashBalance
+            from sqlalchemy import select
+
+            async with async_session() as session:
+                result = await session.execute(select(CashBalance).where(CashBalance.currency == currency))
+                cash = result.scalar_one_or_none()
+                if cash:
+                    cash.balance = amount
+                else:
+                    session.add(CashBalance(currency=currency, balance=amount))
+                await session.commit()
+            await update.message.reply_text(f"✅ Cash balance set: {amount:,.2f} {currency}", parse_mode="Markdown")
+        except Exception as e:
+            logger.error("add_cash_failed", error=str(e))
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+        return
+
+    # /add IDX BBCA 500 8500
+    if len(args) < 4:
+        await update.message.reply_text("⚠️ Usage: `/add IDX BBCA 500 8500`", parse_mode="Markdown")
+        return
+
+    market = args[0].upper()
+    ticker = args[1].upper()
+    qty = Decimal(args[2].replace(",", ""))
+    price = Decimal(args[3].replace(",", ""))
+
+    try:
+        from src.models.database import async_session
+        from src.models.tables import PortfolioState
+        from sqlalchemy import select
+
+        async with async_session() as session:
+            result = await session.execute(
+                select(PortfolioState).where(PortfolioState.market == market, PortfolioState.ticker == ticker)
+            )
+            existing = result.scalar_one_or_none()
+            if existing:
+                await update.message.reply_text(
+                    f"⚠️ {ticker} ({market}) already exists. Use `/edit` to update.", parse_mode="Markdown"
+                )
+                return
+            session.add(PortfolioState(market=market, ticker=ticker, quantity=qty, avg_cost=price))
+            await session.commit()
+        await update.message.reply_text(
+            f"✅ Added: *{ticker}* ({market}) — {qty:,.0f} @ {price:,.0f}",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error("add_position_failed", error=str(e))
+        await update.message.reply_text(f"❌ Error: {str(e)}")
+
+
+async def remove_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /remove <market> <ticker>."""
+    if not _is_authorized(update):
+        return
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text("⚠️ Usage: `/remove <market> <ticker>`\nExample: `/remove IDX BBCA`", parse_mode="Markdown")
+        return
+
+    market, ticker = context.args[0].upper(), context.args[1].upper()
+
+    try:
+        from src.models.database import async_session
+        from src.models.tables import PortfolioState
+        from sqlalchemy import select
+
+        async with async_session() as session:
+            result = await session.execute(
+                select(PortfolioState).where(PortfolioState.market == market, PortfolioState.ticker == ticker)
+            )
+            pos = result.scalar_one_or_none()
+            if not pos:
+                await update.message.reply_text(f"⚠️ {ticker} ({market}) not found in portfolio.", parse_mode="Markdown")
+                return
+            await session.delete(pos)
+            await session.commit()
+        await update.message.reply_text(f"✅ Removed: *{ticker}* ({market})", parse_mode="Markdown")
+    except Exception as e:
+        logger.error("remove_position_failed", error=str(e))
+        await update.message.reply_text(f"❌ Error: {str(e)}")
+
+
+async def edit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /edit <market> <ticker> qty|price <value>."""
+    if not _is_authorized(update):
+        return
+    if not context.args or len(context.args) < 4:
+        await update.message.reply_text(
+            "⚠️ Usage: `/edit <market> <ticker> qty|price <value>`\nExample: `/edit IDX BBCA qty 600`",
+            parse_mode="Markdown"
+        )
+        return
+
+    market, ticker = context.args[0].upper(), context.args[1].upper()
+    field = context.args[2].lower()
+    value = Decimal(context.args[3].replace(",", ""))
+
+    if field not in ("qty", "quantity", "price", "avg_cost"):
+        await update.message.reply_text("⚠️ Field must be `qty` or `price`.", parse_mode="Markdown")
+        return
+
+    try:
+        from src.models.database import async_session
+        from src.models.tables import PortfolioState
+        from sqlalchemy import select
+
+        async with async_session() as session:
+            result = await session.execute(
+                select(PortfolioState).where(PortfolioState.market == market, PortfolioState.ticker == ticker)
+            )
+            pos = result.scalar_one_or_none()
+            if not pos:
+                await update.message.reply_text(f"⚠️ {ticker} ({market}) not found.", parse_mode="Markdown")
+                return
+            if field in ("qty", "quantity"):
+                pos.quantity = value
+            else:
+                pos.avg_cost = value
+            await session.commit()
+        await update.message.reply_text(
+            f"✅ Updated: *{ticker}* ({market}) — {field} = {value:,.0f}",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error("edit_position_failed", error=str(e))
+        await update.message.reply_text(f"❌ Error: {str(e)}")
+
+
+async def analyze_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /analyze or /analyze <ticker> — run portfolio analysis via LLM."""
+    if not _is_authorized(update):
+        return
+
+    orchestrator = context.bot_data.get("orchestrator")
+    if not orchestrator:
+        await update.message.reply_text("⚠️ System error: Orchestrator not connected.")
+        return
+
+    ticker = context.args[0].upper() if context.args else None
+    msg_text = f"🧠 Analyzing {'*' + ticker + '*' if ticker else 'portfolio'}..."
+    msg = await update.message.reply_text(msg_text, parse_mode="Markdown")
+
+    try:
+        from src.models.database import async_session
+        from src.models.tables import PortfolioState, CashBalance
+        from sqlalchemy import select
+
+        async with async_session() as session:
+            if ticker:
+                port_result = await session.execute(
+                    select(PortfolioState).where(PortfolioState.ticker == ticker)
+                )
+            else:
+                port_result = await session.execute(select(PortfolioState).order_by(PortfolioState.market, PortfolioState.ticker))
+            positions = port_result.scalars().all()
+
+            cash_result = await session.execute(select(CashBalance))
+            cash_balances = cash_result.scalars().all()
+
+        if not positions:
+            await msg.edit_text("⚠️ No positions to analyze. Use `/add` first.", parse_mode="Markdown")
+            return
+
+        # Build portfolio summary for the agent
+        portfolio_data = {
+            "cash": {c.currency: float(c.balance) for c in cash_balances},
+            "holdings": [
+                {"market": p.market, "ticker": p.ticker, "qty": float(p.quantity), "avg_cost": float(p.avg_cost)}
+                for p in positions
+            ],
+        }
+
+        result = await orchestrator.analyze_portfolio(portfolio_data)
+
+        if result.get("error"):
+            await msg.edit_text(f"❌ Analysis failed: {result['error']}")
+            return
+
+        # Format analysis
+        lines = [f"🧠 *Portfolio Analysis*\n━━━━━━━━━━━━━━━━"]
+
+        if result.get("portfolio_value"):
+            lines.append(f"💰 Value: {result['portfolio_value']:,.2f}")
+        if result.get("total_unrealized_pnl_pct") is not None:
+            emoji = "🟢" if result["total_unrealized_pnl_pct"] >= 0 else "🔴"
+            lines.append(f"{emoji} P&L: {result['total_unrealized_pnl_pct']:+.2f}%")
+        if result.get("cash_pct") is not None:
+            lines.append(f"💵 Cash: {result['cash_pct']:.1f}%")
+
+        lines.append("━━━━━━━━━━━━━━━━")
+
+        for h in result.get("holdings", []):
+            emoji = "🟢" if h.get("unrealized_pnl_pct", 0) >= 0 else "🔴"
+            lines.append(
+                f"*{h.get('ticker', '?')}* ({h.get('market', '?')})\n"
+                f"  {emoji} {h.get('unrealized_pnl_pct', 0):+.1f}% | "
+                f"Rec: {h.get('recommendation', 'HOLD')}\n"
+                f"  {h.get('reasoning', '')[:150]}"
+            )
+
+        if result.get("top_actions"):
+            lines.append("\n📌 *Top Actions:*")
+            for a in result["top_actions"][:3]:
+                lines.append(f"  • {a}")
+
+        if result.get("portfolio_risks"):
+            lines.append("\n⚠️ *Risks:*")
+            for r in result["portfolio_risks"][:3]:
+                lines.append(f"  • {r}")
+
+        await msg.edit_text("\n".join(lines)[:4000], parse_mode="Markdown")
+
+    except Exception as e:
+        logger.error("analyze_cmd_failed", error=str(e), exc_info=True)
+        await msg.edit_text(f"❌ Analysis error: {str(e)}")
 
 
 async def trades_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /trades command — show recent trades from Postgres."""
+    """Handle /trades command — placeholder since trade execution removed."""
     if not _is_authorized(update):
         return
-    from src.models.database import async_session
-    from src.models.tables import Trade
-    from sqlalchemy import select
-
-    async with async_session() as session:
-        result = await session.execute(
-            select(Trade).order_by(Trade.created_at.desc()).limit(10)
-        )
-        trades = result.scalars().all()
-
-    if not trades:
-        await update.message.reply_text(
-            "📋 *Recent Trades*\n━━━━━━━━━━━━━━━━\nNo trades yet.",
-            parse_mode="Markdown",
-        )
-        return
-
-    lines = ["📋 *Recent Trades*\n━━━━━━━━━━━━━━━━"]
-    for t in trades:
-        emoji = "✅" if t.status == "FILLED" else "❌" if t.status == "REJECTED" else "⏳"
-        price = f"@ {t.filled_price:,.0f}" if t.filled_price else ""
-        lines.append(f"{emoji} {t.side} {t.ticker} ({t.market}) — {t.quantity:.0f} {price} [{t.status}]")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-
-
-def format_trade_alert(signal: dict) -> tuple[str, InlineKeyboardMarkup]:
-    """Format a trade signal into a Telegram alert with action buttons."""
-    entry = signal.get("entry_price")
-    target = signal.get("target_price")
-    stop = signal.get("stop_loss_price")
-    risk_check = signal.get("risk_check", {})
-
-    rr = ""
-    if entry and target and stop:
-        risk = abs(entry - stop)
-        reward = abs(target - entry)
-        if risk > 0:
-            rr = f"{reward / risk:.1f}:1"
-
-    msg = (
-        f"🚨 *NEW TRADE SIGNAL: {signal.get('ticker')} ({signal.get('market')})*\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 Strategy: {signal.get('strategy')}\n"
-        f"📈 Direction: {signal.get('direction')}\n"
-        f"💰 Entry: {entry}\n"
-        f"🎯 Target: {target} {f'({rr})' if rr else ''}\n"
-        f"🛑 Stop Loss: {stop}\n"
-        f"🧠 Confidence: {signal.get('confidence_score', 0)}/100\n"
-        f"📉 Risk: {risk_check.get('risk_pct', 0):.1f}% of portfolio\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📝 {str(signal.get('reasoning', ''))[:200]}\n"
-        f"⏳ Expires in: 15 minutes"
+    await update.message.reply_text(
+        "📋 *Trade History*\n━━━━━━━━━━━━━━━━\nTrade execution removed. Karsa is now a portfolio tracker & analyst.",
+        parse_mode="Markdown",
     )
-
-    sid = signal.get("id", "unknown")
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ APPROVE", callback_data=f"approve:{sid}"),
-         InlineKeyboardButton("❌ REJECT", callback_data=f"reject:{sid}")],
-        [InlineKeyboardButton("✏️ MODIFY", callback_data=f"modify:{sid}"),
-         InlineKeyboardButton("📊 VIEW CHART", callback_data=f"chart:{sid}")],
-    ])
-
-    return msg, keyboard
-
-
-async def handle_approval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle inline button callbacks for trade approval.
-
-    Expects context.bot_data to contain:
-      - 'approval_manager': ApprovalManager instance
-      - 'brokers': dict[str, BaseBroker] keyed by market name
-    """
-    query = update.callback_query
-    await query.answer()
-
-    data = query.data
-    if not data or ":" not in data:
-        return
-
-    action, signal_id = data.split(":", 1)
-    logger.info("approval_callback", action=action, signal_id=signal_id)
-
-    approval_mgr = context.bot_data.get("approval_manager")
-    brokers = context.bot_data.get("brokers", {})
-
-    if not approval_mgr:
-        logger.error("approval_manager_not_configured")
-        await query.edit_message_text(text=query.message.text + "\n\n⚠️ *System error: approval manager not configured*", parse_mode="Markdown")
-        return
-
-    # P0-4: Look up signal market from DB to pick correct broker
-    from src.models.database import async_session
-    from src.models.tables import Signal
-    from sqlalchemy import select
-    import uuid as _uuid
-    async with async_session() as session:
-        sig_result = await session.execute(select(Signal).where(Signal.id == _uuid.UUID(signal_id)))
-        sig = sig_result.scalar_one_or_none()
-    market = sig.market if sig else "IDX"
-    broker = brokers.get(market) or brokers.get("IDX") or brokers.get("US")
-
-    if action == "approve":
-        result = await approval_mgr.process_approval(signal_id, "APPROVE", broker)
-        status_text = f"✅ *APPROVED* — Trade {result.get('trade', {}).get('status', 'submitted')}"
-        if result.get("error"):
-            status_text = f"⚠️ *APPROVAL FAILED*: {result['error']}"
-        await query.edit_message_text(text=query.message.text + f"\n\n{status_text}", parse_mode="Markdown")
-
-    elif action == "reject":
-        result = await approval_mgr.process_approval(signal_id, "REJECT", broker)
-        await query.edit_message_text(
-            text=query.message.text + "\n\n❌ *REJECTED*", parse_mode="Markdown")
-
-    elif action == "modify":
-        await query.edit_message_text(
-            text=query.message.text + "\n\n✏️ *MODIFY* — Reply with new price/qty.\nFormat: `/modify <signal_id> <new_price> <new_qty>`",
-            parse_mode="Markdown")
-
-    elif action == "chart":
-        await context.bot.send_message(
-            chat_id=query.message.chat_id,
-            text=f"📊 https://www.tradingview.com/chart/?symbol={signal_id}")

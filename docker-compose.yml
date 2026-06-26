@@ -1,4 +1,15 @@
 services:
+  # 1. ROUTING
+  9router:
+    image: 9router:latest
+    container_name: karsa-9router
+    ports:
+      - "20129:20128"
+    volumes:
+      - 9router-data:/app/data
+    networks: [trading-net]
+    restart: unless-stopped
+
   # 2. DATABASE & STATE
   redis:
     image: redis:7-alpine
@@ -40,7 +51,6 @@ services:
     container_name: karsa-orchestrator
     env_file: [.env]
     environment:
-      - ANTHROPIC_BASE_URL=http://host.docker.internal:20128/v1
       - REDIS_URL=redis://redis:6379
       - POSTGRES_URL=postgresql://trader:${DB_PASSWORD:-changeme}@postgres:5432/trading
       - TRADINGVIEW_MCP_URL=direct

@@ -117,6 +117,7 @@ docker exec karsa-orchestrator python3 -c "from src.config import settings; prin
 - `src/bot/handlers.py` — Telegram command handlers, `format_trade_alert()` builds inline keyboard
 - `src/data/cache.py` — Redis wrapper with pub/sub for signal/approval channels
 - `src/utils/rate_limit.py` — Lua-based token bucket in Redis
+- `src/agents/portfolio_analyst.py` — Analyzes holdings vs market data, suggests actions (no execution)
 - `src/backtest/engine.py` — RSI + Bollinger mean reversion backtester (Sharpe > 1.2 gate)
 - `graphify-out/` — committed knowledge graph; query before reading source files
 

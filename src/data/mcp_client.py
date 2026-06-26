@@ -31,13 +31,26 @@ class MCPClient:
 
     def __init__(self, cache: CacheManager):
         self.cache = cache
+        # In-memory cache to avoid hammering TradingView (429 rate limits)
+        # Key: (ticker, market, timeframe) → (analysis, timestamp)
+        self._ta_cache: dict[tuple, tuple] = {}
+        self._ta_cache_ttl = 60  # seconds
 
     async def close(self):
         pass
 
     def _get_ta(self, ticker: str, market: str, timeframe: str = "1D"):
+        import time
         _ensure_imports()
         TA_Handler, Interval = _ta_handler
+
+        # Check in-memory cache
+        cache_key = (ticker, market, timeframe)
+        if cache_key in self._ta_cache:
+            cached_analysis, cached_ts = self._ta_cache[cache_key]
+            if time.time() - cached_ts < self._ta_cache_ttl:
+                return cached_analysis
+
         interval_map = {
             "1m": Interval.INTERVAL_1_MINUTE, "5m": Interval.INTERVAL_5_MINUTES,
             "15m": Interval.INTERVAL_15_MINUTES, "1h": Interval.INTERVAL_1_HOUR,
@@ -55,10 +68,12 @@ class MCPClient:
         last_err = None
         for ex in exchanges:
             try:
-                return TA_Handler(
+                result = TA_Handler(
                     symbol=ticker, screener=screener, exchange=ex,
                     interval=interval_map.get(timeframe, Interval.INTERVAL_1_DAY),
                 ).get_analysis()
+                self._ta_cache[cache_key] = (result, time.time())
+                return result
             except Exception as e:
                 last_err = e
                 continue

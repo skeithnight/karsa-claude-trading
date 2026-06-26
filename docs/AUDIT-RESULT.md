@@ -128,7 +128,6 @@ services:
     container_name: karsa-orchestrator
     env_file: [.env]
     environment:
-      - ANTHROPIC_BASE_URL=http://karsa-9router:20128/v1
       - REDIS_URL=redis://redis:6379
       - POSTGRES_URL=postgresql://trader:${DB_PASSWORD}@postgres:5432/trading
     depends_on: [karsa-9router, redis, postgres, tradingview-mcp]

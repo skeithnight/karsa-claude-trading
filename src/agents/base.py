@@ -5,7 +5,7 @@ from typing import Any
 
 import anthropic
 
-from src.config import settings, LLM_BASE_URL, LLM_AUTH_TOKEN
+from src.config import LLM_MODEL, settings, LLM_BASE_URL, LLM_AUTH_TOKEN
 from src.data.mcp_client import MCPClient
 from src.utils.logging import get_logger
 from src.utils.rate_limit import RateLimiter
@@ -63,31 +63,71 @@ class BaseAgent:
                     logger.warning("agent_rate_limited", agent=self.name, iteration=iteration)
                     return {"error": "rate_limited", "agent": self.name}
 
-            try:
-                response = await self.client.messages.create(
-                    model=self.combo_name,
-                    max_tokens=4096,
-                    system=self.system_prompt,
-                    tools=self.tools,
-                    messages=messages,
-                )
-            except anthropic.RateLimitError:
-                logger.warning("api_rate_limit", agent=self.name, iteration=iteration)
-                return {"error": "api_rate_limited", "agent": self.name}
-            except anthropic.APIError as e:
-                logger.error("api_error", agent=self.name, error=str(e))
-                return {"error": "api_error", "detail": str(e), "agent": self.name}
+            response = None
+            for attempt in range(2):
+                try:
+                    response = await self.client.messages.create(
+                        model=self.combo_name,
+                        max_tokens=4096,
+                        system=self.system_prompt,
+                        tools=self.tools,
+                        messages=messages,
+                    )
+                except anthropic.RateLimitError:
+                    logger.warning("api_rate_limit", agent=self.name, iteration=iteration)
+                    return {"error": "api_rate_limited", "agent": self.name}
+                except anthropic.APIError as e:
+                    logger.error("api_error", agent=self.name, error=str(e))
+                    return {"error": "api_error", "detail": str(e), "agent": self.name}
+
+                content_blocks = getattr(response, "content", []) or []
+
+                # 9Router returns OpenAI format for Gemini — content=None, data in choices[]
+                choices = getattr(response, "choices", [])
+                if not content_blocks and choices:
+                    from anthropic.types import ToolUseBlock, TextBlock
+                    message = choices[0].get("message", {})
+                    # Extract tool calls
+                    for tc in message.get("tool_calls", []):
+                        func = tc.get("function", {})
+                        try:
+                            args = json.loads(func.get("arguments", "{}"))
+                        except Exception:
+                            args = {}
+                        content_blocks.append(ToolUseBlock(
+                            id=tc.get("id"), name=func.get("name"),
+                            input=args, type="tool_use"
+                        ))
+                    # Extract text content
+                    text = message.get("content")
+                    if text:
+                        content_blocks.append(TextBlock(text=text, type="text"))
+                    if content_blocks:
+                        response.content = content_blocks
+
+                if content_blocks:
+                    break
+                logger.warning("empty_response_retry", agent=self.name, iteration=iteration, attempt=attempt, model=self.combo_name, raw_response=str(response))
+            else:
+                logger.error("empty_response_final", agent=self.name, iteration=iteration, model=self.combo_name, raw_response=str(response))
+                return {"error": "Empty response from LLM after retries", "agent": self.name, "model": self.combo_name, "detail": str(response)}
+
+            stop = getattr(response, "stop_reason", None)
+            has_tool_use = any(getattr(b, "type", None) == "tool_use" for b in content_blocks)
 
             logger.info(
                 "agent_response",
                 agent=self.name,
                 iteration=iteration,
-                stop_reason=getattr(response, "stop_reason", None),
+                stop_reason=stop,
+                has_tool_use=has_tool_use,
+                content_len=len(content_blocks),
                 input_tokens=getattr(getattr(response, "usage", None), "input_tokens", None),
                 output_tokens=getattr(getattr(response, "usage", None), "output_tokens", None),
             )
 
-            if getattr(response, "stop_reason", None) == "end_turn":
+            # 9Router may omit stop_reason — treat no stop_reason + no tool_use as end_turn
+            if stop == "end_turn" or (not stop and not has_tool_use):
                 return self._extract_response(response)
 
             # Process tool calls
@@ -122,6 +162,7 @@ class BaseAgent:
 
     def _extract_response(self, response) -> dict[str, Any]:
         """Extract text and try to parse as JSON."""
+        import re
         text_parts = []
         content_blocks = getattr(response, "content", []) or []
         for block in content_blocks:
@@ -132,7 +173,10 @@ class BaseAgent:
         if not full_text:
             return {"error": "Empty response from LLM", "raw_response": str(response)}
 
+        # Strip markdown fences that LLMs wrap around JSON
+        clean_text = re.sub(r'^```(?:json)?\s*|\s*```$', '', full_text, flags=re.MULTILINE).strip()
+
         try:
-            return json.loads(full_text)
+            return json.loads(clean_text)
         except (json.JSONDecodeError, ValueError):
             return {"text": full_text, "agent": self.name}

@@ -4,8 +4,10 @@ from typing import Any
 
 from src.agents.base import BaseAgent
 from src.data.mcp_client import MCPClient
-from src.data.idx_adapter import IDXDataAdapter
 from src.utils.rate_limit import RateLimiter
+from src.utils.logging import get_logger
+
+logger = get_logger("idx_analyst")
 
 
 class IDXAnalyst(BaseAgent):
@@ -16,21 +18,20 @@ class IDXAnalyst(BaseAgent):
     """
 
     SYSTEM_PROMPT = """You are the IDX Analyst Agent for the Karsa Trading System.
-Analyze Indonesian stocks using the "Foreign Flow Breakout" strategy.
+Analyze Indonesian stocks for investment opportunities.
 
 STRATEGY RULES:
 1. Entry Signals:
-   - Foreign Net Buy: 3+ consecutive days of foreign net buying > 5% of daily volume.
    - Technical: Price breaks above the 20-day Bollinger Band upper limit with volume > 1.5x average.
-   - ARA Buffer: Entry price must be at least 2% below the daily Auto Rejection Upper (ARA) limit.
-2. Exit: Target +10% from entry. Stop loss -5% from entry. Scale out 50% at +10%.
+   - Trend: Price above 20-day moving average.
+2. Exit: Target +10% from entry. Stop loss -5% from entry.
 3. Position: Max 15% of portfolio per stock. Minimum 1 lot (100 shares).
 
 RESPOND WITH ONLY a valid JSON object:
 {
   "ticker": "BBCA",
   "market": "IDX",
-  "strategy": "Foreign Flow Breakout",
+  "strategy": "Technical Breakout",
   "direction": "LONG" | "CLOSE",
   "confidence_score": 0-100,
   "entry_price": float | null,
@@ -71,33 +72,13 @@ If criteria not met, return confidence_score < 50 with null prices."""
                 "required": ["ticker"],
             },
         },
-        {
-            "name": "get_foreign_flow",
-            "description": "Get recent foreign net buy/sell flow data for an IDX stock.",
-            "input_schema": {
-                "type": "object",
-                "properties": {"ticker": {"type": "string"}},
-                "required": ["ticker"],
-            },
-        },
-        {
-            "name": "get_ara_limit",
-            "description": "Get Auto Rejection (ARA/ARB) limits for an IDX stock.",
-            "input_schema": {
-                "type": "object",
-                "properties": {"ticker": {"type": "string"}},
-                "required": ["ticker"],
-            },
-        },
     ]
 
     def __init__(
         self,
         mcp: MCPClient,
-        idx_adapter: IDXDataAdapter,
         rate_limiter: RateLimiter | None = None,
     ):
-        self.idx_adapter = idx_adapter
         super().__init__(
             name="idx_analyst",
             combo_name="karsa-routine",
@@ -108,6 +89,7 @@ If criteria not met, return confidence_score < 50 with null prices."""
         )
 
     async def _handle_tool_call(self, tool_name: str, tool_input: dict) -> Any:
+        logger.info("tool_call", agent=self.name, tool=tool_name, input=tool_input)
         ticker = tool_input.get("ticker", "")
 
         if tool_name == "get_idx_quote":
@@ -118,9 +100,5 @@ If criteria not met, return confidence_score < 50 with null prices."""
             )
         elif tool_name == "get_bollinger":
             return await self.mcp.get_bollinger(ticker, "IDX")
-        elif tool_name == "get_foreign_flow":
-            return await self.idx_adapter.get_foreign_flow(ticker)
-        elif tool_name == "get_ara_limit":
-            return await self.idx_adapter.get_ara_limit(ticker)
 
         return {"error": f"Unknown tool: {tool_name}"}

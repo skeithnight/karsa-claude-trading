@@ -13,21 +13,10 @@ class Settings(BaseSettings):
     NROUTER_AUTH_TOKEN: str = Field(default="", alias="9ROUTER_AUTH_TOKEN")
     NROUTER_MODEL: str = Field(default="", alias="9ROUTER_MODEL")
 
-    ANTHROPIC_BASE_URL: str = "http://karsa-9router:20128/v1"
-    ANTHROPIC_AUTH_TOKEN: str = "9router_internal_token"
-    ANTHROPIC_MODEL: str = "claude-3-5-sonnet-20241022"
-
     # Database & State
     REDIS_URL: str = "redis://redis:6379"
     POSTGRES_URL: str = "postgresql://trader:changeme@postgres:5432/trading"
     DB_PASSWORD: str = "changeme"
-
-    # Broker APIs
-    IDX_BROKER_API_URL: str = "https://api.broker.co.id/v1"
-    IDX_BROKER_TOKEN: str = ""
-    US_BROKER_API_URL: str = "https://api.alpaca.markets/v2"
-    US_BROKER_KEY: str = ""
-    US_BROKER_SECRET: str = ""
 
     # Telegram
     TELEGRAM_TOKEN: str = ""
@@ -37,11 +26,6 @@ class Settings(BaseSettings):
 
     # Market Data
     TRADINGVIEW_MCP_URL: str = "http://tradingview-mcp:8080"
-    IDX_DATA_API_URL: str = "https://api.stockbit.com/v1"
-    IDX_DATA_API_KEY: str = ""
-
-    # Trading Mode
-    TRADING_MODE: str = "paper"  # "paper" = mock execution, "live" = real broker calls
 
     # Trading Parameters
     MAX_PORTFOLIO_RISK_PCT: float = 2.0
@@ -64,6 +48,9 @@ class Settings(BaseSettings):
 settings = Settings()
 
 # Resolved LLM config — 9ROUTER_* takes priority over ANTHROPIC_*
-LLM_BASE_URL = settings.NROUTER_BASE_URL or settings.ANTHROPIC_BASE_URL
-LLM_AUTH_TOKEN = settings.NROUTER_AUTH_TOKEN or settings.ANTHROPIC_AUTH_TOKEN
-LLM_MODEL = settings.NROUTER_MODEL or settings.ANTHROPIC_MODEL
+# NOTE: Anthropic SDK appends /v1/messages to base_url automatically.
+# Strip trailing /v1 to avoid double /v1/v1/messages.
+_raw_url = settings.NROUTER_BASE_URL
+LLM_BASE_URL = _raw_url.rstrip("/").removesuffix("/v1")
+LLM_AUTH_TOKEN = settings.NROUTER_AUTH_TOKEN
+LLM_MODEL = settings.NROUTER_MODEL
