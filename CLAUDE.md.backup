@@ -113,6 +113,7 @@ docker exec karsa-orchestrator python3 -c "from src.config import settings; prin
 
 - `src/agents/orchestrator.py` — universe lists (IDX_UNIVERSE, US_UNIVERSE, ETF_UNIVERSE), combo name assignment, parallel market scan
 - `src/agents/base.py` — Anthropic SDK tool-use loop, `getattr()` guards for 9Router response quirks
+- `src/bot/approval.py` — HITL lifecycle: PendingApproval → Trade → AuditLog, expiry via scheduler
 - `src/bot/handlers.py` — Telegram command handlers, `format_trade_alert()` builds inline keyboard
 - `src/data/cache.py` — Redis wrapper with pub/sub for signal/approval channels
 - `src/utils/rate_limit.py` — Lua-based token bucket in Redis

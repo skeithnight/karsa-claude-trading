@@ -1,6 +1,6 @@
 """Karsa Trading System - Telegram Bot Command Handlers"""
 
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from telegram import Update
 from telegram.ext import ContextTypes
 import httpx
@@ -9,6 +9,26 @@ from src.config import settings, LLM_BASE_URL
 from src.utils.logging import get_logger
 
 logger = get_logger("telegram_handlers")
+
+
+def parse_decimal(raw: str) -> Decimal:
+    """Parse number string handling both comma and dot as decimal separator.
+
+    Rules:
+    - Contains both . and , → last one is decimal separator (1,234.56 or 1.234,56)
+    - Contains only , → decimal separator (0,006421695)
+    - Contains only . → decimal separator (0.006421695)
+    - Neither → integer
+    """
+    raw = raw.strip()
+    if "," in raw and "." in raw:
+        if raw.rfind(",") > raw.rfind("."):
+            raw = raw.replace(".", "").replace(",", ".")
+        else:
+            raw = raw.replace(",", "")
+    elif "," in raw:
+        raw = raw.replace(",", ".")
+    return Decimal(raw)
 
 
 def _is_authorized(update: Update) -> bool:
@@ -31,6 +51,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/add cash <currency> <amount> - Set cash balance\n"
         "/remove <market> <ticker> - Remove position\n"
         "/edit <market> <ticker> qty|price <value> - Edit position\n"
+        "/edit cash <currency> <amount> - Edit cash balance\n"
         "/analyze - Analyze entire portfolio vs market\n"
         "/analyze <ticker> - Deep dive on single holding\n"
         "/scan <market> <ticker> - Quick market readout\n"
@@ -159,12 +180,16 @@ async def portfolio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not positions:
         lines.append("No positions open.")
     else:
-        for p in positions:
-            pnl = ""
-            if p.unrealized_pnl and p.unrealized_pnl != 0:
-                emoji = "🟢" if p.unrealized_pnl > 0 else "🔴"
-                pnl = f" {emoji} {p.unrealized_pnl:,.0f}"
-            lines.append(f"*{p.ticker}* ({p.market}) — {p.quantity:,.0f} @ {p.avg_cost:,.0f}{pnl}")
+        # Group by market
+        from itertools import groupby
+        for market, market_positions in groupby(positions, key=lambda p: p.market):
+            lines.append(f"\n📈 *{market} Market*")
+            for p in market_positions:
+                pnl = ""
+                if p.unrealized_pnl and p.unrealized_pnl != 0:
+                    emoji = "🟢" if p.unrealized_pnl > 0 else "🔴"
+                    pnl = f" {emoji} {p.unrealized_pnl:,.0f}"
+                lines.append(f"*{p.ticker}* — {p.quantity:,.4f} @ {p.avg_cost:,.2f}{pnl}")
 
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
@@ -190,7 +215,7 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ Usage: `/add cash IDR 50000000`", parse_mode="Markdown")
             return
         currency = args[1].upper()
-        amount = Decimal(args[2].replace(",", "").replace(".", ""))
+        amount = parse_decimal(args[2])
         try:
             from src.models.database import async_session
             from src.models.tables import CashBalance
@@ -217,8 +242,8 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     market = args[0].upper()
     ticker = args[1].upper()
-    qty = Decimal(args[2].replace(",", ""))
-    price = Decimal(args[3].replace(",", ""))
+    qty = parse_decimal(args[2])
+    price = parse_decimal(args[3])
 
     try:
         from src.models.database import async_session
@@ -238,7 +263,7 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             session.add(PortfolioState(market=market, ticker=ticker, quantity=qty, avg_cost=price))
             await session.commit()
         await update.message.reply_text(
-            f"✅ Added: *{ticker}* ({market}) — {qty:,.0f} @ {price:,.0f}",
+            f"✅ Added: *{ticker}* ({market}) — {qty} @ {price}",
             parse_mode="Markdown"
         )
     except Exception as e:
@@ -278,19 +303,57 @@ async def remove_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def edit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /edit <market> <ticker> qty|price <value>."""
+    """Handle /edit <market> <ticker> qty|price <value> or /edit cash <currency> <amount>."""
     if not _is_authorized(update):
         return
-    if not context.args or len(context.args) < 4:
+    if not context.args or len(context.args) < 3:
+        await update.message.reply_text(
+            "⚠️ Usage:\n"
+            "`/edit <market> <ticker> qty|price <value>` - Edit position\n"
+            "`/edit cash <currency> <amount>` - Edit cash balance",
+            parse_mode="Markdown"
+        )
+        return
+
+    args = context.args
+
+    # /edit cash IDR 50000000
+    if args[0].upper() == "CASH":
+        if len(args) < 3:
+            await update.message.reply_text("⚠️ Usage: `/edit cash IDR 50000000`", parse_mode="Markdown")
+            return
+        currency = args[1].upper()
+        amount = parse_decimal(args[2])
+        try:
+            from src.models.database import async_session
+            from src.models.tables import CashBalance
+            from sqlalchemy import select
+
+            async with async_session() as session:
+                result = await session.execute(select(CashBalance).where(CashBalance.currency == currency))
+                cash = result.scalar_one_or_none()
+                if not cash:
+                    await update.message.reply_text(f"⚠️ No cash balance found for {currency}. Use `/add cash {currency} <amount>`.", parse_mode="Markdown")
+                    return
+                cash.balance = amount
+                await session.commit()
+            await update.message.reply_text(f"✅ Cash balance updated: {amount:,.2f} {currency}", parse_mode="Markdown")
+        except Exception as e:
+            logger.error("edit_cash_failed", error=str(e))
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+        return
+
+    # /edit IDX BBCA qty 600
+    if len(args) < 4:
         await update.message.reply_text(
             "⚠️ Usage: `/edit <market> <ticker> qty|price <value>`\nExample: `/edit IDX BBCA qty 600`",
             parse_mode="Markdown"
         )
         return
 
-    market, ticker = context.args[0].upper(), context.args[1].upper()
-    field = context.args[2].lower()
-    value = Decimal(context.args[3].replace(",", ""))
+    market, ticker = args[0].upper(), args[1].upper()
+    field = args[2].lower()
+    value = parse_decimal(args[3])
 
     if field not in ("qty", "quantity", "price", "avg_cost"):
         await update.message.reply_text("⚠️ Field must be `qty` or `price`.", parse_mode="Markdown")
@@ -315,7 +378,7 @@ async def edit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pos.avg_cost = value
             await session.commit()
         await update.message.reply_text(
-            f"✅ Updated: *{ticker}* ({market}) — {field} = {value:,.0f}",
+            f"✅ Updated: *{ticker}* ({market}) — {field} = {value}",
             parse_mode="Markdown"
         )
     except Exception as e:
