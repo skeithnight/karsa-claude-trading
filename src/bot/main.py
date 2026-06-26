@@ -13,7 +13,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 
 from src.config import settings
-from src.bot.handlers import start_cmd, status_cmd, handle_approval_callback
+from src.bot.handlers import start_cmd, status_cmd, scan_cmd, portfolio_cmd, trades_cmd, handle_approval_callback
 from src.bot.approval import ApprovalManager
 from src.data.cache import CacheManager
 from src.execution.idx_broker import IDXBroker
@@ -33,15 +33,29 @@ async def lifespan(app: FastAPI):
 
     telegram_app.add_handler(CommandHandler("start", start_cmd))
     telegram_app.add_handler(CommandHandler("status", status_cmd))
+    telegram_app.add_handler(CommandHandler("scan", scan_cmd))
+    telegram_app.add_handler(CommandHandler("portfolio", portfolio_cmd))
+    telegram_app.add_handler(CommandHandler("trades", trades_cmd))
     telegram_app.add_handler(CallbackQueryHandler(handle_approval_callback))
 
-    # Wire up approval manager and brokers into bot_data
+    # Wire up approval manager, orchestrator, and brokers into bot_data
     redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
     cache = CacheManager(redis_client)
+
+    from src.data.mcp_client import MCPClient
+    from src.data.idx_adapter import IDXDataAdapter
+    from src.utils.rate_limit import RateLimiter
+    from src.agents.orchestrator import Orchestrator
+    mcp = MCPClient(cache)
+    idx_adapter = IDXDataAdapter(cache)
+    rl = RateLimiter(redis_client)
+    orch = Orchestrator(mcp, idx_adapter, cache, rl)
+
     approval_mgr = ApprovalManager(cache, async_session)
     brokers = {"IDX": IDXBroker(), "US": USBroker()}
 
     telegram_app.bot_data["approval_manager"] = approval_mgr
+    telegram_app.bot_data["orchestrator"] = orch
     telegram_app.bot_data["brokers"] = brokers
 
     await telegram_app.initialize()
@@ -56,8 +70,11 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    if telegram_app.updater and telegram_app.updater.is_running:
-        await telegram_app.updater.stop()
+    try:
+        if telegram_app.updater:
+            await telegram_app.updater.stop()
+    except Exception:
+        pass
     await telegram_app.stop()
     await telegram_app.shutdown()
     for b in brokers.values():
@@ -109,3 +126,8 @@ async def telegram_webhook(request: Request):
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8443)

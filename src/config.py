@@ -7,7 +7,12 @@ from pydantic import Field
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
-    # 9Router & LLM
+    # 9Router & LLM — reads 9ROUTER_* from env, falls back to ANTHROPIC_*
+    NROUTER_ENABLED: bool = Field(default=True, alias="9ROUTER_ENABLED")
+    NROUTER_BASE_URL: str = Field(default="", alias="9ROUTER_BASE_URL")
+    NROUTER_AUTH_TOKEN: str = Field(default="", alias="9ROUTER_AUTH_TOKEN")
+    NROUTER_MODEL: str = Field(default="", alias="9ROUTER_MODEL")
+
     ANTHROPIC_BASE_URL: str = "http://karsa-9router:20128/v1"
     ANTHROPIC_AUTH_TOKEN: str = "9router_internal_token"
     ANTHROPIC_MODEL: str = "claude-3-5-sonnet-20241022"
@@ -49,10 +54,13 @@ class Settings(BaseSettings):
     def redis_rate_limit_key(self) -> str:
         return f"{self.REDIS_PREFIX}:ratelimit"
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    model_config = {"populate_by_name": True, "env_file": ".env", "env_file_encoding": "utf-8"}
 
 
 # Global settings instance
 settings = Settings()
+
+# Resolved LLM config — 9ROUTER_* takes priority over ANTHROPIC_*
+LLM_BASE_URL = settings.NROUTER_BASE_URL or settings.ANTHROPIC_BASE_URL
+LLM_AUTH_TOKEN = settings.NROUTER_AUTH_TOKEN or settings.ANTHROPIC_AUTH_TOKEN
+LLM_MODEL = settings.NROUTER_MODEL or settings.ANTHROPIC_MODEL

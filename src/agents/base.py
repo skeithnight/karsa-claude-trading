@@ -5,7 +5,7 @@ from typing import Any
 
 import anthropic
 
-from src.config import settings
+from src.config import settings, LLM_BASE_URL, LLM_AUTH_TOKEN
 from src.data.mcp_client import MCPClient
 from src.utils.logging import get_logger
 from src.utils.rate_limit import RateLimiter
@@ -40,8 +40,8 @@ class BaseAgent:
         self.max_iterations = max_iterations
 
         self.client = anthropic.AsyncAnthropic(
-            base_url=settings.ANTHROPIC_BASE_URL,
-            api_key=settings.ANTHROPIC_AUTH_TOKEN,
+            base_url=LLM_BASE_URL,
+            api_key=LLM_AUTH_TOKEN,
         )
 
     async def run(self, task: str) -> dict[str, Any]:
@@ -82,18 +82,19 @@ class BaseAgent:
                 "agent_response",
                 agent=self.name,
                 iteration=iteration,
-                stop_reason=response.stop_reason,
-                input_tokens=response.usage.input_tokens,
-                output_tokens=response.usage.output_tokens,
+                stop_reason=getattr(response, "stop_reason", None),
+                input_tokens=getattr(getattr(response, "usage", None), "input_tokens", None),
+                output_tokens=getattr(getattr(response, "usage", None), "output_tokens", None),
             )
 
-            if response.stop_reason == "end_turn":
+            if getattr(response, "stop_reason", None) == "end_turn":
                 return self._extract_response(response)
 
             # Process tool calls
             tool_results = []
-            for block in response.content:
-                if block.type == "tool_use":
+            content_blocks = getattr(response, "content", []) or []
+            for block in content_blocks:
+                if getattr(block, "type", None) == "tool_use":
                     result = await self._handle_tool_call(block.name, block.input)
                     tool_results.append({
                         "type": "tool_result",
@@ -122,11 +123,14 @@ class BaseAgent:
     def _extract_response(self, response) -> dict[str, Any]:
         """Extract text and try to parse as JSON."""
         text_parts = []
-        for block in response.content:
+        content_blocks = getattr(response, "content", []) or []
+        for block in content_blocks:
             if hasattr(block, "text"):
                 text_parts.append(block.text)
 
         full_text = "\n".join(text_parts)
+        if not full_text:
+            return {"error": "Empty response from LLM", "raw_response": str(response)}
 
         try:
             return json.loads(full_text)

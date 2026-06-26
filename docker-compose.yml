@@ -1,21 +1,4 @@
 services:
-  # 1. API GATEWAY
-  karsa-9router:
-    image: decolua/9router:latest
-    container_name: karsa-9router
-    ports:
-      - "20128:20128"
-    volumes:
-      - ./9router-config.yaml:/app/config.yaml
-      - 9router-data:/app/data
-    networks: [trading-net]
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:20128/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
   # 2. DATABASE & STATE
   redis:
     image: redis:7-alpine
@@ -49,22 +32,7 @@ services:
       timeout: 10s
       retries: 3
 
-  # 3. DATA LAYER
-  tradingview-mcp:
-    image: python:3.11-slim
-    container_name: karsa-tradingview-mcp
-    command: >
-      sh -c "pip install tradingview-mcp-server && tradingview-mcp --port 8080"
-    environment:
-      - TRADINGVIEW_MARKET=stocks,etf,forex
-      - IDX_SUFFIX=.JK
-      - US_MARKETS=NYSE,NASDAQ
-    ports:
-      - "8080:8080"
-    networks: [trading-net]
-    restart: unless-stopped
-
-  # 4. ORCHESTRATION & AGENTS
+  # 3. ORCHESTRATION & AGENTS
   karsa-orchestrator:
     build:
       context: .
@@ -72,13 +40,11 @@ services:
     container_name: karsa-orchestrator
     env_file: [.env]
     environment:
-      - ANTHROPIC_BASE_URL=http://karsa-9router:20128/v1
+      - ANTHROPIC_BASE_URL=http://host.docker.internal:20128/v1
       - REDIS_URL=redis://redis:6379
       - POSTGRES_URL=postgresql://trader:${DB_PASSWORD:-changeme}@postgres:5432/trading
-      - TRADINGVIEW_MCP_URL=http://tradingview-mcp:8080
+      - TRADINGVIEW_MCP_URL=direct
     depends_on:
-      karsa-9router:
-        condition: service_healthy
       redis:
         condition: service_healthy
       postgres:

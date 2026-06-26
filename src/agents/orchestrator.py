@@ -14,8 +14,12 @@ from src.data.idx_adapter import IDXDataAdapter
 from src.data.cache import CacheManager
 from src.utils.rate_limit import RateLimiter
 from src.utils.logging import get_logger
+from src.config import settings
 
 logger = get_logger("orchestrator")
+
+CRITICAL_COMBO = settings.NROUTER_MODEL or "karsa-critical"
+ROUTINE_COMBO = settings.NROUTER_MODEL or "karsa-routine"
 
 IDX_UNIVERSE = ["BBCA", "BBRI", "BMRI", "TLKM", "ASII", "UNVR", "BBNI", "ICBP", "KLBF", "PGAS"]
 US_UNIVERSE = ["NVDA", "AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "AVGO", "LLY", "JPM"]
@@ -31,9 +35,13 @@ class Orchestrator:
         self.cache = cache
         self.rate_limiter = rate_limiter
         self.idx_agent = IDXAnalyst(mcp, idx_adapter, rate_limiter)
+        self.idx_agent.combo_name = ROUTINE_COMBO
         self.us_agent = USAnalyst(mcp, rate_limiter)
+        self.us_agent.combo_name = ROUTINE_COMBO
         self.etf_agent = ETFAnalyst(mcp, rate_limiter)
+        self.etf_agent.combo_name = ROUTINE_COMBO
         self.risk_manager = RiskManager(mcp, rate_limiter)
+        self.risk_manager.combo_name = CRITICAL_COMBO
 
     async def scan_all_markets(self) -> list[dict]:
         """Run all market scans in parallel and return validated signals."""

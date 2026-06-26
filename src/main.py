@@ -6,7 +6,7 @@ import sys
 
 import redis.asyncio as redis
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+from apscheduler.jobstores.memory import MemoryJobStore
 
 from src.config import settings
 from src.models.database import init_db, close_db, DATABASE_URL
@@ -65,9 +65,11 @@ class KarsaApp:
         self.approval_manager = ApprovalManager(self.cache, async_session)
         logger.info("orchestrator_ready")
 
-        # APScheduler with Postgres job store
+        # APScheduler with in-memory job store
+        # ponytail: jobs are stateless scans, no persistence needed across restarts.
+        # Switch to SQLAlchemyJobStore + psycopg2-binary if you need jobs to survive restarts.
         jobstores = {
-            "default": SQLAlchemyJobStore(url=SYNC_DB_URL),
+            "default": MemoryJobStore(),
         }
         self.scheduler = AsyncIOScheduler(jobstores=jobstores)
         self._register_jobs()

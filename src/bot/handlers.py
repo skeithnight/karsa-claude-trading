@@ -20,6 +20,56 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /scan <market> <ticker> command."""
+    logger.info("scan_cmd_received", user=update.effective_user.id, args=context.args)
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "⚠️ Usage: `/scan <market> <ticker>`\n"
+            "Example: `/scan IDX BBCA`",
+            parse_mode="Markdown"
+        )
+        return
+
+    market = context.args[0].upper()
+    ticker = context.args[1].upper()
+
+    msg = await update.message.reply_text(f"🔍 Scanning {ticker} ({market})...")
+    logger.info("scan_cmd_started", market=market, ticker=ticker)
+
+    # Orchestrator is passed via bot_data
+    orchestrator = context.bot_data.get("orchestrator")
+    if not orchestrator:
+        logger.error("scan_cmd_no_orchestrator")
+        await msg.edit_text("⚠️ System error: Orchestrator not connected.")
+        return
+
+    try:
+        result = await orchestrator.scan_single(market, ticker)
+        logger.info("scan_cmd_finished", result=result.get("status", "ok") if isinstance(result, dict) else "unknown")
+
+        if result.get("error"):
+            await msg.edit_text(f"❌ Scan failed: {result['error']}\n\nDetail: {result.get('detail', '')}")
+            return
+
+        if result.get("confidence_score", 0) < 60:
+            await msg.edit_text(
+                f"ℹ️ Scan complete for {ticker}.\n\n"
+                f"No strong trade setup found.\n"
+                f"Confidence: {result.get('confidence_score', 0)}/100\n"
+                f"Reasoning: {result.get('reasoning', 'No clear setup.')}"
+            )
+            return
+
+        # High confidence -> format as alert
+        alert_text, keyboard = format_trade_alert(result)
+        await msg.edit_text(text=alert_text, reply_markup=keyboard, parse_mode="Markdown")
+
+    except Exception as e:
+        logger.error("scan_cmd_failed", error=str(e), exc_info=True)
+        await msg.edit_text(f"❌ Scan error: {str(e)}")
+
+
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ponytail: real status from Redis/Postgres once wired up
     await update.message.reply_text(
@@ -28,6 +78,62 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🟢 MCP: Connected\n🟢 Redis: Connected\n🟢 PostgreSQL: Connected\n",
         parse_mode="Markdown",
     )
+
+
+async def portfolio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /portfolio command — show current positions from Postgres."""
+    from src.models.database import async_session
+    from src.models.tables import PortfolioState
+    from sqlalchemy import select
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(PortfolioState).order_by(PortfolioState.last_synced_at.desc())
+        )
+        positions = result.scalars().all()
+
+    if not positions:
+        await update.message.reply_text(
+            "💼 *Portfolio*\n━━━━━━━━━━━━━━━━\nNo positions open.",
+            parse_mode="Markdown",
+        )
+        return
+
+    lines = ["💼 *Portfolio*\n━━━━━━━━━━━━━━━━"]
+    for p in positions:
+        pnl = ""
+        if p.unrealized_pnl and p.unrealized_pnl != 0:
+            emoji = "🟢" if p.unrealized_pnl > 0 else "🔴"
+            pnl = f" {emoji} {p.unrealized_pnl:,.0f}"
+        lines.append(f"*{p.ticker}* ({p.market}) — {p.quantity:.0f} @ {p.avg_cost:,.0f}{pnl}")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def trades_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /trades command — show recent trades from Postgres."""
+    from src.models.database import async_session
+    from src.models.tables import Trade
+    from sqlalchemy import select
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(Trade).order_by(Trade.created_at.desc()).limit(10)
+        )
+        trades = result.scalars().all()
+
+    if not trades:
+        await update.message.reply_text(
+            "📋 *Recent Trades*\n━━━━━━━━━━━━━━━━\nNo trades yet.",
+            parse_mode="Markdown",
+        )
+        return
+
+    lines = ["📋 *Recent Trades*\n━━━━━━━━━━━━━━━━"]
+    for t in trades:
+        emoji = "✅" if t.status == "FILLED" else "❌" if t.status == "REJECTED" else "⏳"
+        price = f"@ {t.filled_price:,.0f}" if t.filled_price else ""
+        lines.append(f"{emoji} {t.side} {t.ticker} ({t.market}) — {t.quantity:.0f} {price} [{t.status}]")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 def format_trade_alert(signal: dict) -> tuple[str, InlineKeyboardMarkup]:
