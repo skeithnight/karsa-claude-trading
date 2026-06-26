@@ -1,0 +1,138 @@
+CLAUDE.md
+  9fedfb224d016fbd 120
+src/agents/portfolio_analyst.py
+  bb03ecf29d4a0e06 1-135
+src/main.py
+  bb03ecf29d4a0e06 149
+src/agents/idx_analyst.py
+  bb03ecf29d4a0e06 8-10,21,26-27,34,92
+.env.example
+  6ef76fb46a6f8552 8
+docker-compose.yml
+  5eea6b95415b5df5 2-6,8-12
+docs/audit-26Jun.md
+  07da8932ed7a2c55 253,255,257-261,263,265,267
+  bb03ecf29d4a0e06 1,3-7,11,13-19,21,25,27,29,31-42,44-56,58-62,66,69-89,92-107,110,112,114-122,124,126,129-160,165,167,169-173,175,177-180,184,186,188-206,210-235,239,241-247,249,273,275-276
+  05f0f6f1e2c9c9e9 68,108,161
+AGENTS.md
+  9fedfb224d016fbd 1-21
+src/bot/main.py
+  bb03ecf29d4a0e06 14,17-20,40-43,45,54
+src/data/mcp_client.py
+  1a36c159d1397dde 34-37,43,46-53,71,75-76
+src/bot/handlers.py
+  1a36c159d1397dde 6,8,103-118,123,137-140,142-146
+  bb03ecf29d4a0e06 3-4,15,27,29-37,47,50,65-72,81-102,121-122,124,130,134,150-156,158,160-168,172-173,176,178-181,185,187-211,213-215,218-221,223-226,228-239,241-242,244-246,249-254,257,259-262,264-277,280-289,291-293,295-296,299-323,326-328,331-334,336-338,340-359,361-371,373-408,410-422
+src/agents/base.py
+  5eea6b95415b5df5 66-81,83,108-109,111,114
+  6ef76fb46a6f8552 115-116,122-124,129-130
+  bb03ecf29d4a0e06 165,176-178,180
+  1a36c159d1397dde 84-107,110,112-113
+src/config.py
+  6ef76fb46a6f8552 54
+  07da8932ed7a2c55 51-53
+db/init.sql
+  bb03ecf29d4a0e06 3,12-13,18-27
+src/agents/orchestrator.py
+  bb03ecf29d4a0e06 11,31,35,41-42,45,69-70,96-100
+src/models/tables.py
+  bb03ecf29d4a0e06 14-28,30,40-41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "513f8cd82e2815844eef641cad07c5e0d9aaa7ad",
+  "prompts": {
+    "05f0f6f1e2c9c9e9": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "5da73119-48ba-442b-96e1-e4f7ed1df2f1",
+        "model": "default"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 151,
+      "total_deletions": 9,
+      "accepted_lines": 35,
+      "overriden_lines": 0
+    },
+    "07da8932ed7a2c55": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "37331bf4-ee6c-4080-86b2-514bb345d86c",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 22,
+      "total_deletions": 1,
+      "accepted_lines": 21,
+      "overriden_lines": 0
+    },
+    "1a36c159d1397dde": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "44fd0558-a813-41a5-89eb-fc9e578a7627",
+        "model": "gemini-pro-default"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 97,
+      "total_deletions": 35,
+      "accepted_lines": 72,
+      "overriden_lines": 0
+    },
+    "5eea6b95415b5df5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d67429e8-04df-446b-b9fd-518e593b8614",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 35,
+      "total_deletions": 15,
+      "accepted_lines": 31,
+      "overriden_lines": 1
+    },
+    "6ef76fb46a6f8552": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f09b7ae0-109e-46c2-9063-77c40e52fa48",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 11,
+      "total_deletions": 4,
+      "accepted_lines": 10,
+      "overriden_lines": 0
+    },
+    "9fedfb224d016fbd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5111566e-0586-4b38-855a-3ada1913027e",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 22,
+      "total_deletions": 0,
+      "accepted_lines": 22,
+      "overriden_lines": 0
+    },
+    "bb03ecf29d4a0e06": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "60742c7d-f0b8-4f69-833f-1c7778d81056",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 717,
+      "total_deletions": 713,
+      "accepted_lines": 710,
+      "overriden_lines": 0
+    }
+  }
+}
