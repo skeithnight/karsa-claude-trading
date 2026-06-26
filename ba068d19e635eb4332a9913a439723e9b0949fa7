@@ -1,0 +1,74 @@
+src/bot/main.py
+  2411e2a7cab2832f 19-20,45-51
+src/utils/telegram_helpers.py
+  2411e2a7cab2832f 1-108
+src/main.py
+  afbe51a3a3bd4a90 78-79,83-102,106,124-129,132-133,136-137,141,144-145,149,151-154,157-158,166,174,178,182-189,192,195,198-200,237-238,240,244,259-269,271
+  2411e2a7cab2832f 73-77,80-82,103-105,107-120,167-173,176-177,190-191,193-194,196-197,236,239,241-243,245-258,270,272-273,279-314
+src/data/mcp_client.py
+  2411e2a7cab2832f 58,109,111,135
+  afbe51a3a3bd4a90 3-11,14-16,19-20,28-33,35-38,51,55,57,59-66,68-69,72-94,97-98,105,108,110,126,131,136,140-167,169-215,217-218,222-227,230,233,237,254-268
+src/agents/orchestrator.py
+  afbe51a3a3bd4a90 96-97
+  2411e2a7cab2832f 95,98-99,102-128
+src/agents/portfolio_analyst.py
+  2411e2a7cab2832f 26-29,31,56
+src/models/schemas.py
+  2411e2a7cab2832f 31-33,80-81,85,87-92,95-96,103-118,123-131
+src/bot/handlers.py
+  2411e2a7cab2832f 44,50-56,60-69,71-81,90,94,109,113,115,162-163,165-171,182-183,187-211,215-221,231-232,243,246-247,249-250,252-255,257,259-261,264-265,267-282,284-290,292-300,302,310,323,343,346,351,370,376,382,390,406,410,413,421,434,450,454,457,462,473,487,494,500,510,515,553-555,557,560-587,590-591,593,596,598,600-605,607,615,618-996
+  afbe51a3a3bd4a90 43,45-49,164,172-181,184-186,212-214,326-328,437-439
+src/agents/us_analyst.py
+  2411e2a7cab2832f 21-23,26,38
+src/models/__init__.py
+  2411e2a7cab2832f 1-13
+src/advisory/sizing.py
+  2411e2a7cab2832f 1-47
+src/agents/etf_analyst.py
+  2411e2a7cab2832f 22,25-27,39
+src/models/tables.py
+  2411e2a7cab2832f 69,80-82,85,90-100,102-108,110-129,132-133
+db/init.sql
+  2411e2a7cab2832f 47-48,53,55-86,137-140
+src/config.py
+  afbe51a3a3bd4a90 29-31
+docker-compose.yml
+  afbe51a3a3bd4a90 53-54
+src/advisory/regime.py
+  2411e2a7cab2832f 1-106
+src/agents/idx_analyst.py
+  2411e2a7cab2832f 24-26,29,41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "ba068d19e635eb4332a9913a439723e9b0949fa7",
+  "prompts": {
+    "2411e2a7cab2832f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e03ef5c0-f707-4921-8ae9-cbdabc84a2e0",
+        "model": "gemini-pro-default"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 1419,
+      "total_deletions": 424,
+      "accepted_lines": 1150,
+      "overriden_lines": 0
+    },
+    "afbe51a3a3bd4a90": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c6f492cd-88f6-4764-99c9-b521887fc4f9",
+        "model": "gemini-pro-default"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 301,
+      "total_deletions": 101,
+      "accepted_lines": 296,
+      "overriden_lines": 0
+    }
+  }
+}
