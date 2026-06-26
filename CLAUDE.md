@@ -66,7 +66,7 @@ Graph output lives in `graphify-out/` (commit this):
 ```bash
 # Development
 cp .env.example .env        # fill in API keys
-docker compose up --build   # starts all 5 services
+docker compose up --build   # starts all 5 services (9router, redis, postgres, orchestrator, bot)
 
 # Rebuild single service
 docker compose up -d --build karsa-orchestrator
@@ -90,9 +90,9 @@ docker exec karsa-orchestrator python3 -c "from src.config import settings; prin
 
 **Two main containers** share the same Python package (`src/`):
 
-1. **karsa-orchestrator** (`src/main.py`) — APScheduler runs 5 cron jobs. Each job dispatches agents via `Orchestrator.scan_all_markets()` which runs IDX/US/ETF analysts in parallel (`asyncio.gather`). Signals ≥60 confidence get risk-checked, then published to Redis.
+1. **karsa-orchestrator** (`src/main.py`) — APScheduler runs 9 cron jobs (IDX morning/afternoon scans, US+ETF scans, 2 EOD reviews, pre-market battle plan, paper position updates, kill switch, cache flush). Each scan job dispatches agents via `Orchestrator.scan_all_markets()` which runs IDX/US/ETF analysts in parallel (`asyncio.gather`). Signals ≥50 confidence get persisted; ≥60 get risk-checked and published to Redis. Includes a health check HTTP server on port 8080 (`/health`, `/health/scheduler`).
 
-2. **karsa-telegram-bot** (`src/bot/main.py`) — FastAPI webhook + python-telegram-bot polling. Commands: `/start`, `/status`, `/scan <market> <ticker>`, `/portfolio`, `/trades`. The bot creates its own `Orchestrator` instance for ad-hoc `/scan` commands.
+2. **karsa-telegram-bot** (`src/bot/main.py`) — FastAPI webhook + python-telegram-bot polling (default). Commands: `/start`, `/status`, `/scan`, `/portfolio`, `/trades`, `/add`, `/remove`, `/edit`, `/analyze`, `/audit`, `/briefing`, `/regime`, `/pnl`. The bot creates its own `Orchestrator` instance for ad-hoc commands. Inline keyboard buttons provide navigation between views.
 
 **Agent loop** (`src/agents/base.py`): Each agent is a `BaseAgent` subclass with a system prompt, tool definitions, and an `_handle_tool_call` override. The `run()` method implements the Anthropic SDK tool-use loop — call LLM, process tool calls, repeat until `end_turn`.
 
@@ -100,24 +100,36 @@ docker exec karsa-orchestrator python3 -c "from src.config import settings; prin
 
 **Market data** (`src/data/mcp_client.py`): Uses `tradingview_ta.TA_Handler` directly (not MCP protocol). IDX uses `screener='indonesia', exchange='IDX'`. US/ETF tries NASDAQ → NYSE → AMEX fallback. Data cached in Redis (60s quotes, 1h OHLCV).
 
+**Advisory layer** (`src/advisory/`): `MacroRegimeFilter` checks VIX/SPY/200-SMA to classify BULL/BEAR/NEUTRAL. `PositionSizer` calculates volatility-target sizing using ATR.
+
 **HITL flow**: Signal → `signals` table (PENDING) → Redis pub/sub → Telegram alert with APPROVE/REJECT buttons → `ApprovalManager.process_approval()` → broker execution → `trades` table + `audit_logs`.
 
 ## Key Config
 
-- **9Router**: Agents use `settings.LLM_BASE_URL` / `LLM_AUTH_TOKEN` / `LLM_MODEL` (resolved from `9ROUTER_*` env vars, falling back to `ANTHROPIC_*`).
+- **9Router**: Agents use `settings.LLM_BASE_URL` / `LLM_AUTH_TOKEN` / `LLM_MODEL` (resolved from `9ROUTER_*` env vars, falling back to `ANTHROPIC_*`). `NROUTER_ENABLED` flag controls routing.
 - **Combo override**: `Orchestrator` sets `combo_name = settings.NROUTER_MODEL` on all agents, so a single 9Router combo handles all LLM routing.
-- **Telegram**: Polling mode (no domain needed). Set `TELEGRAM_TOKEN` and `TELEGRAM_CHAT_ID` in `.env`.
+- **Telegram**: Polling mode by default (no domain needed). Set `TELEGRAM_TOKEN` and `TELEGRAM_CHAT_ID` in `.env`. Set `TELEGRAM_WEBHOOK_URL` for webhook mode.
 - **Database**: PostgreSQL via asyncpg + SQLAlchemy async. Schema in `db/init.sql` auto-applied on first start.
+- **Trading params**: `MAX_PORTFOLIO_RISK_PCT` (2%), `MAX_POSITION_SIZE_PCT` (15%), `DAILY_LOSS_LIMIT_PCT` (5%).
 
 ## File Map (non-obvious)
 
-- `src/agents/orchestrator.py` — universe lists (IDX_UNIVERSE, US_UNIVERSE, ETF_UNIVERSE), combo name assignment, parallel market scan
+- `src/agents/orchestrator.py` — universe lists (IDX_UNIVERSE, US_UNIVERSE, ETF_UNIVERSE), combo name assignment, parallel market scan, signal persistence to DB
 - `src/agents/base.py` — Anthropic SDK tool-use loop, `getattr()` guards for 9Router response quirks
-- `src/bot/handlers.py` — Telegram command handlers, `format_trade_alert()` builds inline keyboard
+- `src/bot/handlers.py` — Telegram command handlers, `parse_decimal()` for locale-safe number parsing, `_reply()` with auto-timestamps, inline keyboard routing via `button_callback()`
 - `src/data/cache.py` — Redis wrapper with pub/sub for signal/approval channels
+- `src/data/mcp_client.py` — `tradingview_ta.TA_Handler` wrapper, get_quote/get_ohlcv/get_indicators methods
+- `src/models/tables.py` — SQLAlchemy ORM: PortfolioState, CashBalance, Signal, PaperPosition, ClosedPaperTrade, AuditLog, OHLCVCache, MarketHoliday, PendingApproval
+- `src/models/database.py` — async engine + session factory, `init_db()` creates tables
+- `src/advisory/regime.py` — `MacroRegimeFilter`: VIX/SPY/200-SMA regime classification (BULL/BEAR/NEUTRAL)
+- `src/advisory/sizing.py` — `PositionSizer`: volatility-target sizing using ATR
 - `src/utils/rate_limit.py` — Lua-based token bucket in Redis
+- `src/utils/telegram_helpers.py` — `format_pre_table()` for aligned ASCII tables, `send_long_message()` with 4096-char chunking, `build_nav_keyboard()` for inline keyboards
+- `src/utils/market_hours.py` — `is_idx_open()`, `is_us_open()` market hours checks
 - `src/agents/portfolio_analyst.py` — Analyzes holdings vs market data, suggests actions (no execution)
 - `src/backtest/engine.py` — RSI + Bollinger mean reversion backtester (Sharpe > 1.2 gate)
+- `monitoring/` — Prometheus + Grafana configs
+- `docs/` — Design docs, audit results, feature roadmap
 - `graphify-out/` — committed knowledge graph; query before reading source files
 
 ## Gotchas
@@ -125,6 +137,8 @@ docker exec karsa-orchestrator python3 -c "from src.config import settings; prin
 - Dockerfiles `COPY src/` — must `--build` after code changes, `restart` alone won't pick up new code.
 - `tradingview_ta` is imported lazily inside the container (not at module level) to avoid startup failures if the package isn't installed yet.
 - IDX lot size is always 100 shares. `IDXBroker` enforces this.
-- The `karsa-9router` service was removed from docker-compose — the system uses the user's existing 9Router instance via `host.docker.internal:20128`.
+- The `karsa-9router` service exists in `docker-compose.yml` but the system expects the user's own 9Router instance via `host.docker.internal:20128` for local dev. The compose 9router is on port 20129→20128.
 - rtk hook only applies to Bash tool calls — Claude Code built-in Read/Grep/Glob bypass it.
 - graphify code extraction is fully local (tree-sitter, no API calls); docs/PDFs use the active model session.
+- Kill switch threshold is -1.5% daily P&L (not the `DAILY_LOSS_LIMIT_PCT` setting of 5% — different values).
+- APScheduler uses `MemoryJobStore` — jobs are stateless and don't survive container restarts.
