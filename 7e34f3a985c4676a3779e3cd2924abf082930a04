@@ -1,0 +1,23 @@
+src/bot/handlers.py
+  1a36c159d1397dde 3,14-31,54,183-192,218,245-246,266,306,309,311-347,354-356,381
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "7e34f3a985c4676a3779e3cd2924abf082930a04",
+  "prompts": {
+    "1a36c159d1397dde": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "44fd0558-a813-41a5-89eb-fc9e578a7627",
+        "model": "gemini-pro-default"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 82,
+      "total_deletions": 20,
+      "accepted_lines": 80,
+      "overriden_lines": 0
+    }
+  }
+}
