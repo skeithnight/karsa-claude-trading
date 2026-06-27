@@ -175,10 +175,10 @@ ON CONFLICT DO NOTHING;
 -- Append-only enforcement (no UPDATE or DELETE on immutable tables)
 -- These rules prevent accidental mutation of audit trail and closed trade history.
 -- Signals and paper_positions NEED updates (status changes, price updates) — no rules there.
-CREATE RULE IF NOT EXISTS no_update_audit AS ON UPDATE TO audit_logs DO INSTEAD NOTHING;
-CREATE RULE IF NOT EXISTS no_delete_audit AS ON DELETE TO audit_logs DO INSTEAD NOTHING;
-CREATE RULE IF NOT EXISTS no_update_closed_trade AS ON UPDATE TO closed_paper_trades DO INSTEAD NOTHING;
-CREATE RULE IF NOT EXISTS no_delete_closed_trade AS ON DELETE TO closed_paper_trades DO INSTEAD NOTHING;
+CREATE RULE no_update_audit AS ON UPDATE TO audit_logs DO INSTEAD NOTHING;
+CREATE RULE no_delete_audit AS ON DELETE TO audit_logs DO INSTEAD NOTHING;
+CREATE RULE no_update_closed_trade AS ON UPDATE TO closed_paper_trades DO INSTEAD NOTHING;
+CREATE RULE no_delete_closed_trade AS ON DELETE TO closed_paper_trades DO INSTEAD NOTHING;
 
 -- Performance indexes for common query patterns
 CREATE INDEX IF NOT EXISTS idx_signals_ticker_market_status ON signals(ticker, market, status);
