@@ -84,6 +84,29 @@ class Orchestrator:
         logger.info("market_scan_done", market=market, tickers=len(universe), signals=len(signals))
         return signals
 
+    async def scan_portfolio(self, positions: list[dict]) -> dict:
+        """Scan all portfolio positions in parallel.
+
+        Args:
+            positions: list of {"market": str, "ticker": str}
+        """
+        if not positions:
+            return {"results": [], "errors": []}
+
+        tasks = [self.scan_single(p["market"], p["ticker"]) for p in positions]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        ok, errors = [], []
+        for i, r in enumerate(results):
+            if isinstance(r, Exception):
+                errors.append({"ticker": positions[i]["ticker"], "error": str(r)})
+            elif r.get("error"):
+                errors.append({"ticker": positions[i]["ticker"], "error": r["error"]})
+            else:
+                ok.append(r)
+
+        return {"results": ok, "errors": errors}
+
     async def scan_single(self, market: str, ticker: str) -> dict:
         """Scan a single ticker (for ad-hoc Telegram commands)."""
         agents = {"IDX": self.idx_agent, "US": self.us_agent, "ETF": self.etf_agent}

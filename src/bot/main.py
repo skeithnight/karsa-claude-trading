@@ -17,7 +17,7 @@ from src.config import settings
 from src.bot.handlers import (
     start_cmd, status_cmd, scan_cmd, portfolio_cmd, trades_cmd,
     add_cmd, remove_cmd, edit_cmd, analyze_cmd, briefing_cmd, regime_cmd, pnl_cmd,
-    audit_cmd, button_callback,
+    audit_cmd, guide_cmd, button_callback,
 )
 from src.data.cache import CacheManager
 from src.models.database import async_session
@@ -46,6 +46,7 @@ async def lifespan(app: FastAPI):
     telegram_app.add_handler(CommandHandler("briefing", briefing_cmd))
     telegram_app.add_handler(CommandHandler("regime", regime_cmd))
     telegram_app.add_handler(CommandHandler("pnl", pnl_cmd))
+    telegram_app.add_handler(CommandHandler("guide", guide_cmd))
 
     from telegram.ext import CallbackQueryHandler
     telegram_app.add_handler(CallbackQueryHandler(button_callback))
