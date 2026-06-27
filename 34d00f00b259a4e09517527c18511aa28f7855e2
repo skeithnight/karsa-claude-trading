@@ -1,0 +1,29 @@
+src/advisory/regime.py
+  e17f42f7cbb22ada 1,3-6,11,13-16,20-24,26-28,30-40,46-48,54,56-59,61-63,67,69,72-76,79,82,85,89-94,96-126,128-164,166-193,197-216
+src/agents/orchestrator.py
+  e17f42f7cbb22ada 87-109
+src/bot/handlers.py
+  e17f42f7cbb22ada 62-155,157-161,163-184,187-192,196,199-200,205-276,279-285,423,427-444,580-602,604,938-940,942-947,972-973,975-976,982-987,1012,1017,1021,1024,1026-1027,1029-1036,1038-1039,1044-1057,1069,1147,1151-1152,1155-1156,1159,1161-1179,1181-1232,1234-1235,1249,1256,1282,1326-1327
+src/bot/main.py
+  e17f42f7cbb22ada 20,49
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "34d00f00b259a4e09517527c18511aa28f7855e2",
+  "prompts": {
+    "e17f42f7cbb22ada": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b9d408b5-fc6c-460b-b8ba-26140961c53a",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 601,
+      "total_deletions": 136,
+      "accepted_lines": 596,
+      "overriden_lines": 0
+    }
+  }
+}
