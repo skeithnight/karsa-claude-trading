@@ -172,7 +172,7 @@ class MCPClient:
             # Tier 1: TradingView
             if not self._is_provider_blocked("tradingview"):
                 try:
-                    analysis = self._get_ta(ticker, market, "1D")
+                    analysis = await asyncio.to_thread(self._get_ta, ticker, market, "1D")
                     ind = analysis.indicators
                     price = float(ind.get("close", 0))
                     if price > 0:
@@ -236,7 +236,7 @@ class MCPClient:
             return cached
 
         try:
-            analysis = self._get_ta(ticker, market, timeframe)
+            analysis = await asyncio.to_thread(self._get_ta, ticker, market, timeframe)
             ind = analysis.indicators
             candle = {
                 "timestamp": datetime.utcnow().isoformat(),
@@ -256,7 +256,7 @@ class MCPClient:
             # Tier 1: TradingView
             if not self._is_provider_blocked("tradingview"):
                 try:
-                    analysis = self._get_ta(ticker, market, "1D")
+                    analysis = await asyncio.to_thread(self._get_ta, ticker, market, "1D")
                     self._record_success("tradingview")
                     return {"indicators": analysis.indicators, "ticker": ticker, "market": market}
                 except Exception as e:

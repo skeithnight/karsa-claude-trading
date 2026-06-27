@@ -10,6 +10,10 @@ COPY db/ db/
 
 RUN pip install --no-cache-dir .
 
-HEALTHCHECK --interval=30s --timeout=10s --retries=3 CMD python -c "import sys; sys.exit(0)"
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  RUN useradd -r -s /bin/false karsa && chown -R karsa:karsa /app
+USER karsa
+
+CMD curl -f http://localhost:8000/health || exit 1
 
 CMD ["python", "-m", "src.main"]

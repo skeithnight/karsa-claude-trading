@@ -1,6 +1,5 @@
 """Karsa Trading System - Database Connection Management"""
 
-from contextlib import asynccontextmanager
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
@@ -31,19 +30,6 @@ class Base(DeclarativeBase):
     """Base class for all ORM models."""
     pass
 
-
-@asynccontextmanager
-async def get_session() -> AsyncSession:
-    """Get an async database session."""
-    async with async_session() as session:
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
-        finally:
-            await session.close()
 
 
 async def init_db():

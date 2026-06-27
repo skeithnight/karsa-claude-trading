@@ -211,6 +211,3 @@ class IDXRegimeFilter:
             "size_multiplier": 1.0,
         }
 
-
-# Backward-compatible alias
-MacroRegimeFilter = USRegimeFilter

@@ -7,6 +7,7 @@ import httpx
 
 from src.config import settings, LLM_BASE_URL
 from src.utils.logging import get_logger
+from src.risk import emergency
 
 logger = get_logger("telegram_handlers")
 
@@ -19,8 +20,12 @@ def parse_decimal(raw: str) -> Decimal:
     - Contains only , → decimal separator (0,006421695)
     - Contains only . → decimal separator (0.006421695)
     - Neither → integer
+
+    Raises ValueError on invalid input.
     """
     raw = raw.strip()
+    if not raw or len(raw) > 30:
+        raise ValueError(f"Invalid number: {raw!r}")
     if "," in raw and "." in raw:
         if raw.rfind(",") > raw.rfind("."):
             raw = raw.replace(".", "").replace(",", ".")
@@ -28,14 +33,20 @@ def parse_decimal(raw: str) -> Decimal:
             raw = raw.replace(",", "")
     elif "," in raw:
         raw = raw.replace(",", ".")
-    return Decimal(raw)
+    try:
+        return Decimal(raw)
+    except (InvalidOperation, ValueError):
+        raise ValueError(f"Invalid number: {raw!r}")
 
 
 def _is_authorized(update: Update) -> bool:
-    """Check if message is from authorized chat."""
+    """Check if message is from authorized chat. Fail closed if TELEGRAM_CHAT_ID not set."""
+    if not settings.TELEGRAM_CHAT_ID:
+        logger.error("telegram_chat_id_not_configured")
+        return False
     chat_id = str(update.effective_chat.id) if update.effective_chat else ""
-    if settings.TELEGRAM_CHAT_ID and chat_id != str(settings.TELEGRAM_CHAT_ID):
-        logger.warning("unauthorized_chat", chat_id=chat_id)
+    if chat_id != str(settings.TELEGRAM_CHAT_ID):
+        logger.warning("unauthorized_chat")
         return False
     return True
 
@@ -273,7 +284,7 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         except Exception as e:
             logger.error("scan_portfolio_failed", error=str(e), exc_info=True)
-            await msg.edit_text(f"❌ Portfolio scan error: {str(e)}")
+            await msg.edit_text("❌ Scan failed. Check logs for details.")
         return
 
     # /scan <market> <ticker>
@@ -301,7 +312,7 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(text, parse_mode="HTML")
     except Exception as e:
         logger.error("scan_cmd_failed", error=str(e), exc_info=True)
-        await msg.edit_text(f"❌ Scan error: {str(e)}")
+        await msg.edit_text("❌ Scan failed. Check logs for details.")
 
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -350,7 +361,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     scheduler_error = ""
     jobs_info = []
     try:
-        orchestrator_url = "http://karsa-orchestrator:8080"
+        orchestrator_url = "http://karsa-orchestrator:8000"
         async with httpx.AsyncClient(timeout=3.0) as client:
             resp = await client.get(f"{orchestrator_url}/health/scheduler")
             if resp.status_code == 200:
@@ -371,15 +382,14 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         scheduler_error = str(e)[:100]
 
-    # Check Kill Switch (Redis flag)
+    # Check Kill Switch (emergency stop)
     kill_switch_status = "🟢 Kill Switch (Inactive)"
     try:
-        import redis.asyncio as redis
-        r = redis.from_url(settings.REDIS_URL)
-        halt = await r.get("HALT_TRADING")
-        await r.close()
-        if halt:
-            kill_switch_status = "🔴 Kill Switch (ACTIVE - Trading Halted)"
+        stop_active = await emergency.is_active()
+        if stop_active:
+            stop_info = await emergency.get_status()
+            reason = stop_info.get("reason", "Unknown") if stop_info else "Unknown"
+            kill_switch_status = f"🔴 Kill Switch (ACTIVE)\n<i>Reason: {reason}</i>"
     except Exception:
         pass
 
@@ -547,7 +557,7 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _reply(update,f"✅ Cash balance set: {amount:,.2f} {currency}", parse_mode="Markdown")
         except Exception as e:
             logger.error("add_cash_failed", error=str(e))
-            await _reply(update,f"❌ Error: {str(e)}")
+            await _reply(update, "❌ Operation failed. Check logs for details.")
         return
 
     # /add IDX BBCA 500 8500
@@ -606,7 +616,7 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.error("add_position_failed", error=str(e))
-        await _reply(update,f"❌ Error: {str(e)}")
+        await _reply(update, "❌ Operation failed. Check logs for details.")
 
 
 async def remove_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -637,7 +647,7 @@ async def remove_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _reply(update,f"✅ Removed: *{ticker}* ({market})", parse_mode="Markdown")
     except Exception as e:
         logger.error("remove_position_failed", error=str(e))
-        await _reply(update,f"❌ Error: {str(e)}")
+        await _reply(update, "❌ Operation failed. Check logs for details.")
 
 
 async def edit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -681,7 +691,7 @@ async def edit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _reply(update,f"✅ Cash balance updated: {amount:,.2f} {currency}", parse_mode="Markdown")
         except Exception as e:
             logger.error("edit_cash_failed", error=str(e))
-            await _reply(update,f"❌ Error: {str(e)}")
+            await _reply(update, "❌ Operation failed. Check logs for details.")
         return
 
     # /edit IDX BBCA qty 600
@@ -724,7 +734,7 @@ async def edit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.error("edit_position_failed", error=str(e))
-        await _reply(update,f"❌ Error: {str(e)}")
+        await _reply(update, "❌ Operation failed. Check logs for details.")
 
 
 async def analyze_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -835,7 +845,7 @@ async def analyze_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error("analyze_cmd_failed", error=str(e), exc_info=True)
-        await msg.edit_text(f"❌ Analysis error: {str(e)}")
+        await msg.edit_text("❌ Analysis failed. Check logs for details.")
 
 
 async def trades_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -916,7 +926,7 @@ async def trades_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error("trades_cmd_failed", error=str(e), exc_info=True)
-        await _reply(update,f"❌ Error: {str(e)}")
+        await _reply(update, "❌ Operation failed. Check logs for details.")
 
 
 async def briefing_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1005,7 +1015,7 @@ async def briefing_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error("briefing_cmd_failed", error=str(e), exc_info=True)
-        await _reply(update, f"❌ Briefing error: {str(e)}")
+        await _reply(update, "❌ Briefing failed. Check logs for details.")
 
 
 async def regime_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1066,7 +1076,7 @@ async def regime_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error("regime_cmd_failed", error=str(e), exc_info=True)
-        await _reply(update, f"❌ Regime error: {str(e)}")
+        await _reply(update, "❌ Regime check failed. Check logs for details.")
 
 
 async def pnl_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1140,7 +1150,7 @@ async def pnl_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error("pnl_cmd_failed", error=str(e), exc_info=True)
-        await _reply(update,f"❌ P&L error: {str(e)}")
+        await _reply(update, "❌ P&L check failed. Check logs for details.")
 
 
 async def audit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1286,7 +1296,50 @@ async def audit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error("audit_cmd_failed", error=str(e), exc_info=True)
-        await _reply(update, f"❌ Audit error: {str(e)}")
+        await _reply(update, "❌ Audit failed. Check logs for details.")
+
+
+async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Emergency kill switch — halts all new trading decisions immediately."""
+    if not _is_authorized(update):
+        return
+
+    operator = update.effective_user.username or str(update.effective_user.id)
+    already_active = await emergency.is_active()
+
+    if already_active:
+        await _reply(update, "⚠️ Emergency stop is already active.", parse_mode="HTML")
+        return
+
+    await emergency.activate(reason="Manual operator halt via Telegram", operator=operator)
+    logger.warning("emergency_stop_activated", operator=operator)
+    await _reply(update,
+        "🚨 <b>EMERGENCY STOP ACTIVATED</b>\n"
+        "All new trading decisions are halted.\n"
+        "Use /resume to reactivate.",
+        parse_mode="HTML",
+    )
+
+
+async def resume_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Resume trading after emergency stop."""
+    if not _is_authorized(update):
+        return
+
+    operator = update.effective_user.username or str(update.effective_user.id)
+    is_active = await emergency.is_active()
+
+    if not is_active:
+        await _reply(update, "✅ Emergency stop is not active. Trading is normal.", parse_mode="HTML")
+        return
+
+    await emergency.deactivate(operator=operator)
+    logger.warning("emergency_stop_deactivated", operator=operator)
+    await _reply(update,
+        "✅ <b>Emergency stop deactivated.</b>\n"
+        "Trading decisions can resume.",
+        parse_mode="HTML",
+    )
 
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):

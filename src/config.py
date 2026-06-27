@@ -1,5 +1,6 @@
 """Karsa Trading System - Configuration Management"""
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 from pydantic import Field
 
@@ -25,10 +26,12 @@ class Settings(BaseSettings):
     TELEGRAM_WEBHOOK_SECRET: str = ""
 
     # Market Data
-    TRADINGVIEW_MCP_URL: str = "http://tradingview-mcp:8080"
+    FINNHUB_API_KEY: str = ""
     MASSIVE_API_KEY: str = ""
     MASSIVE_BASE_URL: str = "https://api.massive.com/v3"
-    FINNHUB_API_KEY: str = ""
+
+    # Trading Safety Gate
+    TRADING_MODE: str = "paper"  # "paper" | "live"
 
     # Trading Parameters
     MAX_PORTFOLIO_RISK_PCT: float = 2.0
@@ -39,6 +42,22 @@ class Settings(BaseSettings):
 
     # Redis Keys
     REDIS_PREFIX: str = "karsa"
+
+    @field_validator("DB_PASSWORD")
+    @classmethod
+    def password_must_be_set(cls, v: str) -> str:
+        if not v or v.upper() in ("CHANGE_ME", "CHANGEME", "PASSWORD", "CHANGEME"):
+            raise ValueError("DB_PASSWORD must be set to a real value — not a placeholder")
+        if len(v) < 12:
+            raise ValueError("DB_PASSWORD must be at least 12 characters")
+        return v
+
+    @field_validator("TRADING_MODE")
+    @classmethod
+    def valid_trading_mode(cls, v: str) -> str:
+        if v not in ("paper", "live"):
+            raise ValueError("TRADING_MODE must be 'paper' or 'live'")
+        return v
 
     @property
     def redis_rate_limit_key(self) -> str:

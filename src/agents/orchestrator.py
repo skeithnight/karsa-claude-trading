@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-from typing import Any
 
 from src.agents.base import BaseAgent
 from src.agents.idx_analyst import IDXAnalyst
@@ -17,12 +16,15 @@ from src.config import settings
 
 logger = get_logger("orchestrator")
 
-CRITICAL_COMBO = settings.NROUTER_MODEL or "karsa-critical"
 ROUTINE_COMBO = settings.NROUTER_MODEL or "karsa-routine"
 
 IDX_UNIVERSE = ["BBCA", "BBRI", "BMRI", "TLKM", "ASII", "UNVR", "BBNI", "ICBP", "KLBF", "PGAS"]
 US_UNIVERSE = ["NVDA", "AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "AVGO", "LLY", "JPM"]
 ETF_UNIVERSE = ["SPY", "QQQ", "XLF", "XLK", "XLV", "XLE", "GLD", "TLT"]
+
+# Required fields for a valid signal from an agent
+_REQUIRED_SIGNAL_FIELDS = {"ticker", "confidence_score", "direction"}
+_VALID_DIRECTIONS = {"LONG", "SHORT", "CLOSE"}
 
 
 class Orchestrator:
@@ -47,6 +49,12 @@ class Orchestrator:
         Args:
             market_filter: "IDX", "US_ETF", or None (all markets)
         """
+        # Emergency stop gate — block all scans if active
+        from src.risk import emergency
+        if await emergency.is_active():
+            logger.warning("scan_blocked_emergency_stop")
+            return []
+
         logger.info("scan_started", filter=market_filter)
 
         tasks = []
@@ -66,23 +74,67 @@ class Orchestrator:
                 continue
             all_signals.extend(result)
 
+        # Persist all signals to database
+        for signal in all_signals:
+            await self._save_signal(signal)
+
         logger.info("scan_complete", total=len(all_signals))
         return all_signals
 
     async def _scan_market(self, market: str, agent: BaseAgent, universe: list[str]) -> list[dict]:
         signals = []
         for ticker in universe:
+            # Per-ticker emergency check — allows partial completion if stop activates mid-scan
+            from src.risk import emergency
+            if await emergency.is_active():
+                logger.warning("scan_aborted_emergency_stop", market=market, ticker=ticker)
+                break
+
             try:
                 result = await agent.run(f"Analyze {ticker} for trading opportunities right now.")
                 if result.get("error"):
                     logger.warning("agent_error", market=market, ticker=ticker, error=result["error"])
                     continue
+
+                # Validate signal structure
+                issues = self._validate_signal(result, market)
+                if issues:
+                    logger.warning("invalid_signal", market=market, ticker=ticker, issues=issues)
+                    continue
+
                 if result.get("confidence_score", 0) >= 50:
                     signals.append(result)
             except Exception as e:
                 logger.error("ticker_scan_failed", market=market, ticker=ticker, error=str(e))
         logger.info("market_scan_done", market=market, tickers=len(universe), signals=len(signals))
         return signals
+
+    def _validate_signal(self, signal: dict, market: str) -> list[str]:
+        """Validate agent output structure. Returns list of issues (empty = valid)."""
+        issues = []
+
+        for field in _REQUIRED_SIGNAL_FIELDS:
+            if field not in signal or signal[field] is None:
+                issues.append(f"missing field: {field}")
+
+        if not issues:
+            # Confidence range
+            conf = signal.get("confidence_score")
+            if not isinstance(conf, (int, float)) or conf < 0 or conf > 100:
+                issues.append(f"confidence_score must be 0-100, got {conf}")
+
+            # Direction enum
+            direction = signal.get("direction", "").upper()
+            if direction not in _VALID_DIRECTIONS:
+                issues.append(f"invalid direction: {direction}")
+
+            # Price sanity
+            for price_field in ("entry_price", "target_price", "stop_loss_price"):
+                val = signal.get(price_field)
+                if val is not None and val <= 0:
+                    issues.append(f"{price_field} must be positive, got {val}")
+
+        return issues
 
     async def scan_portfolio(self, positions: list[dict]) -> dict:
         """Scan all portfolio positions in parallel.
@@ -109,6 +161,12 @@ class Orchestrator:
 
     async def scan_single(self, market: str, ticker: str) -> dict:
         """Scan a single ticker (for ad-hoc Telegram commands)."""
+        # Emergency stop gate
+        from src.risk import emergency
+        if await emergency.is_active():
+            logger.warning("scan_single_blocked_emergency_stop", ticker=ticker)
+            return {"error": "Trading halted — emergency stop is active"}
+
         agents = {"IDX": self.idx_agent, "US": self.us_agent, "ETF": self.etf_agent}
         agent = agents.get(market)
         if not agent:
@@ -116,18 +174,42 @@ class Orchestrator:
 
         result = await agent.run(f"Analyze {ticker} for trading opportunities right now.")
 
-        # Persist signal to database for /audit command (all signals, not just high confidence)
+        # Validate signal before persisting
         if not result.get("error"):
-            await self._save_signal(result)
+            issues = self._validate_signal(result, market)
+            if issues:
+                logger.warning("invalid_signal_single", ticker=ticker, issues=issues)
+                result["validation_issues"] = issues
+            else:
+                await self._save_signal(result)
 
         return result
 
     async def _save_signal(self, signal_data: dict):
-        """Save a signal to the database."""
+        """Save a signal to the database with IDX order validation."""
         try:
             from src.models.database import async_session
             from src.models.tables import Signal
             from datetime import datetime, timedelta
+
+            # IDX-specific order validation
+            if signal_data.get("market") == "IDX":
+                try:
+                    from src.risk.idx_limits import validate_order
+                    price = signal_data.get("entry_price")
+                    prev_close = signal_data.get("prev_close")
+                    lots = signal_data.get("suggested_lots", 1)
+                    if price and prev_close and lots:
+                        validate_order(
+                            signal_data.get("ticker", "?"),
+                            float(price),
+                            float(prev_close),
+                            int(lots),
+                        )
+                except ValueError as e:
+                    logger.warning("idx_order_validation_failed", ticker=signal_data.get("ticker"), error=str(e))
+                    # Still save signal but mark validation failure
+                    signal_data["validation_note"] = str(e)
 
             async with async_session() as session:
                 signal = Signal(

@@ -7,21 +7,21 @@ import sys
 import redis.asyncio as redis
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.memory import MemoryJobStore
+from fastapi import FastAPI
+import uvicorn
 
 from src.config import settings
-from src.models.database import init_db, close_db, DATABASE_URL
+from src.models.database import init_db, close_db
 from src.data.cache import CacheManager
 from src.data.mcp_client import MCPClient
-from src.agents.orchestrator import Orchestrator, IDX_UNIVERSE, US_UNIVERSE, ETF_UNIVERSE
-from src.models.database import async_session
+from src.agents.orchestrator import Orchestrator
 from src.utils.logging import setup_logging, get_logger
 from src.utils.rate_limit import RateLimiter
 
 logger = get_logger("main")
 
-# APScheduler job store: backed by Postgres so jobs survive container restarts.
-# The sync URL is derived by dropping "+asyncpg" for APScheduler's SQLAlchemy engine.
-SYNC_DB_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
+# FastAPI app for health endpoints
+app = FastAPI(title="Karsa Orchestrator", version="0.1.0")
 
 
 class KarsaApp:
@@ -60,8 +60,6 @@ class KarsaApp:
         logger.info("orchestrator_ready")
 
         # APScheduler with in-memory job store
-        # ponytail: jobs are stateless scans, no persistence needed across restarts.
-        # Switch to SQLAlchemyJobStore + psycopg2-binary if you need jobs to survive restarts.
         jobstores = {
             "default": MemoryJobStore(),
         }
@@ -70,55 +68,51 @@ class KarsaApp:
         self.scheduler.start()
         logger.info("scheduler_started")
 
-        # Start health check HTTP server
-        import threading
-        from http.server import HTTPServer, BaseHTTPRequestHandler
-        import json
-
-        karsa_app = self  # Capture reference to KarsaApp instance
-
-        class HealthHandler(BaseHTTPRequestHandler):
-            def do_GET(self):
-                if self.path == '/health/scheduler':
-                    try:
-                        jobs = []
-                        for job in karsa_app.scheduler.get_jobs():
-                            next_run = job.next_run_time.isoformat() if job.next_run_time else None
-                            jobs.append({"id": job.id, "name": job.name, "next_run": next_run})
-                        data = {
-                            "status": "running" if karsa_app.scheduler.running else "stopped",
-                            "jobs": jobs,
-                            "job_count": len(jobs)
-                        }
-                        self.send_response(200)
-                        self.send_header('Content-Type', 'application/json')
-                        self.end_headers()
-                        self.wfile.write(json.dumps(data).encode())
-                    except Exception as e:
-                        self.send_response(500)
-                        self.send_header('Content-Type', 'application/json')
-                        self.end_headers()
-                        self.wfile.write(json.dumps({"error": str(e)}).encode())
-                elif self.path == '/health':
-                    self.send_response(200)
-                    self.send_header('Content-Type', 'application/json')
-                    self.end_headers()
-                    self.wfile.write(json.dumps({"status": "ok"}).encode())
-                else:
-                    self.send_response(404)
-                    self.end_headers()
-
-            def log_message(self, format, *args):
-                pass  # Suppress HTTP logs
-
-        def run_health_server():
-            server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
-            server.serve_forever()
-
-        threading.Thread(target=run_health_server, daemon=True).start()
-        logger.info("health_server_started", port=8080)
+        # Wire health endpoints into FastAPI
+        self._register_health_routes()
 
         logger.info("karsa_ready")
+
+    def _register_health_routes(self):
+        """Register health check endpoints on the FastAPI app."""
+
+        @app.get("/health")
+        async def health():
+            db_ok = False
+            try:
+                from sqlalchemy import text
+                async with async_session() as session:
+                    await session.execute(text("SELECT 1"))
+                    db_ok = True
+            except Exception:
+                pass
+
+            redis_ok = await self.cache.ping() if self.cache else False
+
+            return {
+                "status": "ok" if (db_ok and redis_ok) else "degraded",
+                "trading_mode": settings.TRADING_MODE,
+                "checks": {
+                    "postgres": "ok" if db_ok else "FAIL",
+                    "redis": "ok" if redis_ok else "FAIL",
+                },
+            }
+
+        @app.get("/health/scheduler")
+        async def scheduler_status():
+            if not self.scheduler:
+                return {"status": "not_initialized", "jobs": []}
+
+            jobs = []
+            for job in self.scheduler.get_jobs():
+                next_run = job.next_run_time.isoformat() if job.next_run_time else None
+                jobs.append({"id": job.id, "name": job.name, "next_run": next_run})
+
+            return {
+                "status": "running" if self.scheduler.running else "stopped",
+                "jobs": jobs,
+                "job_count": len(jobs),
+            }
 
     def _register_jobs(self):
         """Register all periodic jobs.
@@ -130,7 +124,6 @@ class KarsaApp:
         s = self.scheduler
 
         # --- IDX MARKET ---
-        # IDX Morning Session: 09:00-12:00 WIB (02:00-05:00 UTC), every 30 min
         s.add_job(
             self._job_scan_idx,
             "cron", day_of_week="mon-fri", hour="2-4", minute="0,30",
@@ -138,7 +131,6 @@ class KarsaApp:
             replace_existing=True, misfire_grace_time=300,
         )
 
-        # IDX Afternoon Session: 13:30-16:00 WIB (06:30-09:00 UTC), every 30 min
         s.add_job(
             self._job_scan_idx,
             "cron", day_of_week="mon-fri", hour="6-8", minute="0,30",
@@ -146,7 +138,6 @@ class KarsaApp:
             replace_existing=True, misfire_grace_time=300,
         )
 
-        # IDX EOD Review: 16:15 WIB (09:15 UTC)
         s.add_job(
             self._job_eod_review,
             "cron", day_of_week="mon-fri", hour=9, minute=15,
@@ -155,7 +146,6 @@ class KarsaApp:
         )
 
         # --- US MARKET ---
-        # US Market Scan: 09:30-16:00 ET (13:30-20:00 UTC), every 30 min
         s.add_job(
             self._job_scan_us_etf,
             "cron", day_of_week="mon-fri", hour="13-19", minute="0,30",
@@ -163,7 +153,6 @@ class KarsaApp:
             replace_existing=True, misfire_grace_time=300,
         )
 
-        # Pre-Market Battle Plan: 09:25 ET (14:25 UTC) weekdays
         s.add_job(
             self._job_premarket_battleplan,
             "cron", day_of_week="mon-fri", hour=14, minute=25,
@@ -171,7 +160,6 @@ class KarsaApp:
             replace_existing=True, misfire_grace_time=600,
         )
 
-        # US EOD Review: 16:15 ET (21:15 UTC)
         s.add_job(
             self._job_eod_review,
             "cron", day_of_week="mon-fri", hour=21, minute=15,
@@ -180,8 +168,6 @@ class KarsaApp:
         )
 
         # --- SHARED ---
-        # Paper position price updates: every 5 min during market hours
-        # IDX: 02:00-09:00 UTC, US: 13:30-20:00 UTC
         s.add_job(
             self._job_update_paper_positions,
             "cron", day_of_week="mon-fri", hour="2-9,13-20", minute="*/5",
@@ -189,7 +175,6 @@ class KarsaApp:
             replace_existing=True, misfire_grace_time=120,
         )
 
-        # Kill Switch: every 5 min during market hours
         s.add_job(
             self._job_kill_switch,
             "cron", day_of_week="mon-fri", hour="2-9,13-20", minute="*/5",
@@ -197,7 +182,6 @@ class KarsaApp:
             replace_existing=True, misfire_grace_time=60,
         )
 
-        # Flush OHLCV cache: hourly
         s.add_job(
             self._job_flush_cache,
             "cron", minute=5,
@@ -241,7 +225,6 @@ class KarsaApp:
             from sqlalchemy import select
 
             async with async_session() as session:
-                # Update paper positions
                 result = await session.execute(select(PaperPosition))
                 positions = result.scalars().all()
 
@@ -256,7 +239,6 @@ class KarsaApp:
                                 pos.unrealized_pnl = (pos.entry_price - pos.current_price) * pos.quantity
                             pos.unrealized_pnl_pct = (pos.unrealized_pnl / (pos.entry_price * pos.quantity)) * 100
 
-                # Update portfolio positions
                 port_result = await session.execute(select(PortfolioState))
                 portfolio = port_result.scalars().all()
 
@@ -280,7 +262,6 @@ class KarsaApp:
         """Generate and push pre-market battle plan to Telegram."""
         logger.info("premarket_battleplan_started")
         # ponytail: call Orchestrator.generate_battleplan(), format, and send via bot_token/chat_id.
-        # Add when Telegram broadcast mechanism is centralized.
         logger.info("premarket_battleplan_done")
 
     async def _job_eod_review(self):
@@ -290,10 +271,11 @@ class KarsaApp:
         logger.info("eod_review_done")
 
     async def _job_kill_switch(self):
-        """Check if daily loss limit is breached."""
+        """Check if daily loss limit is breached — activate emergency stop if so."""
         logger.info("kill_switch_check_started")
         try:
             from src.models.tables import ClosedPaperTrade
+            from src.risk import emergency
             from sqlalchemy import select, func, cast, Date
             from datetime import datetime
 
@@ -305,10 +287,33 @@ class KarsaApp:
                 )
                 daily_pnl_pct = result.scalar() or 0.0
 
-                # If daily loss exceeds 1.5%, halt trading
                 if daily_pnl_pct <= -1.5:
-                    logger.warning("kill_switch_activated", daily_pnl_pct=daily_pnl_pct)
-                    # ponytail: push alert to Telegram and set REDIS flag 'HALT_TRADING'
+                    already_active = await emergency.is_active()
+                    if not already_active:
+                        await emergency.activate(
+                            reason=f"Daily loss limit breached: {daily_pnl_pct:+.2f}%",
+                            operator="system-kill-switch",
+                        )
+                        logger.warning("kill_switch_activated", daily_pnl_pct=daily_pnl_pct)
+                        # Send Telegram alert
+                        try:
+                            import httpx
+                            async with httpx.AsyncClient(timeout=10) as client:
+                                await client.post(
+                                    f"https://api.telegram.org/bot{settings.TELEGRAM_TOKEN}/sendMessage",
+                                    json={
+                                        "chat_id": settings.TELEGRAM_CHAT_ID,
+                                        "text": (
+                                            "🚨 <b>KILL SWITCH ACTIVATED</b>\n"
+                                            f"Daily P&amp;L: {daily_pnl_pct:+.2f}%\n"
+                                            "All trading decisions are halted.\n"
+                                            "Use /resume to reactivate."
+                                        ),
+                                        "parse_mode": "HTML",
+                                    },
+                                )
+                        except Exception as e:
+                            logger.error("kill_switch_telegram_failed", error=str(e))
         except Exception as e:
             logger.error("kill_switch_failed", error=str(e))
 
@@ -316,7 +321,6 @@ class KarsaApp:
         """Flush cached OHLCV data from Redis to Postgres."""
         logger.info("cache_flush_started")
         # ponytail: iterate OHLCV keys in Redis, bulk upsert to ohlcv_cache table.
-        # Deferred to when we have enough live data flowing.
         logger.info("cache_flush_done")
 
     async def shutdown(self):
@@ -332,7 +336,7 @@ class KarsaApp:
         logger.info("shutdown_complete")
 
     async def run(self):
-        """Main run loop."""
+        """Main run loop — starts uvicorn + scheduler."""
         await self.startup()
 
         loop = asyncio.get_running_loop()
@@ -341,15 +345,21 @@ class KarsaApp:
 
         logger.info("scheduler_running", jobs=len(self.scheduler.get_jobs()))
 
+        # Run uvicorn in background task
+        config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="warning")
+        server = uvicorn.Server(config)
+        loop.create_task(server.serve())
+
         # Keep running until shutdown signal
         await self._shutdown.wait()
+        await server.shutdown()
         await self.shutdown()
 
 
 def main():
     setup_logging()
-    app = KarsaApp()
-    asyncio.run(app.run())
+    karsa = KarsaApp()
+    asyncio.run(karsa.run())
 
 
 if __name__ == "__main__":
