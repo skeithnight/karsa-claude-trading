@@ -37,8 +37,8 @@ class Settings(BaseSettings):
     MAX_PORTFOLIO_RISK_PCT: float = 2.0
     MAX_POSITION_SIZE_PCT: float = 15.0
     DAILY_LOSS_LIMIT_PCT: float = 5.0
-    COST_MONTHLY_CEILING_USD: float = 150.0
-    COST_DAILY_LIMIT_USD: float = 10.0
+    COST_MONTHLY_CEILING_USD: float = 300.0
+    COST_DAILY_LIMIT_USD: float = 15.0
 
     # Redis Keys
     REDIS_PREFIX: str = "karsa"
@@ -57,6 +57,25 @@ class Settings(BaseSettings):
     def valid_trading_mode(cls, v: str) -> str:
         if v not in ("paper", "live"):
             raise ValueError("TRADING_MODE must be 'paper' or 'live'")
+        return v
+
+    @field_validator("TRADING_MODE")
+    @classmethod
+    def live_mode_requires_broker_keys(cls, v: str) -> str:
+        if v == "live":
+            import warnings
+            warnings.warn(
+                "TRADING_MODE='live' — ensure broker API keys (IDX_BROKER_TOKEN, US_BROKER_KEY) are configured",
+                UserWarning,
+            )
+        return v
+
+    @field_validator("TELEGRAM_TOKEN")
+    @classmethod
+    def telegram_token_should_be_set(cls, v: str) -> str:
+        if not v:
+            import warnings
+            warnings.warn("TELEGRAM_TOKEN is empty — Telegram bot will not function")
         return v
 
     @property

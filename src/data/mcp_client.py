@@ -59,7 +59,7 @@ class MCPClient:
         self._min_request_interval = 1.0
 
         # Semaphore to prevent concurrent API calls
-        self._semaphore = asyncio.Semaphore(1)
+        self._semaphore = asyncio.Semaphore(3)
 
         # Circuit breaker state
         self._failures: dict[str, int] = {}  # provider -> failure count
@@ -140,30 +140,30 @@ class MCPClient:
     async def _fetch_massive_quote(self, ticker: str, market: str) -> dict:
         """Fetch quote from Massive API (Tier 2)."""
         url = f"{MASSIVE_BASE_URL}/v2/last/trade/{ticker}"
-        response = await self._http_client.get(url, params={"apiKey": MASSIVE_API_KEY})
+        response = await self._http_client.get(url, headers={"Authorization": f"Bearer {MASSIVE_API_KEY}"})
         response.raise_for_status()
         data = response.json()
 
         price = data.get("results", {}).get("p", 0)
         return {
             "ticker": ticker, "market": market, "price": float(price),
-            "timestamp": datetime.utcnow().isoformat(), "source": "massive"
+            "timestamp": datetime.now(timezone.utc).isoformat(), "source": "massive"
         }
 
-    async def _fetch_finnhub_quote(self, ticker: str) -> dict:
+    async def _fetch_finnhub_quote(self, ticker: str, market: str = "US") -> dict:
         """Fetch quote from Finnhub (Tier 3)."""
         if not FINNHUB_API_KEY:
             raise Exception("Finnhub API key not configured")
 
         url = f"{FINNHUB_BASE_URL}/quote"
-        response = await self._http_client.get(url, params={"symbol": ticker, "token": FINNHUB_API_KEY})
+        response = await self._http_client.get(url, params={"symbol": ticker}, headers={"X-Finnhub-Token": FINNHUB_API_KEY})
         response.raise_for_status()
         data = response.json()
 
         price = data.get("c", 0)  # Current price
         return {
-            "ticker": ticker, "market": "US", "price": float(price),
-            "timestamp": datetime.utcnow().isoformat(), "source": "finnhub"
+            "ticker": ticker, "market": market, "price": float(price),
+            "timestamp": datetime.now(timezone.utc).isoformat(), "source": "finnhub"
         }
 
     async def _fetch_with_fallback(self, ticker: str, market: str) -> dict:
@@ -180,11 +180,14 @@ class MCPClient:
                         return {
                             "ticker": ticker, "market": market, "price": price,
                             "change": round(price - float(ind.get("open", price)), 2),
-                            "change_pct": round((price - float(ind.get("open", price))) / float(ind.get("open", price)) * 100, 2) if float(ind.get("open", price)) else 0,
+                            "change_pct": (
+                                round((price - float(ind.get("open", price))) / float(ind.get("open", price)) * 100, 2)
+                                if float(ind.get("open", 0)) not in (0, 0.0) else 0
+                            ),
                             "volume": int(ind.get("volume", 0) or 0),
                             "open": float(ind.get("open", 0)), "high": float(ind.get("high", 0)),
                             "low": float(ind.get("low", 0)),
-                            "timestamp": datetime.utcnow().isoformat(),
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
                         }
                 except Exception as e:
                     self._record_failure("tradingview")
@@ -203,7 +206,7 @@ class MCPClient:
             # Tier 3: Finnhub (US only)
             if market in ("US", "ETF") and not self._is_provider_blocked("finnhub"):
                 try:
-                    result = await self._fetch_finnhub_quote(ticker)
+                    result = await self._fetch_finnhub_quote(ticker, market)
                     self._record_success("finnhub")
                     return result
                 except Exception as e:
@@ -239,7 +242,7 @@ class MCPClient:
             analysis = await asyncio.to_thread(self._get_ta, ticker, market, timeframe)
             ind = analysis.indicators
             candle = {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "open": float(ind.get("open", 0)), "high": float(ind.get("high", 0)),
                 "low": float(ind.get("low", 0)), "close": float(ind.get("close", 0)),
                 "volume": int(ind.get("volume", 0) or 0),

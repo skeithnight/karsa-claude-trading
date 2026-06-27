@@ -82,7 +82,7 @@ class RateLimiter:
             return bool(result)
         except Exception as e:
             logger.error("rate_limit_check_failed", key=key, error=str(e))
-            return True
+            return False  # Fail closed
 
     async def wait_for_token(
         self,

@@ -19,15 +19,20 @@ def _get_redis() -> aioredis.Redis:
     return _client
 
 
-async def activate(reason: str, operator: str) -> None:
-    """Activate emergency stop — halts all new trading decisions."""
+async def activate(reason: str, operator: str) -> bool:
+    """Activate emergency stop — halts all new trading decisions.
+
+    Uses SET NX for atomicity — returns True if this call activated,
+    False if already active (prevents duplicate alerts).
+    """
     payload = json.dumps({
         "active": True,
         "reason": reason,
         "operator": operator,
         "activated_at": datetime.now(timezone.utc).isoformat(),
     })
-    await _get_redis().set(KILL_KEY, payload)
+    result = await _get_redis().set(KILL_KEY, payload, nx=True)
+    return bool(result)  # True if set, False if already existed
 
 
 async def deactivate(operator: str) -> None:

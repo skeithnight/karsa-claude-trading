@@ -94,8 +94,9 @@ class BaseAgent:
                             args = json.loads(func.get("arguments", "{}"))
                         except Exception:
                             args = {}
+                        tool_id = tc.get("id") or f"toolu_{hash(func.get('name', '') + str(args)) % 10**12:012x}"
                         content_blocks.append(ToolUseBlock(
-                            id=tc.get("id"), name=func.get("name"),
+                            id=tool_id, name=func.get("name"),
                             input=args, type="tool_use"
                         ))
                     # Extract text content
@@ -153,7 +154,7 @@ class BaseAgent:
 
     async def _handle_tool_call(self, tool_name: str, tool_input: dict) -> Any:
         """Handle a tool call. Override in subclasses for custom tools."""
-        logger.info("tool_call", agent=self.name, tool=tool_name, input=tool_input)
+        logger.debug("tool_call", agent=self.name, tool=tool_name, input=tool_input)
         try:
             return await self.mcp._call_tool(tool_name, tool_input)
         except Exception as e:

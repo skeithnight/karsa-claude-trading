@@ -277,10 +277,10 @@ class KarsaApp:
             from src.models.tables import ClosedPaperTrade
             from src.risk import emergency
             from sqlalchemy import select, func, cast, Date
-            from datetime import datetime
+            from datetime import datetime, timezone
 
             async with async_session() as session:
-                today = datetime.utcnow().date()
+                today = datetime.now(timezone.utc).date()
                 result = await session.execute(
                     select(func.sum(ClosedPaperTrade.realized_pnl_pct))
                     .where(cast(ClosedPaperTrade.exit_date, Date) == today)
@@ -288,12 +288,11 @@ class KarsaApp:
                 daily_pnl_pct = result.scalar() or 0.0
 
                 if daily_pnl_pct <= -1.5:
-                    already_active = await emergency.is_active()
-                    if not already_active:
-                        await emergency.activate(
-                            reason=f"Daily loss limit breached: {daily_pnl_pct:+.2f}%",
-                            operator="system-kill-switch",
-                        )
+                    activated = await emergency.activate(
+                        reason=f"Daily loss limit breached: {daily_pnl_pct:+.2f}%",
+                        operator="system-kill-switch",
+                    )
+                    if activated:
                         logger.warning("kill_switch_activated", daily_pnl_pct=daily_pnl_pct)
                         # Send Telegram alert
                         try:

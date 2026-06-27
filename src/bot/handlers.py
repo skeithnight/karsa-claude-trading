@@ -1,6 +1,8 @@
 """Karsa Trading System - Telegram Bot Command Handlers"""
 
 from decimal import Decimal, InvalidOperation
+from src.utils.validation import validate_ticker, validate_market, sanitize_for_prompt
+from src.utils.telegram_helpers import escape_html
 from telegram import Update
 from telegram.ext import ContextTypes
 import httpx
@@ -39,6 +41,16 @@ def parse_decimal(raw: str) -> Decimal:
         raise ValueError(f"Invalid number: {raw!r}")
 
 
+def validate_ticker(ticker: str) -> bool:
+    """Validate ticker format — alphanumeric + dots, max 20 chars."""
+    return bool(re.match(r'^[A-Z0-9.]{1,20}$', ticker))
+
+
+def validate_market(market: str) -> bool:
+    """Validate market is one of the allowed values."""
+    return market in ("IDX", "US", "ETF")
+
+
 def _is_authorized(update: Update) -> bool:
     """Check if message is from authorized chat. Fail closed if TELEGRAM_CHAT_ID not set."""
     if not settings.TELEGRAM_CHAT_ID:
@@ -54,7 +66,7 @@ def _is_authorized(update: Update) -> bool:
 async def _reply(update: Update, text: str, add_timestamp: bool = True, **kwargs):
     """Reply to message or edit callback query message."""
     if add_timestamp:
-        from datetime import datetime
+        from datetime import datetime, timezone
         ts = datetime.now().strftime("%Y-%m-%d %H:%M")
         text = f"<i>{ts}</i>\n{text}"
 
@@ -293,7 +305,13 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     market, ticker = context.args[0].upper(), context.args[1].upper()
-    msg = await _reply(update, f"🔍 Scanning {ticker} ({market})...")
+    if not validate_market(market):
+        await _reply(update, "⚠️ Market must be IDX, US, or ETF.", parse_mode="Markdown")
+        return
+    if not validate_ticker(ticker):
+        await _reply(update, "⚠️ Invalid ticker format. Use alphanumeric, max 20 chars.", parse_mode="Markdown")
+        return
+    msg = await _reply(update, f"🔍 Scanning {sanitize_for_prompt(ticker)} ({escape_html(market)})...")
 
     try:
         result = await orchestrator.scan_single(market, ticker)
@@ -330,13 +348,11 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
-    # Check Redis
+    # Check Redis (reuse orchestrator's connection)
     redis_ok = False
     try:
-        import redis.asyncio as redis
-        r = redis.from_url(settings.REDIS_URL)
-        redis_ok = await r.ping()
-        await r.close()
+        orch = context.bot_data.get("orchestrator")
+        redis_ok = await orch.cache.ping() if orch else False
     except Exception:
         pass
 
@@ -388,7 +404,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stop_active = await emergency.is_active()
         if stop_active:
             stop_info = await emergency.get_status()
-            reason = stop_info.get("reason", "Unknown") if stop_info else "Unknown"
+            reason = escape_html(stop_info.get("reason", "Unknown")) if stop_info else "Unknown"
             kill_switch_status = f"🔴 Kill Switch (ACTIVE)\n<i>Reason: {reason}</i>"
     except Exception:
         pass
@@ -546,13 +562,14 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             from src.models.tables import CashBalance
             from sqlalchemy import select
 
+            from sqlalchemy.dialects.postgresql import insert as pg_insert
             async with async_session() as session:
-                result = await session.execute(select(CashBalance).where(CashBalance.currency == currency))
-                cash = result.scalar_one_or_none()
-                if cash:
-                    cash.balance = amount
-                else:
-                    session.add(CashBalance(currency=currency, balance=amount))
+                stmt = pg_insert(CashBalance).values(currency=currency, balance=amount)
+                stmt = stmt.on_conflict_do_update(
+                    constraint="uq_cash_balance_currency",
+                    set_={"balance": amount, "updated_at": datetime.now(timezone.utc)},
+                )
+                await session.execute(stmt)
                 await session.commit()
             await _reply(update,f"✅ Cash balance set: {amount:,.2f} {currency}", parse_mode="Markdown")
         except Exception as e:
@@ -567,6 +584,12 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     market = args[0].upper()
     ticker = args[1].upper()
+    if not validate_market(market):
+        await _reply(update, "⚠️ Market must be IDX, US, or ETF.", parse_mode="Markdown")
+        return
+    if not validate_ticker(ticker):
+        await _reply(update, "⚠️ Invalid ticker format.", parse_mode="Markdown")
+        return
     qty = parse_decimal(args[2])
     price = parse_decimal(args[3])
 
@@ -1228,7 +1251,7 @@ async def audit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             # Show reasoning for most recent signal
             if signals:
-                latest = max(signals.values(), key=lambda s: s.created_at or s.created_at)
+                latest = max(signals.values(), key=lambda s: s.created_at or datetime.min)
                 if latest.reasoning:
                     lines.append(f"\n🧠 <b>Latest signal ({latest.ticker}):</b>")
                     lines.append(f"<i>{escape_html(latest.reasoning[:300])}</i>")

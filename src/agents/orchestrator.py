@@ -63,7 +63,12 @@ class Orchestrator:
         if market_filter in (None, "US_ETF", "US"):
             tasks.append(self._scan_market("US", self.us_agent, US_UNIVERSE))
         if market_filter in (None, "US_ETF", "ETF"):
-            tasks.append(self._scan_market("ETF", self.etf_agent, ETF_UNIVERSE))
+            # Regime hard veto: disable ETF mean reversion in BEAR regime
+            skip_etf = await self._is_bear_regime()
+            if skip_etf:
+                logger.warning("etf_scan_skipped_bear_regime", reason="VIX>25 or SPY<200-SMA")
+            else:
+                tasks.append(self._scan_market("ETF", self.etf_agent, ETF_UNIVERSE))
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -91,7 +96,9 @@ class Orchestrator:
                 break
 
             try:
-                result = await agent.run(f"Analyze {ticker} for trading opportunities right now.")
+                from src.utils.validation import sanitize_for_prompt
+                safe_ticker = sanitize_for_prompt(ticker)
+                result = await agent.run(f"Analyze {safe_ticker} for trading opportunities right now.")
                 if result.get("error"):
                     logger.warning("agent_error", market=market, ticker=ticker, error=result["error"])
                     continue
@@ -108,6 +115,22 @@ class Orchestrator:
                 logger.error("ticker_scan_failed", market=market, ticker=ticker, error=str(e))
         logger.info("market_scan_done", market=market, tickers=len(universe), signals=len(signals))
         return signals
+
+    async def _is_bear_regime(self) -> bool:
+        """Check if US market is in BEAR regime (hard veto for ETF mean reversion).
+
+        Returns True if VIX > 25 or SPY below 200-SMA.
+        Uses the same data source as the regime filter.
+        """
+        try:
+            from src.advisory.regime import USRegimeFilter
+            us_filter = USRegimeFilter(self.mcp)
+            regime = await us_filter.get_current_regime()
+            state = regime.get("state", "NEUTRAL")
+            return state == "BEAR"
+        except Exception as e:
+            logger.error("regime_check_failed", error=str(e))
+            return False  # Fail open — don't block scans on regime check failure
 
     def _validate_signal(self, signal: dict, market: str) -> list[str]:
         """Validate agent output structure. Returns list of issues (empty = valid)."""
@@ -172,7 +195,9 @@ class Orchestrator:
         if not agent:
             return {"error": f"Unknown market: {market}"}
 
-        result = await agent.run(f"Analyze {ticker} for trading opportunities right now.")
+        # Sanitize ticker for LLM prompt — strip any control chars or injection attempts
+        safe_ticker = ''.join(c for c in ticker if c.isalnum() or c in '.-')[:20]
+        result = await agent.run(f"Analyze {safe_ticker} for trading opportunities right now.")
 
         # Validate signal before persisting
         if not result.get("error"):
@@ -190,25 +215,26 @@ class Orchestrator:
         try:
             from src.models.database import async_session
             from src.models.tables import Signal
-            from datetime import datetime, timedelta
+            from datetime import datetime, timezone, timedelta
 
-            # IDX-specific order validation
+            # IDX-specific order validation (including ADV liquidity gate)
             if signal_data.get("market") == "IDX":
                 try:
                     from src.risk.idx_limits import validate_order
                     price = signal_data.get("entry_price")
                     prev_close = signal_data.get("prev_close")
                     lots = signal_data.get("suggested_lots", 1)
+                    adv_20d = signal_data.get("adv_20d")  # 20-day avg volume in shares
                     if price and prev_close and lots:
                         validate_order(
                             signal_data.get("ticker", "?"),
                             float(price),
                             float(prev_close),
                             int(lots),
+                            adv_20d=float(adv_20d) if adv_20d else None,
                         )
                 except ValueError as e:
                     logger.warning("idx_order_validation_failed", ticker=signal_data.get("ticker"), error=str(e))
-                    # Still save signal but mark validation failure
                     signal_data["validation_note"] = str(e)
 
             async with async_session() as session:
@@ -224,7 +250,7 @@ class Orchestrator:
                     risk_reward_ratio=signal_data.get("risk_reward_ratio"),
                     reasoning=signal_data.get("reasoning"),
                     status="PENDING",
-                    expires_at=datetime.utcnow() + timedelta(hours=24),
+                    expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
                 )
                 session.add(signal)
                 await session.commit()
