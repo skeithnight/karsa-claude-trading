@@ -1,0 +1,25 @@
+Dockerfile.orchestrator
+  9c3f1d4c8ec46b03 15-16
+Dockerfile.bot
+  9c3f1d4c8ec46b03 14-15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "729e1ff66fbe0faf8d2cfee85a160b0f73b8764d",
+  "prompts": {
+    "9c3f1d4c8ec46b03": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e79f474e-35f2-4c9f-b349-c4a234e9da1f",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 6,
+      "total_deletions": 5,
+      "accepted_lines": 4,
+      "overriden_lines": 0
+    }
+  }
+}
