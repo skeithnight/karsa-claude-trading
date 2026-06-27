@@ -11,7 +11,7 @@ from fastapi import FastAPI
 import uvicorn
 
 from src.config import settings
-from src.models.database import init_db, close_db
+from src.models.database import init_db, close_db, async_session
 from src.data.cache import CacheManager
 from src.data.mcp_client import MCPClient
 from src.agents.orchestrator import Orchestrator
@@ -79,13 +79,14 @@ class KarsaApp:
         @app.get("/health")
         async def health():
             db_ok = False
+            db_error = None
             try:
                 from sqlalchemy import text
                 async with async_session() as session:
                     await session.execute(text("SELECT 1"))
                     db_ok = True
-            except Exception:
-                pass
+            except Exception as e:
+                db_error = str(e)
 
             redis_ok = await self.cache.ping() if self.cache else False
 
@@ -93,7 +94,7 @@ class KarsaApp:
                 "status": "ok" if (db_ok and redis_ok) else "degraded",
                 "trading_mode": settings.TRADING_MODE,
                 "checks": {
-                    "postgres": "ok" if db_ok else "FAIL",
+                    "postgres": "ok" if db_ok else f"FAIL: {db_error}",
                     "redis": "ok" if redis_ok else "FAIL",
                 },
             }
