@@ -1306,11 +1306,23 @@ async def audit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [("💼 Portfolio", "cmd_portfolio"), ("☀️ Briefing", "cmd_briefing")],
         ])
 
-        await send_long_message(update, "\n".join(lines), reply_markup=keyboard)
+        try:
+            await send_long_message(update, "\n".join(lines), reply_markup=keyboard)
+        except Exception as send_err:
+            logger.error("audit_send_failed", error=str(send_err))
+            # Fallback: try plain text summary
+            try:
+                summary = f"📊 Audit: {ticker}\nDirection: {signal.direction}\nConfidence: {signal.confidence_score}/100"
+                await _reply(update, summary, parse_mode=None)
+            except Exception:
+                pass
 
     except Exception as e:
         logger.error("audit_cmd_failed", error=str(e), exc_info=True)
-        await _reply(update, "❌ Audit failed. Check logs for details.")
+        try:
+            await _reply(update, "❌ Audit failed. Check logs for details.")
+        except Exception:
+            pass
 
 
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
