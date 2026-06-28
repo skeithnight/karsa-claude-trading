@@ -1,8 +1,8 @@
-"""Karsa Trading System - Telegram Bot Command Handlers"""
+"""Karsa Trading System - Telegram Bot Command Handlers (Composable Format)"""
 
 from decimal import Decimal, InvalidOperation
 from src.utils.validation import validate_ticker, validate_market, sanitize_for_prompt
-from src.utils.telegram_helpers import escape_html
+from src.utils.format import HTML, bold, italic, code, pre, fmt, join
 from telegram import Update
 from telegram.ext import ContextTypes
 import httpx
@@ -18,10 +18,10 @@ def parse_decimal(raw: str) -> Decimal:
     """Parse number string handling both comma and dot as decimal separator.
 
     Rules:
-    - Contains both . and , → last one is decimal separator (1,234.56 or 1.234,56)
-    - Contains only , → decimal separator (0,006421695)
-    - Contains only . → decimal separator (0.006421695)
-    - Neither → integer
+    - Contains both . and , -> last one is decimal separator (1,234.56 or 1.234,56)
+    - Contains only , -> decimal separator (0,006421695)
+    - Contains only . -> decimal separator (0.006421695)
+    - Neither -> integer
 
     Raises ValueError on invalid input.
     """
@@ -53,12 +53,17 @@ def _is_authorized(update: Update) -> bool:
     return True
 
 
-async def _reply(update: Update, text: str, add_timestamp: bool = True, **kwargs):
-    """Reply to message or edit callback query message."""
+async def _reply(update: Update, content, add_timestamp: bool = True, **kwargs):
+    """Reply with auto-detection of formatted content."""
     if add_timestamp:
-        from datetime import datetime, timezone
+        from datetime import datetime
         ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-        text = f"<i>{ts}</i>\n{text}"
+        content = fmt(italic(ts), "\n", content)
+
+    if isinstance(content, HTML) and "parse_mode" not in kwargs:
+        kwargs["parse_mode"] = "HTML"
+
+    text = str(content)
 
     if update.callback_query:
         return await update.callback_query.message.edit_text(text, **kwargs)
@@ -70,19 +75,18 @@ async def _reply(update: Update, text: str, add_timestamp: bool = True, **kwargs
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
-    await _reply(update,
-        "<b>🤖 Karsa Advisory Desk</b>\n\n"
-        "AI-driven trading desk for IDX, US, and ETF markets.\n"
-        "Use /guide for full walkthrough.\n\n"
-        "<b>Quick Commands:</b>\n"
-        "/portfolio - View holdings &amp; cash\n"
-        "/briefing - Morning dashboard\n"
-        "/scan &lt;market&gt; &lt;ticker&gt; - Scan a stock\n"
-        "/analyze - AI portfolio review\n"
-        "/regime - Market state\n"
-        "/guide - Full 101 walkthrough\n",
-        parse_mode="HTML",
-    )
+    await _reply(update, fmt(
+        bold("🤖 Karsa Advisory Desk"), "\n\n",
+        "AI-driven trading desk for IDX, US, and ETF markets.\n",
+        "Use ", code("/guide"), " for full walkthrough.\n\n",
+        bold("Quick Commands:"), "\n",
+        code("/portfolio"), " — View holdings & cash\n",
+        code("/briefing"), " — Morning dashboard\n",
+        code("/scan <market> <ticker>"), " — Scan a stock\n",
+        code("/analyze"), " — AI portfolio review\n",
+        code("/regime"), " — Market state\n",
+        code("/guide"), " — Full 101 walkthrough\n",
+    ))
 
 
 async def guide_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -92,117 +96,80 @@ async def guide_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     from src.utils.telegram_helpers import send_long_message, build_nav_keyboard
 
-    text = (
-        "<b>📖 KARSA 101 — Your AI Trading Desk</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    msg = fmt(
+        bold("📖 KARSA 101 — Your AI Trading Desk"), "\n",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n",
 
-        "<b>🤖 What is Karsa?</b>\n"
-        "Karsa is an AI-powered advisory desk that scans markets, generates signals, "
-        "and tracks a shadow paper portfolio — all through Telegram. "
-        "It covers IDX (Indonesia), US Equities, and Global ETFs.\n\n"
-        "Karsa does NOT trade your real money. It provides analysis and paper-trades "
-        "to help you make informed decisions. You approve or reject every signal.\n\n"
+        bold("🤖 What is Karsa?"), "\n",
+        "Karsa is an AI-powered advisory desk that scans markets, generates signals, ",
+        "and tracks a shadow paper portfolio — all through Telegram.\n\n",
+        "Karsa does NOT trade your real money. It provides analysis and paper-trades ",
+        "to help you make informed decisions. You approve or reject every signal.\n\n",
 
-        "<b>📋 SUPPORTED MARKETS</b>\n"
-        "• <b>IDX</b> — Indonesian stocks (BBCA, BBRI, BMRI, TLKM ...)\n"
-        "• <b>US</b> — US equities (NVDA, AAPL, MSFT, GOOGL ...)\n"
-        "• <b>ETF</b> — Global ETFs (SPY, QQQ, GLD, TLT ...)\n\n"
+        bold("📋 SUPPORTED MARKETS"), "\n",
+        "• ", bold("IDX"), " — Indonesian stocks (BBCA, BBRI, BMRI, TLKM ...)\n",
+        "• ", bold("US"), " — US equities (NVDA, AAPL, MSFT, GOOGL ...)\n",
+        "• ", bold("ETF"), " — Global ETFs (SPY, QQQ, GLD, TLT ...)\n\n",
 
-        "<b>🔄 HOW IT WORKS — Step by Step</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        bold("🔄 HOW IT WORKS"), "\n",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n",
 
-        "<b>Step 1: Set Up Your Portfolio</b>\n"
-        "Tell Karsa what you hold so it can track and analyze.\n"
-        "  <code>/add IDX BBCA 500 8500</code> — add 500 BBCA @ 8,500\n"
-        "  <code>/add US NVDA 10 120.50</code> — add 10 NVDA @ $120.50\n"
-        "  <code>/add cash IDR 50000000</code> — set IDR cash\n"
-        "  <code>/add cash USD 10000</code> — set USD cash\n\n"
+        bold("Step 1: Set Up Your Portfolio"), "\n",
+        "  ", code("/add IDX BBCA 500 8500"), " — add 500 BBCA @ 8,500\n",
+        "  ", code("/add US NVDA 10 120.50"), " — add 10 NVDA @ $120.50\n",
+        "  ", code("/add cash IDR 50000000"), " — set IDR cash\n\n",
 
-        "<b>Step 2: Start Your Day with /briefing</b>\n"
-        "Morning dashboard shows:\n"
-        "  • Market regime (BULL / NEUTRAL / BEAR)\n"
-        "  • Portfolio value &amp; cash ratio\n"
-        "  • Paper trading open positions\n\n"
+        bold("Step 2: Start Your Day"), "\n",
+        "  ", code("/briefing"), " — Morning dashboard & regime check\n",
+        "  ", code("/scan portfolio"), " — scan ALL your holdings at once\n\n",
 
-        "<b>Step 3: Scan Markets</b>\n"
-        "  <code>/scan IDX BBCA</code> — quick AI readout on one ticker\n"
-        "  <code>/scan portfolio</code> — scan ALL your holdings at once\n"
-        "  <code>/analyze</code> — full portfolio analysis with AI recommendations\n"
-        "  <code>/analyze NVDA</code> — deep dive on a single holding\n\n"
+        bold("Step 3: Review Signals"), "\n",
+        "When Karsa finds an opportunity (confidence >= 60/100), it sends an alert. ",
+        "If approved -> paper trade executed. If rejected -> discarded.\n\n",
 
-        "<b>Step 4: Review Signals</b>\n"
-        "When Karsa finds an opportunity (confidence ≥ 60/100), it:\n"
-        "  1. Sends you a Telegram alert with APPROVE / REJECT buttons\n"
-        "  2. If approved → paper trade executed automatically\n"
-        "  3. If rejected → signal discarded\n\n"
+        bold("Step 4: Track Performance"), "\n",
+        "  ", code("/portfolio"), " — view all holdings, avg cost, unrealized P&L\n",
+        "  ", code("/pnl"), " — shadow portfolio: open P&L, win rate, realized P&L\n",
+        "  ", code("/trades"), " — paper trading history\n",
+        "  ", code("/audit <ticker>"), " — see AI reasoning behind a signal\n\n",
 
-        "<b>Step 5: Track Performance</b>\n"
-        "  <code>/portfolio</code> — view all holdings, avg cost, unrealized P&amp;L\n"
-        "  <code>/pnl</code> — shadow portfolio: open P&amp;L, win rate, realized P&amp;L\n"
-        "  <code>/trades</code> — paper trading history (open + closed)\n"
-        "  <code>/audit NVDA</code> — see AI reasoning behind a signal\n"
-        "  <code>/audit portfolio</code> — audit signals for all holdings\n\n"
+        bold("Step 5: Manage Positions"), "\n",
+        "  ", code("/edit IDX BBCA qty 600"), " — update quantity\n",
+        "  ", code("/remove IDX BBCA"), " — remove position\n\n",
 
-        "<b>Step 6: Manage Positions</b>\n"
-        "  <code>/edit IDX BBCA qty 600</code> — update quantity\n"
-        "  <code>/edit IDX BBCA price 9000</code> — update avg cost\n"
-        "  <code>/remove IDX BBCA</code> — remove position\n"
-        "  <code>/edit cash IDR 60000000</code> — update cash balance\n\n"
+        bold("📊 COMMAND REFERENCE"), "\n",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n",
 
-        "<b>📊 COMMAND REFERENCE</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        bold("Portfolio:"), "\n",
+        "  ", code("/portfolio"), " — view all holdings & cash\n",
+        "  ", code("/add"), " — add position or cash\n",
+        "  ", code("/remove"), " — remove position\n",
+        "  ", code("/edit"), " — edit position or cash\n\n",
 
-        "<b>Portfolio:</b>\n"
-        "  /portfolio — view all holdings &amp; cash\n"
-        "  /add — add position or cash\n"
-        "  /remove — remove position\n"
-        "  /edit — edit position or cash\n\n"
+        bold("Analysis:"), "\n",
+        "  ", code("/scan <market> <ticker>"), " — quick scan\n",
+        "  ", code("/scan portfolio"), " — scan all holdings\n",
+        "  ", code("/analyze"), " — full portfolio AI review\n",
+        "  ", code("/audit <ticker>"), " — signal audit trail\n\n",
 
-        "<b>Analysis:</b>\n"
-        "  /scan &lt;market&gt; &lt;ticker&gt; — quick scan\n"
-        "  /scan portfolio — scan all holdings\n"
-        "  /analyze — full portfolio AI review\n"
-        "  /analyze &lt;ticker&gt; — single holding deep dive\n"
-        "  /audit &lt;ticker&gt; — signal audit trail\n"
-        "  /audit portfolio — audit all holdings\n\n"
+        bold("CIO Dashboard:"), "\n",
+        "  ", code("/briefing"), " — morning dashboard\n",
+        "  ", code("/regime"), " — market regime (US + IDX)\n",
+        "  ", code("/pnl"), " — shadow portfolio P&L\n",
+        "  ", code("/trades"), " — paper trade history\n\n",
 
-        "<b>CIO Dashboard:</b>\n"
-        "  /briefing — morning dashboard (US + IDX regime)\n"
-        "  /regime — market regime (US + IDX)\n"
-        "  /pnl — shadow portfolio P&amp;L\n"
-        "  /trades — paper trade history\n\n"
-
-        "<b>System:</b>\n"
-        "  /status — health check\n"
-        "  /guide — this guide\n\n"
-
-        "<b>🧠 THE AI AGENTS</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "Karsa runs specialized AI agents:\n"
-        "• <b>IDX Analyst</b> — scans Indonesian stocks\n"
-        "• <b>US Analyst</b> — scans US equities\n"
-        "• <b>ETF Analyst</b> — scans global ETFs\n"
-        "• <b>Portfolio Analyst</b> — analyzes your holdings\n"
-        "• <b>Regime Filter</b> — macro context (VIX, SPY, IHSG)\n\n"
-        "Each agent uses live market data (TradingView), "
-        "technical indicators (RSI, Bollinger, EMA), "
-        "and AI reasoning to generate signals.\n\n"
-
-        "<b>⚠️ IMPORTANT NOTES</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "• Karsa is an <b>advisory system</b>, not a broker\n"
-        "• All trades are <b>paper trades</b> (shadow portfolio)\n"
-        "• You decide what to execute in your real account\n"
-        "• Kill switch triggers at -1.5% daily P&amp;L\n"
-        "• Signals expire after 24 hours if not acted on\n"
+        bold("⚠️ IMPORTANT NOTES"), "\n",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n",
+        "• Karsa is an ", bold("advisory system"), ", not a broker\n",
+        "• All trades are ", bold("paper trades"), " (shadow portfolio)\n",
+        "• Kill switch triggers at -1.5% daily P&L\n",
     )
 
     keyboard = build_nav_keyboard([
         [("💼 Portfolio", "cmd_portfolio"), ("☀️ Briefing", "cmd_briefing")],
         [("🌡️ Regime", "cmd_regime"), ("📊 P&L", "cmd_pnl")],
     ])
-
-    await send_long_message(update, text, reply_markup=keyboard)
+    await send_long_message(update, str(msg), reply_markup=keyboard)
 
 
 async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -210,7 +177,11 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
     if not context.args:
-        await _reply(update, "⚠️ Usage:\n`/scan <market> <ticker>` — scan one ticker\n`/scan portfolio` — scan all holdings", parse_mode="Markdown")
+        await _reply(update, fmt(
+            "⚠️ Usage:\n",
+            code("/scan <market> <ticker>"), " — scan one ticker\n",
+            code("/scan portfolio"), " — scan all holdings"
+        ))
         return
 
     orchestrator = context.bot_data.get("orchestrator")
@@ -220,8 +191,7 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # /scan portfolio
     if context.args[0].upper() == "PORTFOLIO":
-        msg = await _reply(update, "🔍 <b>Scanning entire portfolio...</b>", parse_mode="HTML")
-
+        msg = await _reply(update, bold("🔍 Scanning entire portfolio..."))
         try:
             from src.models.database import async_session
             from src.models.tables import PortfolioState
@@ -234,15 +204,13 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 positions = result.scalars().all()
 
             if not positions:
-                await msg.edit_text("📭 No positions to scan. Use `/add` first.", parse_mode="Markdown")
+                await msg.edit_text("📭 No positions to scan. Use /add first.")
                 return
 
             port_list = [{"market": p.market, "ticker": p.ticker} for p in positions]
             scan_result = await orchestrator.scan_portfolio(port_list)
 
-            lines = [f"<b>🔍 PORTFOLIO SCAN</b> — {len(port_list)} tickers\n"]
-
-            # Group by market
+            lines = [bold(f"🔍 PORTFOLIO SCAN — {len(port_list)} tickers")]
             by_market = defaultdict(list)
             for r in scan_result.get("results", []):
                 by_market[r.get("market", "UNKNOWN")].append(r)
@@ -258,69 +226,57 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     conf = r.get("confidence_score", 0)
                     direction = r.get("direction", "N/A")
                     d_emoji = rec_emoji.get(direction, "⚪️")
-                    reasoning = escape_html((r.get("reasoning", "") or "")[:60])
-                    rows.append([
-                        r.get("ticker", "?"),
-                        r.get("strategy", "?")[:12],
-                        f"{conf}/100",
-                        f"{d_emoji} {direction}",
-                        reasoning,
-                    ])
+                    reasoning = (r.get("reasoning", "") or "")[:60]
+                    rows.append([r.get("ticker", "?"), r.get("strategy", "?")[:12], f"{conf}/100", f"{d_emoji} {direction}", reasoning])
                 table = format_pre_table(headers, rows, align_right=[2])
-                lines.append(f"\n📈 <b>{market}</b>")
-                lines.append(f"<pre>{table}</pre>")
+                lines.append(fmt("\n", bold(f"📈 {market} MARKET"), "\n", pre(table)))
 
-            # Errors
             errors = scan_result.get("errors", [])
             if errors:
-                lines.append(f"\n⚠️ <b>{len(errors)} failed:</b>")
-                for e in errors[:5]:
-                    lines.append(f"  • {e['ticker']}: {escape_html(e['error'][:40])}")
+                err_lines = [f"  • {e['ticker']}: {e['error'][:40]}" for e in errors[:5]]
+                lines.append(fmt("\n⚠️ ", bold(f"{len(errors)} failed:"), "\n", join(err_lines)))
 
             keyboard = build_nav_keyboard([
                 [("🧠 Analyze", "cmd_analyze"), ("📊 P&L", "cmd_pnl")],
                 [("☀️ Briefing", "cmd_briefing"), ("💼 Portfolio", "cmd_portfolio")],
             ])
-
-            await send_long_message(update, "\n".join(lines), reply_markup=keyboard)
+            await send_long_message(update, str(fmt(*lines)), reply_markup=keyboard)
 
         except Exception as e:
             logger.error("scan_portfolio_failed", error=str(e), exc_info=True)
-            await msg.edit_text("❌ Scan failed. Check logs for details.")
+            await msg.edit_text("❌ Scan failed. Check logs.")
         return
 
     # /scan <market> <ticker>
     if len(context.args) < 2:
-        await _reply(update, "⚠️ Usage: `/scan <market> <ticker>`\nExample: `/scan IDX BBCA`", parse_mode="Markdown")
+        await _reply(update, fmt("⚠️ Usage: ", code("/scan IDX BBCA")))
         return
 
     market, ticker = context.args[0].upper(), context.args[1].upper()
-    if not validate_market(market):
-        await _reply(update, "⚠️ Market must be IDX, US, or ETF.", parse_mode="Markdown")
+    if not validate_market(market) or not validate_ticker(ticker):
+        await _reply(update, "⚠️ Invalid market or ticker format.")
         return
-    if not validate_ticker(ticker):
-        await _reply(update, "⚠️ Invalid ticker format. Use alphanumeric, max 20 chars.", parse_mode="Markdown")
-        return
-    msg = await _reply(update, f"🔍 Scanning {sanitize_for_prompt(ticker)} ({escape_html(market)})...")
+
+    msg = await _reply(update, fmt("🔍 Scanning ", bold(ticker), " (", market, ")..."))
 
     try:
         result = await orchestrator.scan_single(market, ticker)
-
         if result.get("error"):
-            await msg.edit_text(f"❌ Scan failed: {result['error']}\n\nDetail: {result.get('detail', '')}")
+            await msg.edit_text(str(fmt("❌ Scan failed: ", result['error'])))
             return
 
-        text = (
-            f"<b>ℹ️ Scan: {ticker} ({market})</b>\n"
-            f"Strategy: {result.get('strategy', 'Unknown')}\n"
-            f"Confidence: {result.get('confidence_score', 0)}/100\n"
-            f"Direction: {result.get('direction', 'N/A')}\n\n"
-            f"<b>📝 Reasoning:</b>\n{result.get('reasoning', 'No reasoning provided.')}"
+        text = fmt(
+            bold(f"ℹ️ Scan: {ticker} ({market})"), "\n",
+            "Strategy: ", result.get('strategy', 'Unknown'), "\n",
+            "Confidence: ", str(result.get('confidence_score', 0)), "/100\n",
+            "Direction: ", result.get('direction', 'N/A'), "\n\n",
+            bold("📝 Reasoning:"), "\n",
+            result.get('reasoning', 'No reasoning provided.')
         )
-        await msg.edit_text(text, parse_mode="HTML")
+        await msg.edit_text(str(text), parse_mode="HTML")
     except Exception as e:
         logger.error("scan_cmd_failed", error=str(e), exc_info=True)
-        await msg.edit_text("❌ Scan failed. Check logs for details.")
+        await msg.edit_text("❌ Scan failed. Check logs.")
 
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -338,7 +294,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
-    # Check Redis (reuse orchestrator's connection)
+    # Check Redis
     redis_ok = False
     try:
         orch = context.bot_data.get("orchestrator")
@@ -354,15 +310,13 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         try:
             async with httpx.AsyncClient(timeout=3.0, verify=False) as client:
-                # Try /v1/models (standard OpenAI endpoint)
-                # We don't care about 401/404, just if we can reach it.
                 await client.get(f"{router_url}/v1/models")
                 router_ok = True
         except Exception:
             pass
-        router_status = f"{'🟢' if router_ok else '🔴'} 9Router (`{router_url}`)"
+        router_status = f"{'🟢' if router_ok else '🔴'} 9Router ({router_url})"
 
-    # Check Scheduler & Jobs (from orchestrator container via HTTP)
+    # Check Scheduler
     scheduler_status = "⚪️ Scheduler (Unknown)"
     scheduler_error = ""
     jobs_info = []
@@ -380,7 +334,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     for job in data.get("jobs", []):
                         next_run = job.get("next_run", "N/A")
                         if next_run and next_run != "N/A":
-                            next_run = next_run.split("T")[1][:5]  # Extract HH:MM
+                            next_run = next_run.split("T")[1][:5]
                         jobs_info.append(f"  • {job['name']}: next at {next_run}")
             else:
                 scheduler_status = "🔴 Scheduler (Unreachable)"
@@ -388,39 +342,36 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         scheduler_error = str(e)[:100]
 
-    # Check Kill Switch (emergency stop)
+    # Check Kill Switch
     kill_switch_status = "🟢 Kill Switch (Inactive)"
     try:
         stop_active = await emergency.is_active()
         if stop_active:
             stop_info = await emergency.get_status()
-            reason = escape_html(stop_info.get("reason", "Unknown")) if stop_info else "Unknown"
-            kill_switch_status = f"🔴 Kill Switch (ACTIVE)\n<i>Reason: {reason}</i>"
+            reason = stop_info.get("reason", "Unknown") if stop_info else "Unknown"
+            kill_switch_status = fmt("🔴 Kill Switch (ACTIVE)\n", italic(f"Reason: {reason}"))
     except Exception:
         pass
 
     lines = [
-        "<b>📊 System Status</b>\n━━━━━━━━━━━━━━━━",
-        f"{'🟢' if db_ok else '🔴'} PostgreSQL",
-        f"{'🟢' if redis_ok else '🔴'} Redis",
-        router_status,
-        "🟢 Orchestrator",
-        "",
-        "<b>Scheduler &amp; Automation:</b>",
-        scheduler_status,
+        bold("📊 System Status"), "\n━━━━━━━━━━━━━━━━\n",
+        f"{'🟢' if db_ok else '🔴'} PostgreSQL\n",
+        f"{'🟢' if redis_ok else '🔴'} Redis\n",
+        router_status, "\n",
+        "🟢 Orchestrator\n\n",
+        bold("Scheduler & Automation:"), "\n",
+        scheduler_status, "\n",
         kill_switch_status,
     ]
 
     if scheduler_error:
-        lines.append(f"<i>⚠️ {scheduler_error}</i>")
+        lines.append(italic(f"⚠️ {scheduler_error}"))
 
     if jobs_info:
-        lines.append("\n<b>Scheduled Jobs:</b>")
-        lines.extend(jobs_info[:8])  # Show max 8 jobs
+        lines.extend(["\n", bold("Scheduled Jobs:"), "\n", join(jobs_info[:8])])
 
-    lines.append("━━━━━━━━━━━━━━━━")
-
-    await _reply(update,"\n".join(lines), parse_mode="HTML")
+    lines.append("\n━━━━━━━━━━━━━━━━")
+    await _reply(update, fmt(*lines))
 
 
 async def portfolio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -437,11 +388,9 @@ async def portfolio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         async with async_session() as session:
             port_result = await session.execute(select(PortfolioState).order_by(PortfolioState.market, PortfolioState.ticker))
             positions = list(port_result.scalars().all())
-
             cash_result = await session.execute(select(CashBalance))
             cash_balances = cash_result.scalars().all()
 
-        # Fetch live prices for positions missing current_price
         orchestrator = context.bot_data.get("orchestrator")
         stale = [p for p in positions if not p.current_price]
         if stale and orchestrator:
@@ -460,66 +409,50 @@ async def portfolio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error("portfolio_db_error", error=str(e), exc_info=True)
-        await _reply(update, f"❌ Database error: {str(e)}", parse_mode="HTML")
+        await _reply(update, "❌ Database error. Check logs.")
         return
 
-    # Build cash line
-    cash_parts = []
-    for cash in cash_balances:
-        cash_parts.append(f"{cash.balance:,.2f} {cash.currency}")
-    cash_str = " | ".join(cash_parts) if cash_parts else "$0.00"
+    cash_str = " | ".join([f"{c.balance:,.2f} {c.currency}" for c in cash_balances]) or "$0.00"
 
     lines = [
-        "<b>💼 PORTFOLIO OVERVIEW</b>",
-        f"💵 <b>Cash:</b> {cash_str}",
+        bold("💼 PORTFOLIO OVERVIEW"), "\n",
+        "💵 ", bold("Cash:"), " ", cash_str,
     ]
 
-    # Group positions by market
     if not positions:
-        lines.append("")
-        lines.append("<i>📭 No positions open.</i>")
-        lines.append("<i>💡 Use /add &lt;market&gt; &lt;ticker&gt; &lt;qty&gt; &lt;price&gt; to add.</i>")
+        lines.extend([
+            "\n\n", italic("📭 No positions open."), "\n",
+            italic("💡 Use "), code("/add IDX BBCA 500 8500"), italic(" to add.")
+        ])
     else:
         for market, market_positions in groupby(positions, key=lambda p: p.market):
             headers = ["Ticker", "Qty", "Avg Cost", "Curr Price", "Unrealized P&L"]
             rows = []
             for p in market_positions:
-                # Format qty based on market (IDX uses lots of 100, US supports fractional)
                 if market == "IDX":
                     qty_str = f"{int(p.quantity):,}"
-                else:
-                    qty_str = f"{p.quantity:,.4f}" if p.quantity != int(p.quantity) else f"{int(p.quantity):,}"
-
-                # Format prices based on currency
-                if market == "IDX":
                     avg_str = f"{p.avg_cost:,.0f}"
                     curr_str = f"{p.current_price:,.0f}" if p.current_price else "N/A"
                 else:
+                    qty_str = f"{p.quantity:,.4f}" if p.quantity != int(p.quantity) else f"{int(p.quantity):,}"
                     avg_str = f"{p.avg_cost:,.2f}"
                     curr_str = f"{p.current_price:,.2f}" if p.current_price else "N/A"
 
-                # Format P&L
                 if p.unrealized_pnl is not None and p.unrealized_pnl != 0:
                     emoji = "🟢" if p.unrealized_pnl > 0 else "🔴"
-                    if market == "IDX":
-                        pnl_str = f"{emoji} {p.unrealized_pnl:+,.0f}"
-                    else:
-                        pnl_str = f"{emoji} {p.unrealized_pnl:+,.2f}"
+                    pnl_str = f"{emoji} {p.unrealized_pnl:+,.0f}" if market == "IDX" else f"{emoji} {p.unrealized_pnl:+,.2f}"
                 else:
                     pnl_str = "—"
                 rows.append([p.ticker, qty_str, avg_str, curr_str, pnl_str])
 
             table = format_pre_table(headers, rows, align_right=[1, 2, 3, 4])
-            lines.append(f"\n📈 <b>{market} MARKET</b>")
-            lines.append(f"<pre>{table}</pre>")
+            lines.append(fmt("\n\n", bold(f"📈 {market} MARKET"), "\n", pre(table)))
 
-    # Inline keyboard
     keyboard = build_nav_keyboard([
         [("🧠 Analyze", "cmd_analyze"), ("📊 P&L", "cmd_pnl")],
         [("☀️ Briefing", "cmd_briefing")],
     ])
-
-    await send_long_message(update, "\n".join(lines), reply_markup=keyboard)
+    await send_long_message(update, str(fmt(*lines)), reply_markup=keyboard)
 
 
 async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -527,33 +460,29 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
     if not context.args:
-        await _reply(update,
-            "⚠️ Usage:\n"
-            "`/add <market> <ticker> <qty> <price>` - Add position\n"
-            "`/add cash <currency> <amount>` - Set cash balance",
-            parse_mode="Markdown"
-        )
+        await _reply(update, fmt(
+            "⚠️ Usage:\n",
+            code("/add <market> <ticker> <qty> <price>"), " — Add position\n",
+            code("/add cash <currency> <amount>"), " — Set cash balance"
+        ))
         return
 
     args = context.args
 
     if args[0].upper() == "CASH":
-        # /add cash IDR 50000000
         if len(args) < 3:
-            await _reply(update,"⚠️ Usage: `/add cash IDR 50000000`", parse_mode="Markdown")
+            await _reply(update, fmt("⚠️ Usage: ", code("/add cash IDR 50000000")))
             return
         currency = args[1].upper()
-        # Normalize common currency abbreviations
         currency_map = {"US": "USD", "ID": "IDR", "RP": "IDR"}
         currency = currency_map.get(currency, currency)
         amount = parse_decimal(args[2])
         try:
+            from datetime import datetime
             from src.models.database import async_session
             from src.models.tables import CashBalance
-            from sqlalchemy import select
-
-            from datetime import datetime
             from sqlalchemy.dialects.postgresql import insert as pg_insert
+
             async with async_session() as session:
                 stmt = pg_insert(CashBalance).values(currency=currency, balance=amount)
                 stmt = stmt.on_conflict_do_update(
@@ -562,24 +491,23 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 await session.execute(stmt)
                 await session.commit()
-            await _reply(update,f"✅ Cash balance set: {amount:,.2f} {currency}", parse_mode="Markdown")
+            await _reply(update, fmt("✅ Cash balance set: ", bold(f"{amount:,.2f} {currency}")))
         except Exception as e:
             logger.error("add_cash_failed", error=str(e))
-            await _reply(update, "❌ Operation failed. Check logs for details.")
+            await _reply(update, "❌ Operation failed. Check logs.")
         return
 
-    # /add IDX BBCA 500 8500
     if len(args) < 4:
-        await _reply(update,"⚠️ Usage: `/add IDX BBCA 500 8500`", parse_mode="Markdown")
+        await _reply(update, fmt("⚠️ Usage: ", code("/add IDX BBCA 500 8500")))
         return
 
     market = args[0].upper()
     ticker = args[1].upper()
     if not validate_market(market):
-        await _reply(update, "⚠️ Market must be IDX, US, or ETF.", parse_mode="Markdown")
+        await _reply(update, "⚠️ Market must be IDX, US, or ETF.")
         return
     if not validate_ticker(ticker):
-        await _reply(update, "⚠️ Invalid ticker format.", parse_mode="Markdown")
+        await _reply(update, "⚠️ Invalid ticker format.")
         return
     qty = parse_decimal(args[2])
     price = parse_decimal(args[3])
@@ -595,14 +523,11 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             existing = result.scalar_one_or_none()
             if existing:
-                await _reply(update,
-                    f"⚠️ {ticker} ({market}) already exists. Use `/edit` to update.", parse_mode="Markdown"
-                )
+                await _reply(update, fmt("⚠️ ", bold(ticker), " (", market, ") already exists. Use ", code("/edit"), " to update."))
                 return
             session.add(PortfolioState(market=market, ticker=ticker, quantity=qty, avg_cost=price))
             await session.commit()
 
-        # Fetch current price immediately so /portfolio shows data
         pnl_text = ""
         orchestrator = context.bot_data.get("orchestrator")
         if orchestrator:
@@ -622,15 +547,12 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             pos.unrealized_pnl = pnl
                             await session.commit()
             except Exception:
-                pass  # Price fetch is best-effort
+                pass
 
-        await _reply(update,
-            f"✅ Added: *{ticker}* ({market}) — {qty} @ {price}{pnl_text}",
-            parse_mode="Markdown"
-        )
+        await _reply(update, fmt("✅ Added: ", bold(ticker), " (", market, ") — ", str(qty), " @ ", str(price), pnl_text))
     except Exception as e:
         logger.error("add_position_failed", error=str(e))
-        await _reply(update, "❌ Operation failed. Check logs for details.")
+        await _reply(update, "❌ Operation failed. Check logs.")
 
 
 async def remove_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -638,7 +560,7 @@ async def remove_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
     if not context.args or len(context.args) < 2:
-        await _reply(update,"⚠️ Usage: `/remove <market> <ticker>`\nExample: `/remove IDX BBCA`", parse_mode="Markdown")
+        await _reply(update, fmt("⚠️ Usage: ", code("/remove <market> <ticker>")))
         return
 
     market, ticker = context.args[0].upper(), context.args[1].upper()
@@ -654,14 +576,14 @@ async def remove_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             pos = result.scalar_one_or_none()
             if not pos:
-                await _reply(update,f"⚠️ {ticker} ({market}) not found in portfolio.", parse_mode="Markdown")
+                await _reply(update, fmt("⚠️ ", bold(ticker), " (", market, ") not found in portfolio."))
                 return
             await session.delete(pos)
             await session.commit()
-        await _reply(update,f"✅ Removed: *{ticker}* ({market})", parse_mode="Markdown")
+        await _reply(update, fmt("✅ Removed: ", bold(ticker), " (", market, ")"))
     except Exception as e:
         logger.error("remove_position_failed", error=str(e))
-        await _reply(update, "❌ Operation failed. Check logs for details.")
+        await _reply(update, "❌ Operation failed. Check logs.")
 
 
 async def edit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -669,23 +591,20 @@ async def edit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
     if not context.args or len(context.args) < 3:
-        await _reply(update,
-            "⚠️ Usage:\n"
-            "`/edit <market> <ticker> qty|price <value>` - Edit position\n"
-            "`/edit cash <currency> <amount>` - Edit cash balance",
-            parse_mode="Markdown"
-        )
+        await _reply(update, fmt(
+            "⚠️ Usage:\n",
+            code("/edit <market> <ticker> qty|price <value>"), " — Edit position\n",
+            code("/edit cash <currency> <amount>"), " — Edit cash balance"
+        ))
         return
 
     args = context.args
 
-    # /edit cash IDR 50000000
     if args[0].upper() == "CASH":
         if len(args) < 3:
-            await _reply(update,"⚠️ Usage: `/edit cash IDR 50000000`", parse_mode="Markdown")
+            await _reply(update, fmt("⚠️ Usage: ", code("/edit cash IDR 50000000")))
             return
         currency = args[1].upper()
-        # Normalize common currency abbreviations
         currency_map = {"US": "USD", "ID": "IDR", "RP": "IDR"}
         currency = currency_map.get(currency, currency)
         amount = parse_decimal(args[2])
@@ -698,22 +617,18 @@ async def edit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 result = await session.execute(select(CashBalance).where(CashBalance.currency == currency))
                 cash = result.scalar_one_or_none()
                 if not cash:
-                    await _reply(update,f"⚠️ No cash balance found for {currency}. Use `/add cash {currency} <amount>`.", parse_mode="Markdown")
+                    await _reply(update, fmt("⚠️ No cash balance found for ", currency, ". Use ", code(f"/add cash {currency} <amount>")))
                     return
                 cash.balance = amount
                 await session.commit()
-            await _reply(update,f"✅ Cash balance updated: {amount:,.2f} {currency}", parse_mode="Markdown")
+            await _reply(update, fmt("✅ Cash balance updated: ", bold(f"{amount:,.2f} {currency}")))
         except Exception as e:
             logger.error("edit_cash_failed", error=str(e))
-            await _reply(update, "❌ Operation failed. Check logs for details.")
+            await _reply(update, "❌ Operation failed. Check logs.")
         return
 
-    # /edit IDX BBCA qty 600
     if len(args) < 4:
-        await _reply(update,
-            "⚠️ Usage: `/edit <market> <ticker> qty|price <value>`\nExample: `/edit IDX BBCA qty 600`",
-            parse_mode="Markdown"
-        )
+        await _reply(update, fmt("⚠️ Usage: ", code("/edit IDX BBCA qty 600")))
         return
 
     market, ticker = args[0].upper(), args[1].upper()
@@ -721,7 +636,7 @@ async def edit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     value = parse_decimal(args[3])
 
     if field not in ("qty", "quantity", "price", "avg_cost"):
-        await _reply(update,"⚠️ Field must be `qty` or `price`.", parse_mode="Markdown")
+        await _reply(update, "⚠️ Field must be qty or price.")
         return
 
     try:
@@ -735,20 +650,17 @@ async def edit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             pos = result.scalar_one_or_none()
             if not pos:
-                await _reply(update,f"⚠️ {ticker} ({market}) not found.", parse_mode="Markdown")
+                await _reply(update, fmt("⚠️ ", bold(ticker), " (", market, ") not found."))
                 return
             if field in ("qty", "quantity"):
                 pos.quantity = value
             else:
                 pos.avg_cost = value
             await session.commit()
-        await _reply(update,
-            f"✅ Updated: *{ticker}* ({market}) — {field} = {value}",
-            parse_mode="Markdown"
-        )
+        await _reply(update, fmt("✅ Updated: ", bold(ticker), " (", market, ") — ", field, " = ", str(value)))
     except Exception as e:
         logger.error("edit_position_failed", error=str(e))
-        await _reply(update, "❌ Operation failed. Check logs for details.")
+        await _reply(update, "❌ Operation failed. Check logs.")
 
 
 async def analyze_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -758,12 +670,11 @@ async def analyze_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     orchestrator = context.bot_data.get("orchestrator")
     if not orchestrator:
-        await _reply(update,"⚠️ System error: Orchestrator not connected.")
+        await _reply(update, "⚠️ System error: Orchestrator not connected.")
         return
 
     ticker = context.args[0].upper() if context.args else None
-    msg_text = f"🧠 Analyzing {'*' + ticker + '*' if ticker else 'portfolio'}..."
-    msg = await _reply(update,msg_text, parse_mode="Markdown")
+    msg = await _reply(update, fmt("🧠 Analyzing ", bold(ticker or "portfolio"), "..."))
 
     try:
         from src.models.database import async_session
@@ -772,27 +683,20 @@ async def analyze_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         async with async_session() as session:
             if ticker:
-                port_result = await session.execute(
-                    select(PortfolioState).where(PortfolioState.ticker == ticker)
-                )
+                port_result = await session.execute(select(PortfolioState).where(PortfolioState.ticker == ticker))
             else:
                 port_result = await session.execute(select(PortfolioState).order_by(PortfolioState.market, PortfolioState.ticker))
             positions = port_result.scalars().all()
-
             cash_result = await session.execute(select(CashBalance))
             cash_balances = cash_result.scalars().all()
 
         if not positions:
-            await msg.edit_text("⚠️ No positions to analyze. Use `/add` first.", parse_mode="Markdown")
+            await msg.edit_text("⚠️ No positions to analyze. Use /add first.")
             return
 
-        # Build portfolio summary for the agent
         portfolio_data = {
             "cash": {c.currency: float(c.balance) for c in cash_balances},
-            "holdings": [
-                {"market": p.market, "ticker": p.ticker, "qty": float(p.quantity), "avg_cost": float(p.avg_cost)}
-                for p in positions
-            ],
+            "holdings": [{"market": p.market, "ticker": p.ticker, "qty": float(p.quantity), "avg_cost": float(p.avg_cost)} for p in positions],
         }
 
         result = await orchestrator.analyze_portfolio(portfolio_data)
@@ -801,28 +705,28 @@ async def analyze_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(f"❌ Analysis failed: {result['error']}")
             return
 
-        # Format analysis using <pre> tables
         from src.utils.telegram_helpers import format_pre_table, send_long_message, build_nav_keyboard
         from collections import defaultdict
 
-        lines = ["<b>🧠 PORTFOLIO ANALYSIS</b>"]
+        lines = [bold("🧠 PORTFOLIO ANALYSIS")]
 
         if result.get("portfolio_value"):
-            lines.append(f"💰 <b>Value:</b> {result['portfolio_value']:,.2f} | <b>P&amp;L:</b> {result.get('total_unrealized_pnl_pct', 0):+.2f}% | <b>Cash:</b> {result.get('cash_pct', 0):.1f}%")
+            lines.append(fmt(
+                "\n💰 ", bold("Value:"), f" {result['portfolio_value']:,.2f} | ",
+                bold("P&L:"), f" {result.get('total_unrealized_pnl_pct', 0):+.2f}% | ",
+                bold("Cash:"), f" {result.get('cash_pct', 0):.1f}%"
+            ))
 
-        # Group holdings by market
         holdings = result.get("holdings", [])
         by_market = defaultdict(list)
         for h in holdings:
             by_market[h.get("market", "UNKNOWN")].append(h)
 
-        market_order = ["IDX", "US", "ETF"]
         rec_emoji_map = {"CUT": "🔴", "TRIM": "🟡", "ADD": "🟢", "HOLD": "⚪️"}
 
-        for market in market_order:
+        for market in ["IDX", "US", "ETF"]:
             if market not in by_market:
                 continue
-
             headers = ["Action", "Ticker", "P&L", "AI Reasoning"]
             rows = []
             for h in sorted(by_market[market], key=lambda x: {"CUT": 0, "TRIM": 1, "ADD": 2, "HOLD": 3}.get(x.get("recommendation", "HOLD"), 4)):
@@ -830,36 +734,29 @@ async def analyze_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 emoji = rec_emoji_map.get(rec, "⚪️")
                 pnl = h.get("unrealized_pnl_pct", 0)
                 pnl_emoji = "🟢" if pnl >= 0 else "🔴"
-                reasoning = escape_html(h.get("reasoning", "")[:80])
+                reasoning = h.get("reasoning", "")[:80]
                 rows.append([f"{emoji} {rec}", h.get("ticker", "?"), f"{pnl_emoji} {pnl:+.1f}%", reasoning])
-
             table = format_pre_table(headers, rows, align_right=[2])
-            lines.append(f"\n📊 <b>{market} MARKET</b>")
-            lines.append(f"<pre>{table}</pre>")
+            lines.append(fmt("\n\n", bold(f"📊 {market} MARKET"), "\n", pre(table)))
 
         if result.get("top_actions"):
-            lines.append("\n━━━━━━━━━━━━━━━━")
-            lines.append("📌 <b>Top Actions:</b>")
-            for a in result["top_actions"][:3]:
-                lines.append(f"<i>• {escape_html(a)}</i>")
+            actions = [f"• {a}" for a in result["top_actions"][:3]]
+            lines.append(fmt("\n━━━━━━━━━━━━━━━━\n📌 ", bold("Top Actions:"), "\n", italic(join(actions))))
 
         if result.get("portfolio_risks"):
-            lines.append("\n⚠️ <b>Portfolio Risks:</b>")
-            for r in result["portfolio_risks"][:3]:
-                lines.append(f"<i>• {escape_html(r)}</i>")
+            risks = [f"• {r}" for r in result["portfolio_risks"][:3]]
+            lines.append(fmt("\n⚠️ ", bold("Portfolio Risks:"), "\n", italic(join(risks))))
 
-        # Build keyboard with audit buttons for each ticker
         tickers = [h.get("ticker") for h in holdings]
         keyboard = build_nav_keyboard([
             [(f"🔍 {t}", f"audit_{t}") for t in tickers[:3]],
             [("📊 P&L", "cmd_pnl"), ("☀️ Briefing", "cmd_briefing")],
         ])
-
-        await send_long_message(update, "\n".join(lines), reply_markup=keyboard)
+        await send_long_message(update, str(fmt(*lines)), reply_markup=keyboard)
 
     except Exception as e:
         logger.error("analyze_cmd_failed", error=str(e), exc_info=True)
-        await msg.edit_text("❌ Analysis failed. Check logs for details.")
+        await msg.edit_text("❌ Analysis failed. Check logs.")
 
 
 async def trades_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -873,33 +770,24 @@ async def trades_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from sqlalchemy import select, func
 
         async with async_session() as session:
-            # Get open paper positions
-            open_result = await session.execute(
-                select(PaperPosition).order_by(PaperPosition.entry_date.desc())
-            )
+            open_result = await session.execute(select(PaperPosition).order_by(PaperPosition.entry_date.desc()))
             open_positions = open_result.scalars().all()
 
-            # Get closed trades summary
-            closed_result = await session.execute(
-                select(ClosedPaperTrade).order_by(ClosedPaperTrade.exit_date.desc()).limit(10)
-            )
+            closed_result = await session.execute(select(ClosedPaperTrade).order_by(ClosedPaperTrade.exit_date.desc()).limit(10))
             closed_trades = closed_result.scalars().all()
 
-            # Get P&L summary
-            pnl_result = await session.execute(
-                select(
-                    func.sum(ClosedPaperTrade.realized_pnl).label("total_pnl"),
-                    func.count(ClosedPaperTrade.id).label("total_trades")
-                )
-            )
+            pnl_result = await session.execute(select(
+                func.sum(ClosedPaperTrade.realized_pnl).label("total_pnl"),
+                func.count(ClosedPaperTrade.id).label("total_trades")
+            ))
             pnl_summary = pnl_result.one()
 
         from src.utils.telegram_helpers import format_pre_table, send_long_message, build_nav_keyboard
 
-        lines = ["<b>📋 PAPER TRADING HISTORY</b>\n"]
+        lines = [bold("📋 PAPER TRADING HISTORY"), "\n"]
 
         if open_positions:
-            lines.append("🟢 <b>OPEN POSITIONS</b>")
+            lines.append(bold("🟢 OPEN POSITIONS"))
             headers = ["Ticker", "Dir", "Entry", "Curr", "P&L"]
             rows = []
             for pos in open_positions:
@@ -908,12 +796,12 @@ async def trades_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pnl_str = f"🟢 +{pnl:.1f}%" if pnl >= 0 else f"🔴 {pnl:.1f}%"
                 rows.append([pos.ticker, emoji, f"{pos.entry_price:.2f}", f"{pos.current_price or 0:.2f}", pnl_str])
             table = format_pre_table(headers, rows, align_right=[2, 3, 4])
-            lines.append(f"<pre>{table}</pre>\n")
+            lines.append(pre(table))
         else:
-            lines.append("<i>📭 No open positions.</i>\n")
+            lines.append(italic("📭 No open positions."))
 
         if closed_trades:
-            lines.append("🏁 <b>RECENT CLOSED TRADES</b>")
+            lines.extend(["\n", bold("🏁 RECENT CLOSED TRADES")])
             headers = ["Ticker", "Result", "P&L", "Reason"]
             rows = []
             for t in closed_trades[:5]:
@@ -923,24 +811,25 @@ async def trades_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reason = (t.exit_reason or "N/A")[:10]
                 rows.append([t.ticker, res, pnl_str, reason])
             table = format_pre_table(headers, rows, align_right=[2])
-            lines.append(f"<pre>{table}</pre>")
+            lines.append(pre(table))
 
         if pnl_summary.total_trades:
             total_pnl = pnl_summary.total_pnl or 0
             emoji = "🟢" if total_pnl >= 0 else "🔴"
-            lines.append(f"\n━━━━━━━━━━━━━━━━")
-            lines.append(f"{emoji} <b>Total Realized P&amp;L:</b> {total_pnl:+,.2f}")
-            lines.append(f"<b>Total Trades:</b> {pnl_summary.total_trades}")
+            lines.extend([
+                "\n━━━━━━━━━━━━━━━━\n",
+                fmt(emoji, " ", bold("Total Realized P&L:"), f" {total_pnl:+,.2f}"),
+                "\n", bold("Total Trades:"), f" {pnl_summary.total_trades}",
+            ])
 
         keyboard = build_nav_keyboard([
             [("📊 P&L", "cmd_pnl"), ("☀️ Briefing", "cmd_briefing")],
         ])
-
-        await send_long_message(update, "\n".join(lines), reply_markup=keyboard)
+        await send_long_message(update, str(fmt(*lines)), reply_markup=keyboard)
 
     except Exception as e:
         logger.error("trades_cmd_failed", error=str(e), exc_info=True)
-        await _reply(update, "❌ Operation failed. Check logs for details.")
+        await _reply(update, "❌ Operation failed. Check logs.")
 
 
 async def briefing_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -957,9 +846,8 @@ async def briefing_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _reply(update, "⚠️ System error: Orchestrator not connected.")
             return
 
-        msg = await _reply(update, "📊 <b>Generating Morning Briefing...</b>", parse_mode="HTML")
+        msg = await _reply(update, bold("📊 Generating Morning Briefing..."))
 
-        # Get both market regimes
         from src.advisory.regime import USRegimeFilter, IDXRegimeFilter
         import asyncio
 
@@ -970,7 +858,6 @@ async def briefing_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             idx_filter.get_current_regime(),
         )
 
-        # Get portfolio summary
         from src.models.database import async_session
         from src.models.tables import PortfolioState, CashBalance, PaperPosition
         from sqlalchemy import select
@@ -983,7 +870,6 @@ async def briefing_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             paper_result = await session.execute(select(PaperPosition))
             paper_positions = paper_result.scalars().all()
 
-        # Calculate portfolio value
         portfolio_value = sum(float(c.balance) for c in cash_balances)
         for pos in positions:
             if pos.current_price:
@@ -999,37 +885,42 @@ async def briefing_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         us_e = _emoji(us_regime.get("state", "UNKNOWN"))
         idx_e = _emoji(idx_regime.get("state", "UNKNOWN"))
 
-        lines = [
-            "☀️ <b>MORNING BRIEFING</b>",
-            f"📅 <i>{datetime.now().strftime('%a, %b %d | %H:%M')}</i>",
-            "",
-            "🌡️ <b>REGIME &amp; CONTEXT</b>",
-            f"<pre>US   : {us_e} {us_regime.get('state', 'UNKNOWN')}"
-            f"\n     SPY {us_regime.get('benchmark_price', 'N/A')} | VIX {us_regime.get('vix', 'N/A')}"
-            f"\nIDX  : {idx_e} {idx_regime.get('state', 'UNKNOWN')}"
-            f"\n     {idx_regime.get('benchmark', 'IHSG')} {idx_regime.get('benchmark_price', 'N/A')}"
-            f"\nRec  : {us_regime.get('recommendation', 'N/A')}</pre>",
-            "",
-            "💼 <b>PORTFOLIO STATUS</b>",
-            f"<pre>Total Value : {portfolio_value:,.2f}"
-            f"\nCash        : {total_cash:,.2f} ({cash_pct:.1f}%)"
-            f"\nPositions   : {len(positions)} open</pre>",
-            "",
-            "📈 <b>PAPER TRADING</b>",
-            f"<pre>Open Trades : {len(paper_positions)}"
-            f"\nUnrealized  : {'🟢' if paper_pnl >= 0 else '🔴'} {paper_pnl:+,.2f}</pre>",
-        ]
+        regime_block = (
+            f"US   : {us_e} {us_regime.get('state', 'UNKNOWN')}\n"
+            f"     SPY {us_regime.get('benchmark_price', 'N/A')} | VIX {us_regime.get('vix', 'N/A')}\n"
+            f"IDX  : {idx_e} {idx_regime.get('state', 'UNKNOWN')}\n"
+            f"     {idx_regime.get('benchmark', 'IHSG')} {idx_regime.get('benchmark_price', 'N/A')}\n"
+            f"Rec  : {us_regime.get('recommendation', 'N/A')}"
+        )
+
+        port_block = (
+            f"Total Value : {portfolio_value:,.2f}\n"
+            f"Cash        : {total_cash:,.2f} ({cash_pct:.1f}%)\n"
+            f"Positions   : {len(positions)} open"
+        )
+
+        paper_block = (
+            f"Open Trades : {len(paper_positions)}\n"
+            f"Unrealized  : {'🟢' if paper_pnl >= 0 else '🔴'} {paper_pnl:+,.2f}"
+        )
+
+        text = fmt(
+            bold("☀️ MORNING BRIEFING"), "\n",
+            italic(datetime.now().strftime('%a, %b %d | %H:%M')), "\n\n",
+            bold("🌡️ REGIME & CONTEXT"), "\n", pre(regime_block), "\n\n",
+            bold("💼 PORTFOLIO STATUS"), "\n", pre(port_block), "\n\n",
+            bold("📈 PAPER TRADING"), "\n", pre(paper_block)
+        )
 
         keyboard = build_nav_keyboard([
             [("🌡️ Deep Regime", "cmd_regime"), ("📈 View P&L", "cmd_pnl")],
             [("📋 Open Trades", "cmd_trades"), ("💼 Portfolio", "cmd_portfolio")],
         ])
-
-        await send_long_message(update, "\n".join(lines), reply_markup=keyboard)
+        await send_long_message(update, str(text), reply_markup=keyboard)
 
     except Exception as e:
         logger.error("briefing_cmd_failed", error=str(e), exc_info=True)
-        await _reply(update, "❌ Briefing failed. Check logs for details.")
+        await _reply(update, "❌ Briefing failed. Check logs.")
 
 
 async def regime_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1045,7 +936,7 @@ async def regime_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _reply(update, "⚠️ System error: Orchestrator not connected.")
             return
 
-        await _reply(update, "🌡️ <b>Fetching market regimes...</b>", parse_mode="HTML")
+        await _reply(update, bold("🌡️ Fetching market regimes..."))
 
         us_filter = USRegimeFilter(orchestrator.mcp)
         idx_filter = IDXRegimeFilter(orchestrator.mcp)
@@ -1064,33 +955,35 @@ async def regime_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         from src.utils.telegram_helpers import send_long_message, build_nav_keyboard
 
-        lines = [
-            "🌡️ <b>MARKET REGIME</b>\n",
+        us_block = (
+            f"State  : {us_e} {us_regime.get('state', 'UNKNOWN')}\n"
+            f"SPY    : {us_regime.get('benchmark_price', 'N/A')} (200 SMA: {us_regime.get('sma200', 'N/A')})\n"
+            f"VIX    : {us_regime.get('vix', 'N/A')}\n"
+            f"Rec    : {us_regime.get('recommendation', 'N/A')}"
+        )
 
-            f"🇺🇸 <b>US MARKET</b>",
-            f"<pre>State  : {us_e} {us_regime.get('state', 'UNKNOWN')}"
-            f"\nSPY    : {us_regime.get('benchmark_price', 'N/A')} (200 SMA: {us_regime.get('sma200', 'N/A')})"
-            f"\nVIX    : {us_regime.get('vix', 'N/A')}"
-            f"\nRec    : {us_regime.get('recommendation', 'N/A')}</pre>",
-            "",
+        idx_block = (
+            f"State  : {idx_e} {idx_regime.get('state', 'UNKNOWN')}\n"
+            f"{idx_regime.get('benchmark', 'IHSG')}  : {idx_regime.get('benchmark_price', 'N/A')} (200 SMA: {idx_regime.get('sma200', 'N/A')})\n"
+            f"BBCA   : {idx_regime.get('bbca_price', 'N/A')}\n"
+            f"Rec    : {idx_regime.get('recommendation', 'N/A')}"
+        )
 
-            f"🇮🇩 <b>IDX MARKET</b>",
-            f"<pre>State  : {idx_e} {idx_regime.get('state', 'UNKNOWN')}"
-            f"\n{idx_regime.get('benchmark', 'IHSG')}  : {idx_regime.get('benchmark_price', 'N/A')} (200 SMA: {idx_regime.get('sma200', 'N/A')})"
-            f"\nBBCA   : {idx_regime.get('bbca_price', 'N/A')}"
-            f"\nRec    : {idx_regime.get('recommendation', 'N/A')}</pre>",
-        ]
+        text = fmt(
+            bold("🌡️ MARKET REGIME"), "\n\n",
+            bold("🇺🇸 US MARKET"), "\n", pre(us_block), "\n\n",
+            bold("🇮🇩 IDX MARKET"), "\n", pre(idx_block)
+        )
 
         keyboard = build_nav_keyboard([
             [("☀️ Briefing", "cmd_briefing"), ("📊 P&L", "cmd_pnl")],
             [("💼 Portfolio", "cmd_portfolio")],
         ])
-
-        await send_long_message(update, "\n".join(lines), reply_markup=keyboard)
+        await send_long_message(update, str(text), reply_markup=keyboard)
 
     except Exception as e:
         logger.error("regime_cmd_failed", error=str(e), exc_info=True)
-        await _reply(update, "❌ Regime check failed. Check logs for details.")
+        await _reply(update, "❌ Regime check failed. Check logs.")
 
 
 async def pnl_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1104,29 +997,20 @@ async def pnl_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from sqlalchemy import select, func
 
         async with async_session() as session:
-            # Open positions
             open_result = await session.execute(select(PaperPosition))
             open_positions = open_result.scalars().all()
 
-            # Closed trades stats
-            closed_result = await session.execute(
-                select(
-                    func.sum(ClosedPaperTrade.realized_pnl).label("total_pnl"),
-                    func.count(ClosedPaperTrade.id).label("total_trades"),
-                    func.avg(ClosedPaperTrade.realized_pnl_pct).label("avg_pnl_pct")
-                )
-            )
+            closed_result = await session.execute(select(
+                func.sum(ClosedPaperTrade.realized_pnl).label("total_pnl"),
+                func.count(ClosedPaperTrade.id).label("total_trades"),
+                func.avg(ClosedPaperTrade.realized_pnl_pct).label("avg_pnl_pct")
+            ))
             stats = closed_result.one()
 
-            # Win/Loss
-            win_result = await session.execute(
-                select(func.count(ClosedPaperTrade.id)).where(ClosedPaperTrade.realized_pnl > 0)
-            )
+            win_result = await session.execute(select(func.count(ClosedPaperTrade.id)).where(ClosedPaperTrade.realized_pnl > 0))
             wins = win_result.scalar() or 0
 
-            loss_result = await session.execute(
-                select(func.count(ClosedPaperTrade.id)).where(ClosedPaperTrade.realized_pnl <= 0)
-            )
+            loss_result = await session.execute(select(func.count(ClosedPaperTrade.id)).where(ClosedPaperTrade.realized_pnl <= 0))
             losses = loss_result.scalar() or 0
 
         total_pnl = stats.total_pnl or 0
@@ -1134,37 +1018,39 @@ async def pnl_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         avg_pnl_pct = stats.avg_pnl_pct or 0
         win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
 
-        # Open P&L
         open_pnl = sum(float(p.unrealized_pnl or 0) for p in open_positions)
         open_pnl_pct = sum(float(p.unrealized_pnl_pct or 0) for p in open_positions) / len(open_positions) if open_positions else 0
 
         from src.utils.telegram_helpers import send_long_message, build_nav_keyboard
 
-        lines = [
-            "📊 <b>SHADOW PORTFOLIO P&amp;L</b>",
-            "",
-            "🟢 <b>OPEN POSITIONS</b>",
-            f"<pre>Count       : {len(open_positions)}"
-            f"\nUnrealized  : {'🟢' if open_pnl >= 0 else '🔴'} {open_pnl:+,.2f} ({open_pnl_pct:+.1f}%)</pre>",
-            "",
-            "🏁 <b>CLOSED TRADES</b>",
-            f"<pre>Total       : {total_trades}"
-            f"\nWins/Losses : {wins}W / {losses}L"
-            f"\nWin Rate    : {win_rate:.1f}%"
-            f"\nRealized    : {'🟢' if total_pnl >= 0 else '🔴'} {total_pnl:+,.2f}"
-            f"\nAvg P&amp;L     : {avg_pnl_pct:+.1f}%</pre>",
-        ]
+        open_block = (
+            f"Count       : {len(open_positions)}\n"
+            f"Unrealized  : {'🟢' if open_pnl >= 0 else '🔴'} {open_pnl:+,.2f} ({open_pnl_pct:+.1f}%)"
+        )
+
+        closed_block = (
+            f"Total       : {total_trades}\n"
+            f"Wins/Losses : {wins}W / {losses}L\n"
+            f"Win Rate    : {win_rate:.1f}%\n"
+            f"Realized    : {'🟢' if total_pnl >= 0 else '🔴'} {total_pnl:+,.2f}\n"
+            f"Avg P&L     : {avg_pnl_pct:+.1f}%"
+        )
+
+        text = fmt(
+            bold("📊 SHADOW PORTFOLIO P&L"), "\n\n",
+            bold("🟢 OPEN POSITIONS"), "\n", pre(open_block), "\n\n",
+            bold("🏁 CLOSED TRADES"), "\n", pre(closed_block)
+        )
 
         keyboard = build_nav_keyboard([
             [("📋 Trades", "cmd_trades"), ("☀️ Briefing", "cmd_briefing")],
             [("📈 Regime", "cmd_regime")],
         ])
-
-        await send_long_message(update, "\n".join(lines), reply_markup=keyboard)
+        await send_long_message(update, str(text), reply_markup=keyboard)
 
     except Exception as e:
         logger.error("pnl_cmd_failed", error=str(e), exc_info=True)
-        await _reply(update, "❌ P&L check failed. Check logs for details.")
+        await _reply(update, "❌ P&L check failed. Check logs.")
 
 
 async def audit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1173,7 +1059,11 @@ async def audit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        await _reply(update, "⚠️ Usage:\n`/audit <TICKER>` — audit one signal\n`/audit portfolio` — audit all holdings", parse_mode="Markdown")
+        await _reply(update, fmt(
+            "⚠️ Usage:\n",
+            code("/audit <TICKER>"), " — audit one signal\n",
+            code("/audit portfolio"), " — audit all holdings"
+        ))
         return
 
     arg = context.args[0].upper()
@@ -1182,47 +1072,41 @@ async def audit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from src.models.database import async_session
         from src.models.tables import Signal, PortfolioState
         from sqlalchemy import select, desc
-        from src.utils.telegram_helpers import send_long_message, build_nav_keyboard, escape_html, format_pre_table
+        from src.utils.telegram_helpers import send_long_message, build_nav_keyboard, format_pre_table
+        from datetime import datetime
 
-        # /audit portfolio — latest signal for each portfolio holding
         if arg == "PORTFOLIO":
-            msg = await _reply(update, "🔍 <b>Auditing portfolio signals...</b>", parse_mode="HTML")
+            msg = await _reply(update, bold("🔍 Auditing portfolio signals..."))
 
             async with async_session() as session:
-                port_result = await session.execute(
-                    select(PortfolioState).order_by(PortfolioState.market, PortfolioState.ticker)
-                )
+                port_result = await session.execute(select(PortfolioState).order_by(PortfolioState.market, PortfolioState.ticker))
                 positions = port_result.scalars().all()
 
             if not positions:
-                await msg.edit_text("📭 No positions to audit. Use `/add` first.", parse_mode="Markdown")
+                await msg.edit_text("📭 No positions to audit. Use /add first.")
                 return
 
-            tickers_by_market: dict[str, list[str]] = {}
+            tickers_by_market = {}
             for p in positions:
                 tickers_by_market.setdefault(p.market, []).append(p.ticker)
 
-            # Fetch latest signal per ticker
             async with async_session() as session:
-                signals: dict[str, Signal] = {}
+                signals = {}
                 for p in positions:
                     result = await session.execute(
-                        select(Signal)
-                        .where(Signal.ticker == p.ticker, Signal.market == p.market)
-                        .order_by(desc(Signal.created_at))
-                        .limit(1)
+                        select(Signal).where(Signal.ticker == p.ticker, Signal.market == p.market)
+                        .order_by(desc(Signal.created_at)).limit(1)
                     )
                     sig = result.scalar_one_or_none()
                     if sig:
                         signals[p.ticker] = sig
 
-            lines = [f"<b>🔍 PORTFOLIO AUDIT</b> — {len(signals)}/{len(positions)} with signals\n"]
+            lines = [bold(f"🔍 PORTFOLIO AUDIT — {len(signals)}/{len(positions)} with signals"), "\n"]
 
             for market in ["IDX", "US", "ETF"]:
                 market_tickers = tickers_by_market.get(market, [])
                 if not market_tickers:
                     continue
-
                 headers = ["Ticker", "Dir", "Strat", "Conf", "R:R", "Generated"]
                 rows = []
                 for t in market_tickers:
@@ -1235,92 +1119,88 @@ async def audit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     conf = f"{sig.confidence_score}/100" if sig.confidence_score else "—"
                     ts = sig.created_at.strftime("%m-%d %H:%M") if sig.created_at else "—"
                     rows.append([t, f"{emoji} {sig.direction}", (sig.strategy or "?")[:10], conf, rr, ts])
-
                 table = format_pre_table(headers, rows, align_right=[3, 4])
-                lines.append(f"\n📈 <b>{market}</b>")
-                lines.append(f"<pre>{table}</pre>")
+                lines.append(fmt("\n", bold(f"📈 {market}"), "\n", pre(table)))
 
-            # Show reasoning for most recent signal
             if signals:
                 latest = max(signals.values(), key=lambda s: s.created_at or datetime.min)
                 if latest.reasoning:
-                    lines.append(f"\n🧠 <b>Latest signal ({latest.ticker}):</b>")
-                    lines.append(f"<i>{escape_html(latest.reasoning[:300])}</i>")
+                    lines.append(fmt("\n🧠 ", bold(f"Latest signal ({latest.ticker}):"), "\n", italic(latest.reasoning[:300])))
 
             keyboard = build_nav_keyboard([
                 [("🧠 Analyze", "cmd_analyze"), ("🔍 Scan", "cmd_portfolio")],
                 [("📊 P&L", "cmd_pnl"), ("☀️ Briefing", "cmd_briefing")],
             ])
-
-            await send_long_message(update, "\n".join(lines), reply_markup=keyboard)
+            try:
+                await send_long_message(update, str(fmt(*lines)), reply_markup=keyboard)
+            except Exception as send_err:
+                logger.error("audit_send_failed", error=str(send_err))
+                try:
+                    await _reply(update, fmt("📊 Audit: ", bold(str(len(signals))), " signals found. Check /scan for details."))
+                except Exception:
+                    pass
             return
 
-        # /audit <ticker> — single ticker audit
+        # /audit <ticker>
         ticker = arg
         async with async_session() as session:
             result = await session.execute(
-                select(Signal)
-                .where(Signal.ticker == ticker)
-                .order_by(desc(Signal.created_at))
-                .limit(1)
+                select(Signal).where(Signal.ticker == ticker).order_by(desc(Signal.created_at)).limit(1)
             )
             signal = result.scalar_one_or_none()
 
         if not signal:
-            await _reply(update, f"📭 No signal found for <b>{ticker}</b>.\n<i>Run /scan to generate one.</i>", parse_mode="HTML")
+            await _reply(update, fmt("📭 No signal found for ", bold(ticker), ". Run ", code("/scan"), " to generate one."))
             return
 
         d_emoji = "🟢" if signal.direction == "LONG" else "🔴" if signal.direction == "SHORT" else "⚪️"
 
+        metrics_block = (
+            f"Decision    : {d_emoji} {signal.direction}\n"
+            f"Strategy    : {signal.strategy}\n"
+            f"Confidence  : {signal.confidence_score}/100\n"
+            f"Market      : {signal.market}"
+        )
+
         lines = [
-            f"🔍 <b>AUDIT LOG: {ticker}</b>",
-            f"⏱ <i>Generated: {signal.created_at.strftime('%Y-%m-%d %H:%M') if signal.created_at else 'N/A'}</i>",
-            "",
-            "📊 <b>SIGNAL METRICS</b>",
-            f"<pre>Decision    : {d_emoji} {signal.direction}"
-            f"\nStrategy    : {signal.strategy}"
-            f"\nConfidence  : {signal.confidence_score}/100"
-            f"\nMarket      : {signal.market}</pre>",
+            bold(f"🔍 AUDIT LOG: {ticker}"), "\n",
+            italic(f"Generated: {signal.created_at.strftime('%Y-%m-%d %H:%M') if signal.created_at else 'N/A'}"), "\n\n",
+            bold("📊 SIGNAL METRICS"), "\n", pre(metrics_block),
         ]
 
         if signal.entry_price:
-            lines.append("")
-            lines.append("💰 <b>PRICING</b>")
-            entry = f"{signal.entry_price:,.2f}" if signal.entry_price else "N/A"
-            target = f"{signal.target_price:,.2f}" if signal.target_price else "N/A"
-            sl = f"{signal.stop_loss_price:,.2f}" if signal.stop_loss_price else "N/A"
-            rr = f"{signal.risk_reward_ratio:.2f}" if signal.risk_reward_ratio else "N/A"
-            lines.append(
-                f"<pre>Entry       : {entry}"
-                f"\nTarget      : {target}"
-                f"\nStop Loss   : {sl}"
-                f"\nRisk/Reward : {rr}</pre>"
+            pricing_block = (
+                f"Entry       : {signal.entry_price:,.2f}\n"
+                f"Target      : {signal.target_price:,.2f}\n"
+                f"Stop Loss   : {signal.stop_loss_price:,.2f}\n"
+                f"Risk/Reward : {signal.risk_reward_ratio:.2f}"
             )
+            lines.extend(["\n\n", bold("💰 PRICING"), "\n", pre(pricing_block)])
 
         if signal.reasoning:
-            lines.append("")
-            lines.append("🧠 <b>AI REASONING (LLM Synthesis)</b>")
-            lines.append(f"<i>{escape_html(signal.reasoning[:500])}</i>")
+            lines.extend(["\n\n", bold("🧠 AI REASONING"), "\n", italic(signal.reasoning[:500])])
 
         keyboard = build_nav_keyboard([
             [("💼 Portfolio", "cmd_portfolio"), ("☀️ Briefing", "cmd_briefing")],
         ])
-
         try:
-            await send_long_message(update, "\n".join(lines), reply_markup=keyboard)
+            await send_long_message(update, str(fmt(*lines)), reply_markup=keyboard)
         except Exception as send_err:
             logger.error("audit_send_failed", error=str(send_err))
-            # Fallback: try plain text summary
             try:
-                summary = f"📊 Audit: {ticker}\nDirection: {signal.direction}\nConfidence: {signal.confidence_score}/100"
-                await _reply(update, summary, parse_mode=None)
+                summary = fmt(
+                    bold(f"📊 Audit: {ticker}"), "\n",
+                    "Direction: ", signal.direction, "\n",
+                    "Confidence: ", str(signal.confidence_score), "/100"
+                )
+                await _reply(update, summary)
             except Exception:
                 pass
 
     except Exception as e:
         logger.error("audit_cmd_failed", error=str(e), exc_info=True)
         try:
-            await _reply(update, "❌ Audit failed. Check logs for details.")
+            await _reply(update, "❌ Audit failed. Check logs.")
         except Exception:
             pass
 
@@ -1334,17 +1214,16 @@ async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     already_active = await emergency.is_active()
 
     if already_active:
-        await _reply(update, "⚠️ Emergency stop is already active.", parse_mode="HTML")
+        await _reply(update, "⚠️ Emergency stop is already active.")
         return
 
     await emergency.activate(reason="Manual operator halt via Telegram", operator=operator)
     logger.warning("emergency_stop_activated", operator=operator)
-    await _reply(update,
-        "🚨 <b>EMERGENCY STOP ACTIVATED</b>\n"
-        "All new trading decisions are halted.\n"
-        "Use /resume to reactivate.",
-        parse_mode="HTML",
-    )
+    await _reply(update, fmt(
+        "🚨 ", bold("EMERGENCY STOP ACTIVATED"), "\n",
+        "All new trading decisions are halted.\n",
+        "Use ", code("/resume"), " to reactivate."
+    ))
 
 
 async def resume_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1356,16 +1235,15 @@ async def resume_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_active = await emergency.is_active()
 
     if not is_active:
-        await _reply(update, "✅ Emergency stop is not active. Trading is normal.", parse_mode="HTML")
+        await _reply(update, "✅ Emergency stop is not active. Trading is normal.")
         return
 
     await emergency.deactivate(operator=operator)
     logger.warning("emergency_stop_deactivated", operator=operator)
-    await _reply(update,
-        "✅ <b>Emergency stop deactivated.</b>\n"
-        "Trading decisions can resume.",
-        parse_mode="HTML",
-    )
+    await _reply(update, fmt(
+        "✅ ", bold("Emergency stop deactivated."), "\n",
+        "Trading decisions can resume."
+    ))
 
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1375,7 +1253,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = query.data
 
-    # Handle audit_ buttons
     if data.startswith("audit_"):
         ticker = data[6:]
         context.args = [ticker]
@@ -1385,9 +1262,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not data.startswith("cmd_"):
         return
 
-    cmd = data[4:]  # Remove "cmd_" prefix
+    cmd = data[4:]
 
-    # Route to the appropriate command handler
     if cmd == "pnl":
         await pnl_cmd(update, context)
     elif cmd == "regime":
