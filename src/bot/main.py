@@ -17,10 +17,9 @@ from src.config import settings
 from src.bot.handlers import (
     start_cmd, status_cmd, scan_cmd, portfolio_cmd, trades_cmd,
     add_cmd, remove_cmd, edit_cmd, analyze_cmd, briefing_cmd, regime_cmd, pnl_cmd,
-    audit_cmd, button_callback,
+    audit_cmd, guide_cmd, stop_cmd, resume_cmd, button_callback,
 )
 from src.data.cache import CacheManager
-from src.models.database import async_session
 from src.utils.logging import get_logger
 
 logger = get_logger("telegram_bot")
@@ -46,6 +45,9 @@ async def lifespan(app: FastAPI):
     telegram_app.add_handler(CommandHandler("briefing", briefing_cmd))
     telegram_app.add_handler(CommandHandler("regime", regime_cmd))
     telegram_app.add_handler(CommandHandler("pnl", pnl_cmd))
+    telegram_app.add_handler(CommandHandler("guide", guide_cmd))
+    telegram_app.add_handler(CommandHandler("stop", stop_cmd))
+    telegram_app.add_handler(CommandHandler("resume", resume_cmd))
 
     from telegram.ext import CallbackQueryHandler
     telegram_app.add_handler(CallbackQueryHandler(button_callback))
@@ -93,7 +95,8 @@ app = FastAPI(title="Karsa Telegram Bot", lifespan=lifespan)
 
 async def verify_telegram_secret(x_telegram_bot_api_secret_token: str = Header(None)):
     if not settings.TELEGRAM_WEBHOOK_SECRET:
-        return
+        logger.error("webhook_secret_not_configured")
+        raise HTTPException(status_code=503, detail="Webhook secret not configured")
     if x_telegram_bot_api_secret_token != settings.TELEGRAM_WEBHOOK_SECRET:
         logger.warning("invalid_webhook_secret")
         raise HTTPException(status_code=403, detail="Invalid secret token")
@@ -123,7 +126,7 @@ async def telegram_webhook(request: Request):
         return {"status": "ok"}
     except Exception as e:
         logger.error("webhook_processing_error", error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal error")
 
 
 @app.get("/health")

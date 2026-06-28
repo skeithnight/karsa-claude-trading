@@ -2,32 +2,47 @@ server:
   port: 20128
 
 combos:
-  # Used by: Lead Orchestrator, Risk Manager (Requires deep reasoning)
+  # Lead Orchestrator + Risk Manager — maximum reasoning quality
   - name: "karsa-critical"
     models:
       - provider: anthropic
-        model: claude-3-5-sonnet-20241022
+        model: claude-sonnet-4-6
         tier: subscription
-      - provider: deepseek
-        model: deepseek-v3
-        tier: cheap
-        fallback_on: [rate_limit, error]
+      - provider: anthropic
+        model: claude-haiku-4-5-20251001
+        tier: subscription
+    fallback_on: [rate_limit, error]
+    timeout_ms: 60000
 
-  # Used by: Data Agents, Technical Analysts (High volume, lower reasoning need)
+  # Technical/Data Analysts — high volume, lower reasoning need
   - name: "karsa-routine"
     models:
       - provider: anthropic
-        model: claude-3-haiku-20240307
+        model: claude-haiku-4-5-20251001
         tier: subscription
-      - provider: deepseek
-        model: deepseek-v3
-        tier: cheap
-        fallback_on: [rate_limit, error]
+    fallback_on: [rate_limit, error]
+    timeout_ms: 30000
 
-# Cost management
+  # Emergency kill-switch / macro risk-off — lowest latency, no fallback
+  - name: "karsa-emergency"
+    models:
+      - provider: anthropic
+        model: claude-haiku-4-5-20251001
+        tier: subscription
+    fallback_on: []
+    timeout_ms: 8000
+    max_retries: 1
+
+# Cost guardrails — tiered circuit breaker
 cost:
-  monthly_ceiling_usd: 150
-  daily_limit_usd: 10
+  monthly_ceiling_usd: 300
+  daily_limit_usd: 15
   circuit_breaker:
     enabled: true
-    action: block_routine  # Block karsa-routine when daily limit hit
+    tiers:
+      - threshold_pct: 70
+        action: alert
+      - threshold_pct: 85
+        action: block_routine
+      - threshold_pct: 100
+        action: block_all

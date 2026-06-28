@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS signals (
 -- 3. Paper Positions (Shadow Execution Engine)
 CREATE TABLE IF NOT EXISTS paper_positions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    signal_id UUID REFERENCES signals(id),
+    signal_id UUID REFERENCES signals(id) ON DELETE SET NULL,
     ticker VARCHAR(20) NOT NULL,
     market VARCHAR(10) NOT NULL CHECK (market IN ('IDX', 'US', 'ETF')),
     side VARCHAR(10) NOT NULL CHECK (side IN ('LONG', 'SHORT')),
@@ -122,7 +122,7 @@ CREATE TABLE IF NOT EXISTS market_holidays (
 -- 7. Pending Approvals (for HITL flow)
 CREATE TABLE IF NOT EXISTS pending_approvals (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    signal_id UUID REFERENCES signals(id),
+    signal_id UUID REFERENCES signals(id) ON DELETE SET NULL,
     telegram_message_id BIGINT,
     status VARCHAR(20) DEFAULT 'WAITING' CHECK (status IN ('WAITING', 'APPROVED', 'REJECTED', 'MODIFIED', 'EXPIRED')),
     modification JSONB,
@@ -148,7 +148,43 @@ INSERT INTO market_holidays (market, holiday_date, name) VALUES
     ('IDX', '2026-01-01', 'New Year'),
     ('IDX', '2026-01-29', 'Isra Mi''raj'),
     ('IDX', '2026-01-30', 'Chinese New Year'),
+    ('IDX', '2026-03-20', 'Hari Raya Nyepi'),
+    ('IDX', '2026-03-27', 'Wafat Isa Al Masih'),
+    ('IDX', '2026-04-01', 'Idul Fitri'),
+    ('IDX', '2026-04-02', 'Idul Fitri'),
+    ('IDX', '2026-04-03', 'Idul Fitri cuti bersama'),
+    ('IDX', '2026-05-14', 'Kenaikan Isa Al Masih'),
+    ('IDX', '2026-05-22', 'Waisak'),
+    ('IDX', '2026-06-08', 'Idul Adha'),
+    ('IDX', '2026-06-29', 'Tahun Baru Islam'),
+    ('IDX', '2026-08-17', 'Hari Kemerdekaan'),
+    ('IDX', '2026-09-07', 'Maulid Nabi'),
+    ('IDX', '2026-12-25', 'Natal'),
     ('US', '2026-01-01', 'New Year'),
     ('US', '2026-01-19', 'Martin Luther King Jr. Day'),
-    ('US', '2026-02-16', 'Presidents'' Day')
+    ('US', '2026-02-16', 'Presidents'' Day'),
+    ('US', '2026-04-03', 'Good Friday'),
+    ('US', '2026-05-25', 'Memorial Day'),
+    ('US', '2026-06-19', 'Juneteenth'),
+    ('US', '2026-07-03', 'Independence Day (observed)'),
+    ('US', '2026-09-07', 'Labor Day'),
+    ('US', '2026-11-26', 'Thanksgiving'),
+    ('US', '2026-12-25', 'Christmas')
 ON CONFLICT DO NOTHING;
+
+-- Append-only enforcement (no UPDATE or DELETE on immutable tables)
+-- These rules prevent accidental mutation of audit trail and closed trade history.
+-- Signals and paper_positions NEED updates (status changes, price updates) — no rules there.
+CREATE RULE no_update_audit AS ON UPDATE TO audit_logs DO INSTEAD NOTHING;
+CREATE RULE no_delete_audit AS ON DELETE TO audit_logs DO INSTEAD NOTHING;
+CREATE RULE no_update_closed_trade AS ON UPDATE TO closed_paper_trades DO INSTEAD NOTHING;
+CREATE RULE no_delete_closed_trade AS ON DELETE TO closed_paper_trades DO INSTEAD NOTHING;
+
+-- Performance indexes for common query patterns
+CREATE INDEX IF NOT EXISTS idx_signals_ticker_market_status ON signals(ticker, market, status);
+CREATE INDEX IF NOT EXISTS idx_pending_approvals_signal ON pending_approvals(signal_id);
+
+-- Partitioning guidance (apply when tables grow large):
+-- ohlcv_cache: RANGE partition on timestamp (monthly)
+-- audit_logs: RANGE partition on created_at (monthly)
+-- Consider pg_partman for automated partition management.

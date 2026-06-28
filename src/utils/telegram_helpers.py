@@ -48,6 +48,55 @@ def escape_html(text: str) -> str:
     return html_module.escape(str(text)) if text else ""
 
 
+def _split_html_safe(text: str, limit: int) -> list[str]:
+    """Split text into chunks respecting HTML tag boundaries.
+
+    Tracks open <pre>, <b>, <i>, <code> tags across chunk boundaries.
+    Closes open tags at end of chunk, reopens them at start of next chunk.
+    """
+    import re
+    lines = text.split('\n')
+    chunks = []
+    current_chunk = []
+    current_len = 0
+    open_tags = []  # stack of open tags
+
+    tag_pattern = re.compile(r'<(/?)(pre|b|i|code|u|s|a)([^>]*)>')
+
+    for line in lines:
+        if current_len + len(line) + 1 > limit and current_chunk:
+            # Close any open tags at chunk boundary
+            closing = ""
+            for tag in reversed(open_tags):
+                closing += f"</{tag}>"
+            chunks.append('\n'.join(current_chunk) + closing)
+
+            # Reopen tags at start of next chunk
+            reopening = ""
+            for tag in open_tags:
+                reopening += f"<{tag}>"
+            current_chunk = [reopening + line] if reopening else [line]
+            current_len = len(current_chunk[0])
+        else:
+            current_chunk.append(line)
+            current_len += len(line) + 1
+
+        # Track open/close tags in this line
+        for match in tag_pattern.finditer(line):
+            is_close = match.group(1) == '/'
+            tag_name = match.group(2)
+            if tag_name in ('pre', 'b', 'i', 'code', 'u', 's'):
+                if is_close and tag_name in open_tags:
+                    open_tags.remove(tag_name)
+                elif not is_close:
+                    open_tags.append(tag_name)
+
+    if current_chunk:
+        chunks.append('\n'.join(current_chunk))
+
+    return chunks
+
+
 async def send_long_message(update: Update, text: str, parse_mode: str = "HTML", reply_markup=None):
     """Sends a message, splitting it into chunks if it exceeds Telegram's 4096 limit."""
     limit = 4000  # Leave buffer for parse tags
@@ -59,45 +108,24 @@ async def send_long_message(update: Update, text: str, parse_mode: str = "HTML",
             await update.message.reply_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
         return
 
-    # Simple chunking by lines
-    lines = text.split('\n')
-    chunks = []
-    current_chunk = []
-    current_len = 0
-
-    for line in lines:
-        if current_len + len(line) + 1 > limit:
-            chunks.append('\n'.join(current_chunk))
-            current_chunk = [line]
-            current_len = len(line)
-        else:
-            current_chunk.append(line)
-            current_len += len(line) + 1
-
-    if current_chunk:
-        chunks.append('\n'.join(current_chunk))
+    chunks = _split_html_safe(text, limit)
 
     for i, chunk in enumerate(chunks):
         is_last = i == len(chunks) - 1
         markup = reply_markup if is_last else None
-        if update.callback_query:
-            await update.callback_query.message.edit_text(chunk, parse_mode=parse_mode, reply_markup=markup)
-        elif update.message:
-            await update.message.reply_text(chunk, parse_mode=parse_mode, reply_markup=markup)
+        try:
+            if update.callback_query:
+                await update.callback_query.message.edit_text(chunk, parse_mode=parse_mode, reply_markup=markup)
+            elif update.message:
+                await update.message.reply_text(chunk, parse_mode=parse_mode, reply_markup=markup)
+        except Exception:
+            # Fallback: send as plain text if HTML parsing fails
+            plain = re.sub(r'<[^>]+>', '', chunk)
+            if update.callback_query:
+                await update.callback_query.message.edit_text(plain, reply_markup=markup)
+            elif update.message:
+                await update.message.reply_text(plain, reply_markup=markup)
 
-
-def build_audit_keyboard(tickers: list[str]) -> InlineKeyboardMarkup:
-    """Builds inline buttons for auditing specific tickers."""
-    keyboard = []
-    row = []
-    for i, ticker in enumerate(tickers):
-        row.append(InlineKeyboardButton(f"🔍 {ticker}", callback_data=f"audit_{ticker}"))
-        if (i + 1) % 3 == 0:  # 3 buttons per row
-            keyboard.append(row)
-            row = []
-    if row:
-        keyboard.append(row)
-    return InlineKeyboardMarkup(keyboard)
 
 
 def build_nav_keyboard(buttons: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:

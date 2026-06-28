@@ -3,17 +3,19 @@ global:
   evaluation_interval: 15s
 
 scrape_configs:
-  - job_name: "9router"
+  - job_name: 'karsa-orchestrator'
     static_configs:
-      - targets: ["karsa-9router:20128"]
-    metrics_path: /metrics
+      - targets: ['karsa-orchestrator:8000']
+    metrics_path: '/health'
 
-  - job_name: "redis"
+  - job_name: 'redis-exporter'
     static_configs:
-      - targets: ["redis:6379"]
-    metrics_path: /metrics
+      - targets: ['redis-exporter:9121']
 
-  - job_name: "postgres"
+  - job_name: 'postgres-exporter'
     static_configs:
-      - targets: ["postgres:5432"]
-    metrics_path: /metrics
+      - targets: ['postgres-exporter:9187']
+
+  - job_name: '9router'
+    static_configs:
+      - targets: ['karsa-9router:20128']

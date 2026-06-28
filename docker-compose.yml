@@ -4,7 +4,7 @@ services:
     image: 9router:latest
     container_name: karsa-9router
     ports:
-      - "20129:20128"
+      - "127.0.0.1:20129:20128"
     volumes:
       - 9router-data:/app/data
     networks: [trading-net]
@@ -14,13 +14,13 @@ services:
   redis:
     image: redis:7-alpine
     container_name: karsa-redis
-    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD}
     volumes:
       - redis-data:/data
     networks: [trading-net]
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -31,7 +31,7 @@ services:
     environment:
       POSTGRES_DB: trading
       POSTGRES_USER: trader
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -51,10 +51,10 @@ services:
     container_name: karsa-orchestrator
     env_file: [.env]
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8000:8000"
     environment:
-      - REDIS_URL=redis://redis:6379
-      - POSTGRES_URL=postgresql://trader:${DB_PASSWORD:-changeme}@postgres:5432/trading
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+      - POSTGRES_URL=postgresql://trader:${DB_PASSWORD}@postgres:5432/trading
       - TRADINGVIEW_MCP_URL=direct
     depends_on:
       redis:
@@ -73,7 +73,7 @@ services:
     container_name: karsa-telegram-bot
     env_file: [.env]
     ports:
-      - "8443:8443"
+      - "127.0.0.1:8443:8443"
     depends_on:
       redis:
         condition: service_healthy

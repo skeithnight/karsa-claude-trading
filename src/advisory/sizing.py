@@ -15,7 +15,7 @@ def calculate_position_size(equity: float, risk_per_trade_pct: float, entry_pric
     Returns:
         Decimal representing quantity of shares/contracts to buy
     """
-    if atr <= 0 or entry_price <= 0:
+    if atr <= 0 or entry_price <= 0 or equity <= 0:
         return Decimal(0)
 
     risk_amount = equity * risk_per_trade_pct

@@ -3,7 +3,7 @@
 ## Orchestrator (`orchestrator`)
 **Role**: Schedules scans, dispatches analysts in parallel (`asyncio.gather`), manages combo routing via 9Router.
 **File**: `src/agents/orchestrator.py`
-**Key**: Universe lists (IDX/US/ETF), `scan_all_markets()` parallel dispatch with emergency stop gate + signal persistence, `scan_single()` for ad-hoc commands (also gated), `analyze_portfolio()` delegates to PortfolioAnalyst, `_save_signal()` persists signals with IDX order validation, `_validate_signal()` checks JSON structure before persisting.
+**Key**: Universe lists (IDX/US/ETF), `scan_all_markets()` parallel dispatch, `scan_single()` for ad-hoc commands, `analyze_portfolio()` delegates to PortfolioAnalyst, `_save_signal()` persists signals to DB.
 
 ## IDX Analyst (`idx_analyst`)
 **Role**: Scans Indonesian (IDX) market universe.
@@ -26,18 +26,10 @@
 **Trigger**: `/portfolio` and `/analyze` commands (in Telegram).
 **File**: `src/agents/portfolio_analyst.py`
 
-## Risk Module (not agents — deterministic modules)
-
-### Emergency Stop (`src/risk/emergency.py`)
-Redis-backed kill switch. `activate(reason, operator)` halts all trading decisions. `is_active()` checked by orchestrator before every scan. Triggered by kill switch job at -1.5% daily P&L or manual `/stop` command.
-
-### IDX Limits (`src/risk/idx_limits.py`)
-IDX market compliance: tick size tiers (Fraksi Harga), `validate_order()` enforces ARA/ARB bounds, `settlement_date()` calculates T+2. Used by orchestrator `_save_signal()` for IDX signals.
-
 ## Advisory Layer (not agents — deterministic modules)
 
-### Regime Filters (`src/advisory/regime.py`)
-`USRegimeFilter` and `IDXRegimeFilter` classify market regime as BULL/BEAR/NEUTRAL based on VIX level, SPY/IHSG price vs 200-day SMA. Used by `/briefing` and `/regime` commands.
+### MacroRegimeFilter (`src/advisory/regime.py`)
+Classifies market regime as BULL/BEAR/NEUTRAL based on VIX level, SPY price vs 200-day SMA. Used by `/briefing` and `/regime` commands.
 
 ### PositionSizer (`src/advisory/sizing.py`)
 Calculates volatility-target position sizes using ATR. Used for paper trade sizing in the execution pipeline.
@@ -45,7 +37,7 @@ Calculates volatility-target position sizes using ATR. Used for paper trade sizi
 ## Utilities (not agents)
 
 ### MCPClient (`src/data/mcp_client.py`)
-Wraps `tradingview_ta.TA_Handler` with 3-tier fallback (TradingView → Massive → Finnhub). Methods: `get_quote()`, `get_ohlcv()`, `get_indicators()`. Circuit breaker blocks failing providers for 10min. Uses `asyncio.to_thread()` for non-blocking I/O.
+Wraps `tradingview_ta.TA_Handler`. Methods: `get_quote()`, `get_ohlcv()`, `get_indicators()`. IDX uses `screener='indonesia', exchange='IDX'`. US/ETF tries NASDAQ → NYSE → AMEX fallback.
 
 ### MarketHours (`src/utils/market_hours.py`)
 `is_idx_open()` and `is_us_open()` — used by scheduler jobs to skip scans when markets are closed.
