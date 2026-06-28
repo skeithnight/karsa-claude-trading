@@ -4,6 +4,7 @@ Utilities for creating institutional-grade Telegram messages with
 aligned <pre> tables, HTML escaping, and message chunking.
 """
 
+import re
 import html as html_module
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -44,24 +45,27 @@ def format_pre_table(headers: list[str], rows: list[list[str]], align_right: lis
 
 
 def escape_html(text: str) -> str:
-    """Escape HTML special characters for Telegram."""
-    return html_module.escape(str(text)) if text else ""
+    """Escape HTML special characters for Telegram.
+    
+    Delegates to format._safe() for consistency with composable formatters.
+    """
+    from src.utils.format import _safe
+    return _safe(text)
 
 
 def _split_html_safe(text: str, limit: int) -> list[str]:
     """Split text into chunks respecting HTML tag boundaries.
 
-    Tracks open <pre>, <b>, <i>, <code> tags across chunk boundaries.
+    Tracks open HTML tags across chunk boundaries.
     Closes open tags at end of chunk, reopens them at start of next chunk.
     """
-    import re
     lines = text.split('\n')
     chunks = []
     current_chunk = []
     current_len = 0
     open_tags = []  # stack of open tags
 
-    tag_pattern = re.compile(r'<(/?)(pre|b|i|code|u|s|a)([^>]*)>')
+    tag_pattern = re.compile(r'<(/?)(pre|b|i|code|u|s|a|blockquote|tg-spoiler)([^>]*)>')
 
     for line in lines:
         if current_len + len(line) + 1 > limit and current_chunk:
@@ -85,7 +89,7 @@ def _split_html_safe(text: str, limit: int) -> list[str]:
         for match in tag_pattern.finditer(line):
             is_close = match.group(1) == '/'
             tag_name = match.group(2)
-            if tag_name in ('pre', 'b', 'i', 'code', 'u', 's'):
+            if tag_name in ('pre', 'b', 'i', 'code', 'u', 's', 'blockquote', 'tg-spoiler'):
                 if is_close and tag_name in open_tags:
                     open_tags.remove(tag_name)
                 elif not is_close:
