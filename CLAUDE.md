@@ -100,11 +100,11 @@ docker exec karsa-orchestrator python3 -c "from src.config import settings; prin
 
 **Market data** (`src/data/mcp_client.py`): Uses `tradingview_ta.TA_Handler` directly (not MCP protocol). IDX uses `screener='indonesia', exchange='IDX'`. US/ETF tries NASDAQ → NYSE → AMEX fallback. Data cached in Redis (60s quotes, 1h OHLCV). Rate-limited with Semaphore and `asyncio.to_thread()` for non-blocking sleep.
 
-**Advisory layer** (`src/advisory/`): `USRegimeFilter`/`IDXRegimeFilter` check VIX/SPY/200-SMA to classify BULL/BEAR/NEUTRAL. `PositionSizer` calculates volatility-target sizing using ATR.
+**Advisory layer** (`src/advisory/`): `USRegimeFilter`/`IDXRegimeFilter` check VIX/SPY/200-SMA to classify BULL/BEAR/NEUTRAL. Regime hard veto: ETF mean reversion disabled in BEAR regime. `PositionSizer` calculates volatility-target sizing using ATR.
 
-**Risk module** (`src/risk/`): `emergency.py` — Redis-backed kill switch (`activate()`/`deactivate()`/`is_active()`). `idx_limits.py` — IDX tick sizes (Fraksi Harga), ARA/ARB validation, order validation, T+2 settlement.
+**Risk module** (`src/risk/`): `emergency.py` — Redis-backed kill switch (`activate()`/`deactivate()`/`is_active()`). `idx_limits.py` — IDX tick sizes (Fraksi Harga), ARA/ARB validation, `validate_order()` with ADV liquidity gate (`max_lots_by_adv`), T+2 settlement.
 
-**HITL flow**: Signal → `signals` table (PENDING) → Telegram alert with APPROVE/REJECT buttons → `ApprovalManager.process_approval()` → broker execution → `trades` table + `audit_logs`.
+**HITL flow**: `/scan` → agent generates signal → saved to `signals` table (PENDING) → if confidence >= 60, Telegram alert with APPROVE/REJECT buttons → APPROVE creates `PaperPosition`, REJECT marks rejected. Implementation in `src/bot/_approval.py`.
 
 ## Key Config
 
@@ -119,7 +119,10 @@ docker exec karsa-orchestrator python3 -c "from src.config import settings; prin
 
 - `src/agents/orchestrator.py` — universe lists (IDX_UNIVERSE, US_UNIVERSE, ETF_UNIVERSE), combo name assignment, parallel market scan, signal validation (`_validate_signal`), emergency stop gate, IDX order validation, signal persistence to DB
 - `src/agents/base.py` — Anthropic SDK tool-use loop, `getattr()` guards for 9Router response quirks
-- `src/bot/handlers.py` — Telegram command handlers (16 commands), `parse_decimal()` for locale-safe number parsing, `_reply()` with auto-timestamps, inline keyboard routing via `button_callback()`, fail-closed auth check
+- `src/bot/handlers.py` — Telegram command handlers (16 commands), composable HTML formatting via `src/utils/format.py`, approval flow via `src/bot/_approval.py`, inline keyboard routing via `button_callback()`, fail-closed auth check
+- `src/bot/_approval.py` — HITL approval flow: `send_signal_alert()` sends APPROVE/REJECT buttons, `handle_approval()` creates PaperPosition on approve
+- `src/utils/format.py` — Composable Telegram HTML formatters: `HTML` marker, `bold()`, `italic()`, `code()`, `pre()`, `fmt()`, `join()`. Auto-escapes.
+- `src/utils/validation.py` — Shared input validation: `validate_ticker()`, `validate_market()`, `sanitize_for_prompt()`
 - `src/data/cache.py` — Redis wrapper with quote/OHLCV caching
 - `src/data/mcp_client.py` — `tradingview_ta.TA_Handler` wrapper with circuit breaker, 3-tier fallback (TradingView → Massive → Finnhub), `asyncio.to_thread()` for non-blocking I/O
 - `src/models/tables.py` — SQLAlchemy ORM: PortfolioState, CashBalance, Signal, PaperPosition, ClosedPaperTrade, AuditLog, OHLCVCache, MarketHoliday, PendingApproval
