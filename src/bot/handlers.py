@@ -41,16 +41,6 @@ def parse_decimal(raw: str) -> Decimal:
         raise ValueError(f"Invalid number: {raw!r}")
 
 
-def validate_ticker(ticker: str) -> bool:
-    """Validate ticker format — alphanumeric + dots, max 20 chars."""
-    return bool(re.match(r'^[A-Z0-9.]{1,20}$', ticker))
-
-
-def validate_market(market: str) -> bool:
-    """Validate market is one of the allowed values."""
-    return market in ("IDX", "US", "ETF")
-
-
 def _is_authorized(update: Update) -> bool:
     """Check if message is from authorized chat. Fail closed if TELEGRAM_CHAT_ID not set."""
     if not settings.TELEGRAM_CHAT_ID:
@@ -562,6 +552,7 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             from src.models.tables import CashBalance
             from sqlalchemy import select
 
+            from datetime import datetime, timezone
             from sqlalchemy.dialects.postgresql import insert as pg_insert
             async with async_session() as session:
                 stmt = pg_insert(CashBalance).values(currency=currency, balance=amount)
