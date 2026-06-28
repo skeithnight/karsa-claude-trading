@@ -227,7 +227,7 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             from src.models.tables import PortfolioState
             from sqlalchemy import select
             from collections import defaultdict
-            from src.utils.telegram_helpers import format_pre_table, send_long_message, build_nav_keyboard, escape_html
+            from src.utils.telegram_helpers import format_pre_table, send_long_message, build_nav_keyboard
 
             async with async_session() as session:
                 result = await session.execute(select(PortfolioState).order_by(PortfolioState.market, PortfolioState.ticker))
@@ -802,7 +802,7 @@ async def analyze_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # Format analysis using <pre> tables
-        from src.utils.telegram_helpers import format_pre_table, send_long_message, build_nav_keyboard, escape_html
+        from src.utils.telegram_helpers import format_pre_table, send_long_message, build_nav_keyboard
         from collections import defaultdict
 
         lines = ["<b>🧠 PORTFOLIO ANALYSIS</b>"]
