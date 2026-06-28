@@ -10,6 +10,7 @@ import httpx
 from src.config import settings, LLM_BASE_URL
 from src.utils.logging import get_logger
 from src.risk import emergency
+from src.bot._approval import send_signal_alert, handle_approval
 
 logger = get_logger("telegram_handlers")
 
@@ -274,6 +275,25 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             result.get('reasoning', 'No reasoning provided.')
         )
         await msg.edit_text(str(text), parse_mode="HTML")
+
+        # Send approval alert if confidence >= 60
+        conf = result.get("confidence_score", 0)
+        if conf >= 60 and not result.get("error") and not result.get("validation_issues"):
+            try:
+                from src.models.database import async_session
+                from src.models.tables import Signal
+                from sqlalchemy import select, desc
+                async with async_session() as s:
+                    sig = await s.execute(
+                        select(Signal).where(Signal.ticker == ticker, Signal.market == market)
+                        .order_by(desc(Signal.created_at)).limit(1)
+                    )
+                    signal = sig.scalar_one_or_none()
+                    if signal and signal.status == "PENDING":
+                        await send_signal_alert(msg, result, str(signal.id))
+            except Exception as alert_err:
+                logger.error("approval_alert_failed", error=str(alert_err))
+
     except Exception as e:
         logger.error("scan_cmd_failed", error=str(e), exc_info=True)
         await msg.edit_text("❌ Scan failed. Check logs.")
@@ -1252,6 +1272,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     data = query.data
+
+    if data.startswith("approve_"):
+        await handle_approval(update, data[8:], "approve", _is_authorized)
+        return
+    if data.startswith("reject_"):
+        await handle_approval(update, data[7:], "reject", _is_authorized)
+        return
 
     if data.startswith("audit_"):
         ticker = data[6:]
