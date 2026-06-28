@@ -1,0 +1,23 @@
+src/bot/_approval.py
+  9c3f1d4c8ec46b03 1-148
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "518a810d7f24523f76be72f7e7c50363f4c3a555",
+  "prompts": {
+    "9c3f1d4c8ec46b03": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e79f474e-35f2-4c9f-b349-c4a234e9da1f",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 148,
+      "total_deletions": 0,
+      "accepted_lines": 148,
+      "overriden_lines": 0
+    }
+  }
+}
