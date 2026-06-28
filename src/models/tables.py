@@ -1,7 +1,7 @@
 """Karsa Trading System - SQLAlchemy ORM Models"""
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import String, Integer, BigInteger, Numeric, DateTime, Text, JSON, ForeignKey, CheckConstraint, UniqueConstraint
@@ -18,7 +18,7 @@ class CashBalance(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     currency: Mapped[str] = mapped_column(String(5), nullable=False)
     balance: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     __table_args__ = (
         UniqueConstraint("currency", name="uq_cash_balance_currency"),
@@ -38,8 +38,8 @@ class PortfolioState(Base):
     current_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
     unrealized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
     notes: Mapped[str | None] = mapped_column(Text)
-    added_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    last_synced_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    added_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (
         UniqueConstraint("ticker", "market", name="uq_portfolio_ticker_market"),
@@ -63,7 +63,7 @@ class Signal(Base):
     risk_reward_ratio: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
     reasoning: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), default="PENDING")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     paper_positions: Mapped[list["PaperPosition"]] = relationship(back_populates="signal")
@@ -96,7 +96,7 @@ class PaperPosition(Base):
     unrealized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
     unrealized_pnl_pct: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
     max_drawdown_pct: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
-    entry_date: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    entry_date: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     notes: Mapped[str | None] = mapped_column(Text)
 
     signal: Mapped["Signal | None"] = relationship(back_populates="paper_positions")
@@ -122,7 +122,7 @@ class ClosedPaperTrade(Base):
     realized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
     realized_pnl_pct: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
     entry_date: Mapped[datetime | None] = mapped_column(DateTime)
-    exit_date: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    exit_date: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     hold_duration: Mapped[datetime | None] = mapped_column(DateTime)  # Interval not supported well in SQLAlchemy
     exit_reason: Mapped[str | None] = mapped_column(String(50))
     strategy: Mapped[str | None] = mapped_column(String(50))
@@ -144,7 +144,7 @@ class AuditLog(Base):
     entity_type: Mapped[str | None] = mapped_column(String(50))
     entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (
         CheckConstraint(
@@ -196,7 +196,7 @@ class PendingApproval(Base):
     telegram_message_id: Mapped[int | None] = mapped_column(BigInteger)
     status: Mapped[str] = mapped_column(String(20), default="WAITING")
     modification: Mapped[dict | None] = mapped_column(JSON)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     responded_at: Mapped[datetime | None] = mapped_column(DateTime)
 

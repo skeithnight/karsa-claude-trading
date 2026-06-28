@@ -215,7 +215,7 @@ class Orchestrator:
         try:
             from src.models.database import async_session
             from src.models.tables import Signal
-            from datetime import datetime, timezone, timedelta
+            from datetime import datetime, timedelta
 
             # IDX-specific order validation (including ADV liquidity gate)
             if signal_data.get("market") == "IDX":
@@ -250,7 +250,7 @@ class Orchestrator:
                     risk_reward_ratio=signal_data.get("risk_reward_ratio"),
                     reasoning=signal_data.get("reasoning"),
                     status="PENDING",
-                    expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+                    expires_at=datetime.utcnow() + timedelta(hours=24),
                 )
                 session.add(signal)
                 await session.commit()

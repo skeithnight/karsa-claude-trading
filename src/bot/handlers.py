@@ -552,13 +552,13 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             from src.models.tables import CashBalance
             from sqlalchemy import select
 
-            from datetime import datetime, timezone
+            from datetime import datetime
             from sqlalchemy.dialects.postgresql import insert as pg_insert
             async with async_session() as session:
                 stmt = pg_insert(CashBalance).values(currency=currency, balance=amount)
                 stmt = stmt.on_conflict_do_update(
-                    constraint="uq_cash_balance_currency",
-                    set_={"balance": amount, "updated_at": datetime.now(timezone.utc)},
+                    index_elements=["currency"],
+                    set_={"balance": amount, "updated_at": datetime.utcnow()},
                 )
                 await session.execute(stmt)
                 await session.commit()

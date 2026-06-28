@@ -115,10 +115,15 @@ class MCPClient:
             "4h": Interval.INTERVAL_4_HOURS, "1D": Interval.INTERVAL_1_DAY,
             "1W": Interval.INTERVAL_1_WEEK,
         }
+        # Handle index symbols that need special treatment
+        if ticker in ("IHSG", "IHSG.JK"):
+            ticker = "COMPOSITE"
+        elif ticker in ("VIX", "VIXY"):
+            ticker = "VIX"
         screener = SCREENER_MAP.get(market, "america")
         exchanges = [EXCHANGE_MAP.get(market, "NASDAQ")]
         if market in ("US", "ETF"):
-            exchanges = ["NASDAQ", "NYSE", "AMEX"]
+            exchanges = ["NASDAQ", "NYSE", "AMEX", "CBOE"]
 
         last_err = None
         for ex in exchanges:
