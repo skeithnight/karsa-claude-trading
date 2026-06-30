@@ -82,7 +82,8 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Use ", code("/guide"), " for full walkthrough.\n\n",
         bold("Quick Commands:"), "\n",
         code("/portfolio"), " — View holdings & cash\n",
-        code("/briefing"), " — Morning dashboard\n",
+        code("/briefing"), " — Morning dashboard + IDX intel\n",
+        code("/idx"), " — IDX Intelligence dashboard\n",
         code("/scan <market> <ticker>"), " — Scan a stock\n",
         code("/analyze"), " — AI portfolio review\n",
         code("/regime"), " — Market state\n",
@@ -111,6 +112,16 @@ async def guide_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• ", bold("IDX"), " — Indonesian stocks (BBCA, BBRI, BMRI, TLKM ...)\n",
         "• ", bold("US"), " — US equities (NVDA, AAPL, MSFT, GOOGL ...)\n",
         "• ", bold("ETF"), " — Global ETFs (SPY, QQQ, GLD, TLT ...)\n\n",
+
+        bold("🧠 IDX INTELLIGENCE"), "\n",
+        "Composite market regime scoring (-100 to +100) combining:\n",
+        "• Breadth (30%) — advance/decline ratio\n",
+        "• Sector Rotation (25%) — sector performance flow\n",
+        "• Foreign Flow (20%) — volume-based proxy\n",
+        "• Price Structure (25%) — IHSG vs SMA20/200\n\n",
+        "Composite gates IDX scans:\n",
+        "• Score ≤-50 → IDX scan skipped (bear regime)\n",
+        "• Score ≤-20 → Caution, reduced position sizing\n\n",
 
         bold("🔄 HOW IT WORKS"), "\n",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n",
@@ -154,7 +165,8 @@ async def guide_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  ", code("/audit <ticker>"), " — signal audit trail\n\n",
 
         bold("CIO Dashboard:"), "\n",
-        "  ", code("/briefing"), " — morning dashboard\n",
+        "  ", code("/briefing"), " — morning dashboard + IDX intel\n",
+        "  ", code("/idx"), " — IDX Intelligence dashboard\n",
         "  ", code("/regime"), " — market regime (US + IDX)\n",
         "  ", code("/pnl"), " — shadow portfolio P&L\n",
         "  ", code("/trades"), " — paper trade history\n\n",
@@ -924,17 +936,45 @@ async def briefing_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Unrealized  : {'🟢' if paper_pnl >= 0 else '🔴'} {paper_pnl:+,.2f}"
         )
 
+        # IDX Intelligence Summary
+        idx_intel_block = ""
+        try:
+            intel = orchestrator.idx_intel
+            composite = await intel.get_regime_composite()
+            idx_state = composite.get("state", "UNKNOWN")
+            idx_score = composite.get("score", 0)
+            idx_emoji = {"STRONG_BULL": "🟢🟢", "BULL": "🟢", "NEUTRAL": "🟡", "BEAR": "🔴", "STRONG_BEAR": "🔴🔴"}.get(idx_state, "⚪️")
+
+            # Top sectors
+            sectors = composite.get("components", {}).get("sector", {}).get("sectors", [])
+            top_sector = sectors[0]["sector"] if sectors else "—"
+            top_sector_chg = f"{sectors[0]['avg_change_pct']:+.1f}%" if sectors else ""
+
+            # Earnings watchlist
+            blackout = intel.earnings.get_blackout_universe()
+            earnings_note = f"⚠️ {', '.join(blackout)}" if blackout else "Clear"
+
+            idx_intel_block = (
+                f"Composite : {idx_emoji} {idx_state} ({idx_score:+.0f})\n"
+                f"Top Sector: {top_sector} {top_sector_chg}\n"
+                f"Earnings  : {earnings_note}"
+            )
+        except Exception:
+            idx_intel_block = "Unavailable"
+
         text = fmt(
             bold("☀️ MORNING BRIEFING"), "\n",
             italic(datetime.now().strftime('%a, %b %d | %H:%M')), "\n\n",
             bold("🌡️ REGIME & CONTEXT"), "\n", pre(regime_block), "\n\n",
+            bold("🇮🇩 IDX INTELLIGENCE"), "\n", pre(idx_intel_block), "\n\n",
             bold("💼 PORTFOLIO STATUS"), "\n", pre(port_block), "\n\n",
             bold("📈 PAPER TRADING"), "\n", pre(paper_block)
         )
 
         keyboard = build_nav_keyboard([
-            [("🌡️ Deep Regime", "cmd_regime"), ("📈 View P&L", "cmd_pnl")],
-            [("📋 Open Trades", "cmd_trades"), ("💼 Portfolio", "cmd_portfolio")],
+            [("🇮🇩 IDX Detail", "idx_overview"), ("🌡️ Deep Regime", "cmd_regime")],
+            [("📈 View P&L", "cmd_pnl"), ("📋 Open Trades", "cmd_trades")],
+            [("💼 Portfolio", "cmd_portfolio")],
         ])
         await send_long_message(update, str(text), reply_markup=keyboard)
 
@@ -1004,6 +1044,149 @@ async def regime_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error("regime_cmd_failed", error=str(e), exc_info=True)
         await _reply(update, "❌ Regime check failed. Check logs.")
+
+
+async def idx_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /idx command — IDX Intelligence Dashboard.
+
+    Panels: overview (default), sector, breadth, flow, earnings.
+    Usage: /idx or /idx sector
+    """
+    if not _is_authorized(update):
+        return
+
+    orchestrator = context.bot_data.get("orchestrator")
+    if not orchestrator:
+        await _reply(update, "⚠️ System error: Orchestrator not connected.")
+        return
+
+    panel = (context.args[0].lower() if context.args else "overview").strip()
+    msg = await _reply(update, bold("🇮🇩 Loading IDX Intelligence..."))
+
+    try:
+        from src.utils.telegram_helpers import send_long_message, build_nav_keyboard, format_pre_table
+
+        intel = orchestrator.idx_intel
+
+        if panel == "sector":
+            sectors = await intel.get_sector_performance()
+            headers = ["Sector", "Chg%", "A/D", "Flow", "Signal"]
+            rows = []
+            rotation_emoji = {"LEADING": "🟢", "IMPROVING": "🔵", "NEUTRAL": "⚪️", "WEAKENING": "🟡", "LAGGING": "🔴"}
+            for s in sectors:
+                remoji = rotation_emoji.get(s["rotation_signal"], "⚪️")
+                rows.append([
+                    s["sector"],
+                    f"{s['avg_change_pct']:+.2f}%",
+                    f"{s['advancers']}/{s['decliners']}",
+                    f"{s['foreign_flow']:+.1f}",
+                    f"{remoji} {s['rotation_signal']}",
+                ])
+            table = format_pre_table(headers, rows, align_right=[1, 2, 3])
+            text = str(fmt(
+                bold("📊 IDX SECTOR ROTATION"), "\n",
+                pre(table), "\n\n",
+                italic("LEADING = strong + buying | LAGGING = weak + selling")
+            ))
+
+        elif panel == "breadth":
+            breadth = await intel.get_breadth_metrics()
+            bar_len = 20
+            adv_bar = int(breadth["advancing_pct"] / 100 * bar_len)
+            bar = "█" * adv_bar + "░" * (bar_len - adv_bar)
+            text = str(fmt(
+                bold("📈 IDX MARKET BREADTH"), "\n\n",
+                bold("Advancing:"), f" {breadth['advancing']}", "\n",
+                bold("Declining:"), f" {breadth['declining']}", "\n",
+                bold("Unchanged:"), f" {breadth['unchanged']}", "\n\n",
+                bold("Breadth Ratio:"), f" {breadth['breadth_ratio']:.2f}", "\n",
+                bold("Advancing %:"), f" {breadth['advancing_pct']:.1f}%", "\n\n",
+                pre(f"[{bar}] {breadth['advancing_pct']:.0f}%")
+            ))
+
+        elif panel == "flow":
+            from src.agents.orchestrator import IDX_UNIVERSE
+            flows = []
+            for ticker in IDX_UNIVERSE[:10]:
+                try:
+                    f = await intel.flow_tracker.get_ticker_flow(ticker)
+                    flows.append(f)
+                except Exception:
+                    continue
+
+            headers = ["Ticker", "3d Flow%", "Signal"]
+            rows = []
+            flow_emoji = {"STRONG_BUY": "🟢🟢", "BUY": "🟢", "NEUTRAL": "⚪️", "SELL": "🔴", "STRONG_SELL": "🔴🔴"}
+            for f in sorted(flows, key=lambda x: x.get("net_flow_3d_pct", 0), reverse=True):
+                emoji = flow_emoji.get(f["signal"], "⚪️")
+                rows.append([f["ticker"], f"{f['net_flow_3d_pct']:+.1f}", f"{emoji} {f['signal']}"])
+            table = format_pre_table(headers, rows, align_right=[1])
+            text = str(fmt(
+                bold("💰 IDX FOREIGN FLOW (3-Day Proxy)"), "\n",
+                pre(table), "\n\n",
+                italic("Proxy: volume surge + price direction (no broker feed)")
+            ))
+
+        elif panel == "earnings":
+            upcoming = intel.earnings.get_upcoming(days=30)
+            blackout = intel.earnings.get_blackout_universe()
+            lines = [bold("📅 IDX EARNINGS CALENDAR"), "\n"]
+            if blackout:
+                lines.extend([bold("⚠️ BLACKOUT:"), f" {', '.join(blackout)}", "\n\n"])
+            if upcoming:
+                headers = ["Ticker", "Date", "FQ", "Days"]
+                rows = [[e["ticker"], e["report_date"], e["fiscal_quarter"] or "—", str(e["days_until"])] for e in upcoming]
+                table = format_pre_table(headers, rows, align_right=[3])
+                lines.extend([pre(table)])
+            else:
+                lines.append(italic("No upcoming earnings in next 30 days."))
+            text = str(fmt(*lines))
+
+        else:  # overview (default)
+            composite = await intel.get_regime_composite()
+            state_emoji = {
+                "STRONG_BULL": "🟢🟢", "BULL": "🟢", "NEUTRAL": "🟡",
+                "BEAR": "🔴", "STRONG_BEAR": "🔴🔴",
+            }
+            emoji = state_emoji.get(composite["state"], "⚪️")
+            score_bar_len = 20
+            score_pos = int((composite["score"] + 100) / 200 * score_bar_len)
+            score_bar = "░" * score_pos + "█" + "░" * (score_bar_len - score_pos - 1)
+
+            components = composite.get("components", {})
+            breadth_c = components.get("breadth", {})
+            sector_c = components.get("sector", {})
+            flow_c = components.get("flow", {})
+            price_c = components.get("price", {})
+
+            detail_block = (
+                f"Breadth : {breadth_c.get('score', 0):+.0f} (wt {breadth_c.get('weight', 0)*100:.0f}%)\n"
+                f"Sector  : {sector_c.get('score', 0):+.0f} (wt {sector_c.get('weight', 0)*100:.0f}%)\n"
+                f"Flow    : {flow_c.get('score', 0):+.0f} (wt {flow_c.get('weight', 0)*100:.0f}%)\n"
+                f"Price   : {price_c.get('score', 0):+.0f} (wt {price_c.get('weight', 0)*100:.0f}%)"
+            )
+
+            triggers = composite.get("triggers", [])
+            trigger_lines = "\n".join(f"  • {t}" for t in triggers[:5]) if triggers else "  None"
+
+            text = str(fmt(
+                bold("🇮🇩 IDX INTELLIGENCE DASHBOARD"), "\n\n",
+                bold("Composite Score:"), f" {composite['score']:+.0f}/100  ", emoji, f" {composite['state']}", "\n",
+                pre(f"[{score_bar}] {composite['score']:+.0f}"), "\n\n",
+                bold("Components:"), "\n", pre(detail_block), "\n\n",
+                bold("Active Triggers:"), "\n", trigger_lines,
+            ))
+
+        keyboard = build_nav_keyboard([
+            [("📊 Sector", "idx_sector"), ("📈 Breadth", "idx_breadth")],
+            [("💰 Flow", "idx_flow"), ("📅 Earnings", "idx_earnings")],
+            [("🔙 Overview", "idx_overview"), ("💼 Portfolio", "cmd_portfolio")],
+        ])
+        await send_long_message(update, text, reply_markup=keyboard)
+
+    except Exception as e:
+        logger.error("idx_cmd_failed", error=str(e), exc_info=True)
+        await msg.edit_text("❌ IDX Intelligence failed. Check logs.")
 
 
 async def pnl_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1284,6 +1467,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ticker = data[6:]
         context.args = [ticker]
         await audit_cmd(update, context)
+        return
+
+    if data.startswith("idx_"):
+        panel = data[4:]
+        context.args = [panel]
+        await idx_cmd(update, context)
         return
 
     if not data.startswith("cmd_"):

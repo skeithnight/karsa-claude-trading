@@ -101,3 +101,152 @@ def settlement_date(trade_date: date) -> date:
 def is_settled(trade_date: date) -> bool:
     """Check if a trade has settled (T+2)."""
     return date.today() >= settlement_date(trade_date)
+
+
+# --- Dynamic ARA/ARB ---
+
+# Per-ticker ARA/ARB overrides (extendable via DB or config).
+# Default is 25% per IDX rules. Some tickers (e.g. newly listed, restructuring)
+# may have different limits set by IDX.
+_TICKER_ARA_ARB: dict[str, float] = {
+    "default": 0.25,
+    # Example overrides (populate from IDX announcements):
+    # "GOTO": 0.35,
+}
+
+
+def ara_ceiling_dynamic(prev_close: float, ticker: str | None = None) -> float:
+    """Dynamic ARA ceiling — per-ticker when available, else 25% default."""
+    pct = _TICKER_ARA_ARB.get(ticker.upper(), _TICKER_ARA_ARB["default"]) if ticker else _TICKER_ARA_ARB["default"]
+    return prev_close * (1 + pct)
+
+
+def arb_floor_dynamic(prev_close: float, ticker: str | None = None) -> float:
+    """Dynamic ARB floor — per-ticker when available, else 25% default."""
+    pct = _TICKER_ARA_ARB.get(ticker.upper(), _TICKER_ARA_ARB["default"]) if ticker else _TICKER_ARA_ARB["default"]
+    return prev_close * (1 - pct)
+
+
+# --- IHSG Circuit Breaker ---
+
+IDX_CIRCUIT_BREAKERS: list[tuple[float, int | None]] = [
+    (0.05, 30),    # ±5% → 30 min trading halt
+    (0.10, None),  # ±10% → trading halted for the day
+]
+
+
+def ihsg_circuit_breaker_level(ihsg_pct_change: float) -> dict:
+    """Check if IHSG movement triggers a circuit breaker.
+
+    Args:
+        ihsg_pct_change: IHSG change as decimal (0.05 = +5%, -0.07 = -7%)
+
+    Returns:
+        {triggered: bool, halt_minutes: int|None, level: int, description: str}
+    """
+    abs_change = abs(ihsg_pct_change)
+    for i, (threshold, halt_minutes) in enumerate(IDX_CIRCUIT_BREAKERS):
+        if abs_change >= threshold:
+            desc = f"{'Halted' if halt_minutes is None else f'{halt_minutes}-min halt'}"
+            return {
+                "triggered": True,
+                "halt_minutes": halt_minutes,
+                "level": i + 1,
+                "threshold_pct": threshold * 100,
+                "description": f"IHSG {ihsg_pct_change:+.2%} — Level {i+1} circuit breaker: {desc}",
+            }
+    return {"triggered": False, "halt_minutes": 0, "level": 0, "description": "No circuit breaker triggered"}
+
+
+# --- Forced Sell Triggers ---
+
+FORCED_SELL_RULES = [
+    {
+        "id": "3x_lower_limit",
+        "trigger": "3x_lower_limit_hit",
+        "description": "Stock hits lower auto-rejection limit 3 consecutive days",
+        "action": "forced_sell",
+        "universe": "full",
+    },
+    {
+        "id": "unusual_volume_10x",
+        "trigger": "unusual_volume_10x",
+        "description": "Volume exceeds 10x 20-day ADV (potential insider/dump)",
+        "action": "forced_sell",
+        "universe": "full",
+    },
+    {
+        "id": "t2_settlement_failure",
+        "trigger": "t2_settlement_failure",
+        "description": "T+2 settlement not met (funds not available)",
+        "action": "forced_sell",
+        "universe": "full",
+    },
+    {
+        "id": "idx_audit_suspend",
+        "trigger": "idx_audit_suspend",
+        "description": "IDX or OJK suspends trading for audit/investigation",
+        "action": "forced_sell",
+        "universe": "full",
+    },
+]
+
+
+def check_forced_sell_triggers(
+    ticker: str,
+    position: dict | None = None,
+    market_data: dict | None = None,
+) -> dict:
+    """Check if a position should be force-liquidated.
+
+    Args:
+        ticker: Stock ticker
+        position: {entry_price, quantity, consecutive_lower_limits}
+        market_data: {current_volume, adv_20d, is_suspended, settlement_ok}
+
+    Returns:
+        {triggered: bool, rule_id: str|None, action: str|None, description: str}
+    """
+    pos = position or {}
+    mkt = market_data or {}
+
+    # 3x lower limit
+    consec_lower = pos.get("consecutive_lower_limits", 0)
+    if consec_lower >= 3:
+        return {
+            "triggered": True,
+            "rule_id": "3x_lower_limit",
+            "action": "forced_sell",
+            "description": f"{ticker}: hit lower ARB limit {consec_lower} consecutive days — forced liquidation",
+        }
+
+    # Unusual volume 10x ADV
+    current_vol = mkt.get("current_volume", 0)
+    adv_20d = mkt.get("adv_20d", 0)
+    if adv_20d > 0 and current_vol > adv_20d * 10:
+        return {
+            "triggered": True,
+            "rule_id": "unusual_volume_10x",
+            "action": "forced_sell",
+            "description": f"{ticker}: volume {current_vol:,} is {current_vol / adv_20d:.1f}x ADV ({adv_20d:,}) — forced liquidation",
+        }
+
+    # T+2 settlement failure
+    if mkt.get("settlement_ok") is False:
+        return {
+            "triggered": True,
+            "rule_id": "t2_settlement_failure",
+            "action": "forced_sell",
+            "description": f"{ticker}: T+2 settlement failure — forced liquidation",
+        }
+
+    # IDX audit suspension
+    if mkt.get("is_suspended"):
+        return {
+            "triggered": True,
+            "rule_id": "idx_audit_suspend",
+            "action": "forced_sell",
+            "description": f"{ticker}: trading suspended by IDX/OJK — forced liquidation pending resume",
+        }
+
+    return {"triggered": False, "rule_id": None, "action": None, "description": "No forced sell triggers"}

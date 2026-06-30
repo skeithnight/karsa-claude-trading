@@ -18,9 +18,48 @@ logger = get_logger("orchestrator")
 
 ROUTINE_COMBO = settings.NROUTER_MODEL or "karsa-routine"
 
-IDX_UNIVERSE = ["BBCA", "BBRI", "BMRI", "TLKM", "ASII", "UNVR", "BBNI", "ICBP", "KLBF", "PGAS"]
-US_UNIVERSE = ["NVDA", "AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "AVGO", "LLY", "JPM"]
-ETF_UNIVERSE = ["SPY", "QQQ", "XLF", "XLK", "XLV", "XLE", "GLD", "TLT"]
+IDX_UNIVERSE = [
+    # Banking
+    "BBCA", "BBRI", "BMRI", "BBNI", "BRIS",
+    # Telco
+    "TLKM", "EXCL", "ISAT",
+    # Consumer
+    "UNVR", "ICBP", "KLBF", "HMSP",
+    # Auto & Industrial
+    "ASII", "SMSM",
+    # Energy & Mining
+    "PGAS", "ADRO", "ITMG", "PTBA",
+    # Tech
+    "GOTO", "BUKA", "EMTEK",
+    # Infra & Property
+    "JSMR", "WIKA",
+    # Healthcare
+    "MIKA", "HEAL",
+    # Retail
+    "MAPI", "ACES",
+    # Plantation
+    "LSIP", "AALI",
+]
+
+US_UNIVERSE = [
+    # Mega-cap Tech
+    "NVDA", "AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA",
+    # Semis & Healthcare
+    "AVGO", "LLY", "AMD",
+    # Financials & Industrial
+    "JPM", "V", "UNH", "XOM", "COST",
+]
+
+ETF_UNIVERSE = [
+    # Broad Market
+    "SPY", "QQQ", "IWM",
+    # Sector
+    "XLF", "XLK", "XLV", "XLE", "XLI",
+    # Commodities & Fixed Income
+    "GLD", "TLT", "SLV",
+    # International
+    "EEM",
+]
 
 # Required fields for a valid signal from an agent
 _REQUIRED_SIGNAL_FIELDS = {"ticker", "confidence_score", "direction"}
@@ -43,6 +82,10 @@ class Orchestrator:
         self.portfolio_analyst = PortfolioAnalyst(mcp, rate_limiter)
         self.portfolio_analyst.combo_name = ROUTINE_COMBO
 
+        # Shared intelligence engine — reuse across scans to preserve in-memory cache
+        from src.advisory.idx_intelligence import IDXMarketIntelligence
+        self.idx_intel = IDXMarketIntelligence(mcp)
+
     async def scan_all_markets(self, market_filter: str | None = None) -> list[dict]:
         """Run market scans in parallel.
 
@@ -59,7 +102,25 @@ class Orchestrator:
 
         tasks = []
         if market_filter in (None, "IDX"):
-            tasks.append(self._scan_market("IDX", self.idx_agent, IDX_UNIVERSE))
+            # Composite gate: check IDX market intelligence before scanning
+            idx_composite = None
+            try:
+                idx_composite = await self.idx_intel.get_regime_composite()
+                score = idx_composite.get("score", 0)
+                logger.info("idx_composite_score", score=score, state=idx_composite.get("state"))
+
+                if score <= -50:
+                    logger.warning("idx_scan_skipped_composite", score=score, state=idx_composite.get("state"))
+                    # Don't add IDX task — skip entirely
+                elif score <= -20:
+                    logger.info("idx_scan_caution", score=score, reason="composite below -20")
+                    tasks.append(self._scan_market("IDX", self.idx_agent, IDX_UNIVERSE, composite=idx_composite))
+                else:
+                    tasks.append(self._scan_market("IDX", self.idx_agent, IDX_UNIVERSE, composite=idx_composite))
+            except Exception as e:
+                logger.warning("idx_composite_check_failed", error=str(e))
+                # Fail open — proceed with scan if composite check fails
+                tasks.append(self._scan_market("IDX", self.idx_agent, IDX_UNIVERSE))
         if market_filter in (None, "US_ETF", "US"):
             tasks.append(self._scan_market("US", self.us_agent, US_UNIVERSE))
         if market_filter in (None, "US_ETF", "ETF"):
@@ -86,8 +147,21 @@ class Orchestrator:
         logger.info("scan_complete", total=len(all_signals))
         return all_signals
 
-    async def _scan_market(self, market: str, agent: BaseAgent, universe: list[str]) -> list[dict]:
+    async def _scan_market(self, market: str, agent: BaseAgent, universe: list[str], composite: dict | None = None) -> list[dict]:
         signals = []
+
+        # Build context hint from composite score (if available)
+        context_hint = ""
+        if composite and market == "IDX":
+            score = composite.get("score", 0)
+            state = composite.get("state", "UNKNOWN")
+            triggers = composite.get("triggers", [])
+            context_hint = (
+                f"\n\nMARKET CONTEXT: IDX composite score is {score:+.0f}/100 ({state}). "
+                + (f"Key triggers: {'; '.join(triggers[:3])}. " if triggers else "")
+                + "Factor this into your confidence scoring."
+            )
+
         for ticker in universe:
             # Per-ticker emergency check — allows partial completion if stop activates mid-scan
             from src.risk import emergency
@@ -98,7 +172,8 @@ class Orchestrator:
             try:
                 from src.utils.validation import sanitize_for_prompt
                 safe_ticker = sanitize_for_prompt(ticker)
-                result = await agent.run(f"Analyze {safe_ticker} for trading opportunities right now.")
+                prompt = f"Analyze {safe_ticker} for trading opportunities right now.{context_hint}"
+                result = await agent.run(prompt)
                 if result.get("error"):
                     logger.warning("agent_error", market=market, ticker=ticker, error=result["error"])
                     continue
@@ -220,14 +295,29 @@ class Orchestrator:
             # IDX-specific order validation (including ADV liquidity gate)
             if signal_data.get("market") == "IDX":
                 try:
-                    from src.risk.idx_limits import validate_order
+                    from src.risk.idx_limits import validate_order, ihsg_circuit_breaker_level, check_forced_sell_triggers
+                    ticker = signal_data.get("ticker", "?")
+
+                    # Forced sell trigger check
+                    try:
+                        fs = check_forced_sell_triggers(ticker, market_data={
+                            "adv_20d": signal_data.get("adv_20d"),
+                            "current_volume": signal_data.get("volume"),
+                        })
+                        if fs.get("triggered"):
+                            logger.warning("idx_forced_sell_trigger", ticker=ticker, rule=fs["rule_id"])
+                            signal_data["validation_note"] = fs["description"]
+                    except Exception as fs_err:
+                        logger.debug("forced_sell_check_skipped", error=str(fs_err))
+
+                    # Standard order validation with dynamic ARA/ARB
                     price = signal_data.get("entry_price")
                     prev_close = signal_data.get("prev_close")
                     lots = signal_data.get("suggested_lots", 1)
                     adv_20d = signal_data.get("adv_20d")  # 20-day avg volume in shares
                     if price and prev_close and lots:
                         validate_order(
-                            signal_data.get("ticker", "?"),
+                            ticker,
                             float(price),
                             float(prev_close),
                             int(lots),

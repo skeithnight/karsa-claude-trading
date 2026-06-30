@@ -1,0 +1,25 @@
+{
+  "version": "2026-Q3",
+  "updated": "2026-06-30",
+  "note": "IDX earnings dates — manual curation from IDX/KSEI announcements. Update quarterly.",
+  "earnings": [
+    {"ticker": "BBCA", "report_date": "2026-07-25", "fiscal_quarter": "Q2-2026", "expected_eps": null, "guidance": null},
+    {"ticker": "BBRI", "report_date": "2026-07-28", "fiscal_quarter": "Q2-2026", "expected_eps": null, "guidance": null},
+    {"ticker": "BMRI", "report_date": "2026-07-29", "fiscal_quarter": "Q2-2026", "expected_eps": null, "guidance": null},
+    {"ticker": "TLKM", "report_date": "2026-07-30", "fiscal_quarter": "Q2-2026", "expected_eps": null, "guidance": null},
+    {"ticker": "ASII", "report_date": "2026-07-24", "fiscal_quarter": "Q2-2026", "expected_eps": null, "guidance": null},
+    {"ticker": "UNVR", "report_date": "2026-07-22", "fiscal_quarter": "Q2-2026", "expected_eps": null, "guidance": null},
+    {"ticker": "BBNI", "report_date": "2026-07-28", "fiscal_quarter": "Q2-2026", "expected_eps": null, "guidance": null},
+    {"ticker": "ICBP", "report_date": "2026-07-23", "fiscal_quarter": "Q2-2026", "expected_eps": null, "guidance": null},
+    {"ticker": "KLBF", "report_date": "2026-07-22", "fiscal_quarter": "Q2-2026", "expected_eps": null, "guidance": null},
+    {"ticker": "PGAS", "report_date": "2026-07-31", "fiscal_quarter": "Q2-2026", "expected_eps": null, "guidance": null},
+    {"ticker": "GOTO", "report_date": "2026-07-31", "fiscal_quarter": "Q2-2026", "expected_eps": null, "guidance": null},
+    {"ticker": "ADRO", "report_date": "2026-08-01", "fiscal_quarter": "Q2-2026", "expected_eps": null, "guidance": null},
+    {"ticker": "EXCL", "report_date": "2026-07-24", "fiscal_quarter": "Q2-2026", "expected_eps": null, "guidance": null},
+    {"ticker": "ISAT", "report_date": "2026-07-29", "fiscal_quarter": "Q2-2026", "expected_eps": null, "guidance": null},
+    {"ticker": "HMSP", "report_date": "2026-07-28", "fiscal_quarter": "Q2-2026", "expected_eps": null, "guidance": null},
+    {"ticker": "JSMR", "report_date": "2026-07-25", "fiscal_quarter": "Q2-2026", "expected_eps": null, "guidance": null},
+    {"ticker": "ITMG", "report_date": "2026-08-01", "fiscal_quarter": "Q2-2026", "expected_eps": null, "guidance": null},
+    {"ticker": "PTBA", "report_date": "2026-08-01", "fiscal_quarter": "Q2-2026", "expected_eps": null, "guidance": null}
+  ]
+}
