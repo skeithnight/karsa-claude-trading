@@ -125,17 +125,38 @@ class KarsaApp:
         s = self.scheduler
 
         # --- IDX MARKET ---
+        # Pre-open scan: 08:55 WIB (01:55 UTC) — catch overnight moves (skip market-hours gate)
+        async def _scan_idx_preopen():
+            await self._job_scan_idx(preopen=True)
+
+        s.add_job(
+            _scan_idx_preopen,
+            "cron", day_of_week="mon-fri", hour=1, minute=55,
+            id="scan_idx_preopen", name="IDX Pre-Open Scan (08:55 WIB)",
+            replace_existing=True, misfire_grace_time=300,
+        )
+
+        # Mid-session scans: 10:00-12:00 WIB (03:00-05:00 UTC)
         s.add_job(
             self._job_scan_idx,
-            "cron", day_of_week="mon-fri", hour="2-4", minute="0,30",
+            "cron", day_of_week="mon-fri", hour="3-5", minute="0,30",
             id="scan_idx_morning", name="IDX Market Scan (Morning)",
             replace_existing=True, misfire_grace_time=300,
         )
 
+        # Afternoon scans: 13:30-15:00 WIB (06:30-08:00 UTC)
         s.add_job(
             self._job_scan_idx,
             "cron", day_of_week="mon-fri", hour="6-8", minute="0,30",
             id="scan_idx_afternoon", name="IDX Market Scan (Afternoon)",
+            replace_existing=True, misfire_grace_time=300,
+        )
+
+        # Pre-close scan: 14:45 WIB (07:45 UTC) — catch end-of-day positioning
+        s.add_job(
+            self._job_scan_idx,
+            "cron", day_of_week="mon-fri", hour=7, minute=45,
+            id="scan_idx_preclose", name="IDX Pre-Close Scan (14:45 WIB)",
             replace_existing=True, misfire_grace_time=300,
         )
 
@@ -194,11 +215,15 @@ class KarsaApp:
 
     # --- Job implementations ---
 
-    async def _job_scan_idx(self):
-        """Scan IDX market — full pipeline: agents → risk → persist → notify."""
+    async def _job_scan_idx(self, preopen: bool = False):
+        """Scan IDX market — full pipeline: agents → risk → persist → notify.
+
+        Args:
+            preopen: If True, skip market-hours gate (used for 08:55 WIB pre-open scan).
+        """
         try:
             from src.utils.market_hours import is_idx_open
-            if not is_idx_open():
+            if not preopen and not is_idx_open():
                 logger.info("idx_market_closed_skip")
                 return
             signals = await self.orchestrator.scan_all_markets("IDX")

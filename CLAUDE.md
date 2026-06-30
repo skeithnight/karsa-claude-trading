@@ -63,36 +63,86 @@ Graph output lives in `graphify-out/` (commit this):
 
 ## Build & Run
 
+### Quick Start (first time)
 ```bash
-# Development
-cp .env.example .env        # fill in API keys, set DB_PASSWORD (12+ chars), REDIS_PASSWORD
-docker compose up --build   # starts all services (9router, redis, postgres, orchestrator, bot)
+cp .env.example .env        # fill in API keys
+# Required in .env:
+#   DB_PASSWORD=<12+ chars, no placeholders>
+#   REDIS_PASSWORD=<any>
+#   TELEGRAM_TOKEN=<from @BotFather>
+#   TELEGRAM_CHAT_ID=<your chat ID>
+#   9ROUTER_URL, 9ROUTER_AUTH_TOKEN, 9ROUTER_MODEL (or ANTHROPIC_API_KEY)
+docker compose up --build   # starts all services
+```
 
-# Rebuild single service
+### Development Commands
+```bash
+# Start all
+docker compose up -d --build
+
+# Rebuild single service (after code changes)
 docker compose up -d --build karsa-orchestrator
 docker compose up -d --build karsa-telegram-bot
 
-# Restart without rebuild
+# Restart without rebuild (config changes only)
 docker compose restart karsa-orchestrator karsa-telegram-bot
+
+# Stop all
+docker compose down
 
 # Check status
 docker compose ps
 
-# Logs
-docker logs karsa-orchestrator --tail 20
-docker logs karsa-telegram-bot --tail 20
+# Logs (follow)
+docker logs -f karsa-orchestrator
+docker logs -f karsa-telegram-bot
+```
 
-# Test inside container
+### Health Checks
+```bash
+# Orchestrator health (scheduler status)
+curl http://localhost:8000/health
+curl http://localhost:8000/health/scheduler
+
+# Inside container — quick config check
 docker exec karsa-orchestrator python3 -c "from src.config import settings; print(settings.TRADING_MODE)"
+```
+
+### Testing IDX Intelligence
+```bash
+# Check composite score
+docker exec karsa-orchestrator python3 -c "
+from src.config import settings
+from src.data.mcp_client import MCPClient
+from src.advisory.idx_intelligence import IDXMarketIntelligence
+import asyncio
+
+async def test():
+    mcp = MCPClient()
+    intel = IDXMarketIntelligence(mcp)
+    result = await intel.get_regime_composite()
+    print(f'Score: {result[\"score\"]} ({result[\"regime\"]})')
+    print(f'Components: {result[\"components\"]}')
+
+asyncio.run(test())
+"
+
+# Check earnings calendar
+docker exec karsa-orchestrator python3 -c "
+from src.advisory.idx_intelligence import EarningsCalendar
+cal = EarningsCalendar()
+universe = cal.get_blackout_universe()
+print(f'Blackout tickers: {universe if universe else \"None\"}')
+"
 ```
 
 ## Architecture
 
 **Two main containers** share the same Python package (`src/`):
 
-1. **karsa-orchestrator** (`src/main.py`) — APScheduler runs 9 cron jobs (IDX morning/afternoon scans, US+ETF scans, 2 EOD reviews, pre-market battle plan, paper position updates, kill switch, cache flush). Each scan job dispatches agents via `Orchestrator.scan_all_markets()` which runs IDX/US/ETF analysts in parallel (`asyncio.gather`). Signals ≥50 confidence get validated, persisted to DB, and risk-checked. Kill switch activates emergency stop via Redis at -1.5% daily P&L. Health check via FastAPI on port 8000 (`/health`, `/health/scheduler`).
+1. **karsa-orchestrator** (`src/main.py`) — APScheduler runs 11 cron jobs (IDX pre-open/morning/afternoon/pre-close scans, US+ETF scans, 2 EOD reviews, pre-market battle plan, paper position updates, kill switch, cache flush). Each scan job dispatches agents via `Orchestrator.scan_all_markets()` which runs IDX/US/ETF analysts in parallel (`asyncio.gather`). IDX scans are gated by composite score (≤-50 skips, ≤-20 reduces sizing). Signals ≥50 confidence get validated, persisted to DB, and risk-checked. Kill switch activates emergency stop via Redis at -1.5% daily P&L. Health check via FastAPI on port 8000 (`/health`, `/health/scheduler`).
 
-2. **karsa-telegram-bot** (`src/bot/main.py`) — FastAPI webhook + python-telegram-bot polling (default). Commands: `/start`, `/status`, `/scan`, `/portfolio`, `/trades`, `/add`, `/remove`, `/edit`, `/analyze`, `/audit`, `/briefing`, `/regime`, `/pnl`, `/stop`, `/resume`. The bot creates its own `Orchestrator` instance for ad-hoc commands. Inline keyboard buttons provide navigation between views. Auth enforced — all commands require `TELEGRAM_CHAT_ID` to be set.
+2. **karsa-telegram-bot** (`src/bot/main.py`) — FastAPI webhook + python-telegram-bot polling (default). Commands: `/start`, `/status`, `/scan`, `/portfolio`, `/trades`, `/add`, `/remove`, `/edit`, `/analyze`, `/audit`, `/briefing`, `/regime`, `/pnl`, `/idx`, `/stop`, `/resume`. `/idx` shows IDX Intelligence dashboard (composite score, sector rotation, breadth, flow, earnings). The bot reuses the orchestrator's `idx_intel` instance for cached intelligence data. Inline keyboard buttons provide navigation between views. Auth enforced — all commands require `TELEGRAM_CHAT_ID` to be set.
 
 **Agent loop** (`src/agents/base.py`): Each agent is a `BaseAgent` subclass with a system prompt, tool definitions, and an `_handle_tool_call` override. The `run()` method implements the Anthropic SDK tool-use loop — call LLM, process tool calls, repeat until `end_turn`.
 
@@ -100,9 +150,9 @@ docker exec karsa-orchestrator python3 -c "from src.config import settings; prin
 
 **Market data** (`src/data/mcp_client.py`): Uses `tradingview_ta.TA_Handler` directly (not MCP protocol). IDX uses `screener='indonesia', exchange='IDX'`. US/ETF tries NASDAQ → NYSE → AMEX fallback. Data cached in Redis (60s quotes, 1h OHLCV). Rate-limited with Semaphore and `asyncio.to_thread()` for non-blocking sleep.
 
-**Advisory layer** (`src/advisory/`): `USRegimeFilter`/`IDXRegimeFilter` check VIX/SPY/200-SMA to classify BULL/BEAR/NEUTRAL. Regime hard veto: ETF mean reversion disabled in BEAR regime. `PositionSizer` calculates volatility-target sizing using ATR.
+**Advisory layer** (`src/advisory/`): `USRegimeFilter`/`IDXRegimeFilter` check VIX/SPY/200-SMA to classify BULL/BEAR/NEUTRAL. Regime hard veto: ETF mean reversion disabled in BEAR regime. `PositionSizer` calculates volatility-target sizing using ATR. **IDX Intelligence** (`idx_intelligence.py`): composite regime scoring (breadth 30% + sector rotation 25% + foreign flow 20% + price structure 25%), `FlowTracker` (volume-based proxy for foreign activity), `EarningsCalendar` with blackout windows. Composite gate: score ≤-50 skips IDX scan, ≤-20 reduces sizing.
 
-**Risk module** (`src/risk/`): `emergency.py` — Redis-backed kill switch (`activate()`/`deactivate()`/`is_active()`). `idx_limits.py` — IDX tick sizes (Fraksi Harga), ARA/ARB validation, `validate_order()` with ADV liquidity gate (`max_lots_by_adv`), T+2 settlement.
+**Risk module** (`src/risk/`): `emergency.py` — Redis-backed kill switch (`activate()`/`deactivate()`/`is_active()`). `idx_limits.py` — IDX tick sizes (Fraksi Harga), ARA/ARB validation (dynamic per-ticker), `validate_order()` with ADV liquidity gate (`max_lots_by_adv`), T+2 settlement, IHSG circuit breaker (±5%→30min halt, ±10%→halted), forced sell triggers (3x lower limit, 10x ADV volume, T+2 failure, IDX suspension).
 
 **HITL flow**: `/scan` → agent generates signal → saved to `signals` table (PENDING) → if confidence >= 60, Telegram alert with APPROVE/REJECT buttons → APPROVE creates `PaperPosition`, REJECT marks rejected. Implementation in `src/bot/_approval.py`.
 
@@ -117,19 +167,21 @@ docker exec karsa-orchestrator python3 -c "from src.config import settings; prin
 
 ## File Map (non-obvious)
 
-- `src/agents/orchestrator.py` — universe lists (IDX_UNIVERSE, US_UNIVERSE, ETF_UNIVERSE), combo name assignment, parallel market scan, signal validation (`_validate_signal`), emergency stop gate, IDX order validation, signal persistence to DB
+- `src/agents/orchestrator.py` — universe lists (IDX_UNIVERSE 30 stocks, US_UNIVERSE 15, ETF_UNIVERSE 12), combo name assignment, parallel market scan with IDX composite gate, signal validation (`_validate_signal`), emergency stop gate, IDX order validation with forced sell triggers, signal persistence to DB, shared `idx_intel` instance
 - `src/agents/base.py` — Anthropic SDK tool-use loop, `getattr()` guards for 9Router response quirks
 - `src/bot/handlers.py` — Telegram command handlers (16 commands), composable HTML formatting via `src/utils/format.py`, approval flow via `src/bot/_approval.py`, inline keyboard routing via `button_callback()`, fail-closed auth check
 - `src/bot/_approval.py` — HITL approval flow: `send_signal_alert()` sends APPROVE/REJECT buttons, `handle_approval()` creates PaperPosition on approve
 - `src/utils/format.py` — Composable Telegram HTML formatters: `HTML` marker, `bold()`, `italic()`, `code()`, `pre()`, `fmt()`, `join()`. Auto-escapes.
 - `src/utils/validation.py` — Shared input validation: `validate_ticker()`, `validate_market()`, `sanitize_for_prompt()`
 - `src/data/cache.py` — Redis wrapper with quote/OHLCV caching
-- `src/data/mcp_client.py` — `tradingview_ta.TA_Handler` wrapper with circuit breaker, 3-tier fallback (TradingView → Massive → Finnhub), `asyncio.to_thread()` for non-blocking I/O
+- `src/data/mcp_client.py` — `tradingview_ta.TA_Handler` wrapper with circuit breaker, 3-tier fallback (TradingView → Massive → Finnhub), `asyncio.to_thread()` for non-blocking I/O, `get_volume_profile()` for flow proxy
 - `src/models/tables.py` — SQLAlchemy ORM: PortfolioState, CashBalance, Signal, PaperPosition, ClosedPaperTrade, AuditLog, OHLCVCache, MarketHoliday, PendingApproval
 - `src/models/database.py` — async engine + session factory, `init_db()` creates tables
 - `src/risk/emergency.py` — Redis-backed emergency stop: `activate(reason, operator)`, `deactivate(operator)`, `is_active()`, `get_status()`
-- `src/risk/idx_limits.py` — IDX Fraksi Harga tick sizes, `validate_order()`, ARA/ARB ceiling/floor, `settlement_date()` T+2
+- `src/risk/idx_limits.py` — IDX Fraksi Harga tick sizes, `validate_order()`, dynamic ARA/ARB ceiling/floor, `settlement_date()` T+2, IHSG circuit breaker (`ihsg_circuit_breaker_level`), forced sell triggers (`check_forced_sell_triggers`)
 - `src/advisory/regime.py` — `USRegimeFilter`/`IDXRegimeFilter`: VIX/SPY/200-SMA regime classification
+- `src/advisory/idx_intelligence.py` — `IDXMarketIntelligence` (composite scoring), `FlowTracker` (volume-based foreign flow proxy), `EarningsCalendar` (blackout windows). Sector universe: BANKING/TELCO/CONSUMER/AUTO/ENERGY/TECH/INFRA/MINING
+- `src/advisory/earnings_calendar.json` — static IDX earnings dates, updated quarterly
 - `src/advisory/sizing.py` — `PositionSizer`: volatility-target sizing using ATR
 - `src/utils/rate_limit.py` — Lua-based token bucket in Redis
 - `src/utils/telegram_helpers.py` — `format_pre_table()` for aligned ASCII tables, `send_long_message()` with 4096-char chunking, `build_nav_keyboard()` for inline keyboards

@@ -287,3 +287,37 @@ class MCPClient:
     async def get_ema(self, ticker: str, market: str, period: int) -> float:
         r = await self.get_technical(ticker, market, "EMA")
         return float(r.get("indicators", {}).get(f"EMA{period}", 0))
+
+    async def get_volume_profile(self, ticker: str, market: str) -> dict:
+        """Get volume profile for flow proxy calculations.
+
+        Returns:
+            {current_volume, avg_volume_20d, volume_ratio, price_change_pct}
+        """
+        try:
+            quote = await self.get_quote(ticker, market)
+            if quote.get("error"):
+                return {"error": quote["error"]}
+
+            ohlcv = await self.get_ohlcv(ticker, market, timeframe="1D", limit=20)
+
+            current_volume = quote.get("volume", 0)
+            if ohlcv and len(ohlcv) > 1:
+                volumes = [c["volume"] for c in ohlcv if c.get("volume", 0) > 0]
+                avg_volume = sum(volumes) / len(volumes) if volumes else current_volume
+            else:
+                avg_volume = current_volume
+
+            volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1.0
+
+            return {
+                "ticker": ticker,
+                "market": market,
+                "current_volume": current_volume,
+                "avg_volume_20d": int(avg_volume),
+                "volume_ratio": round(volume_ratio, 2),
+                "price_change_pct": quote.get("change_pct", 0),
+            }
+        except Exception as e:
+            logger.error("get_volume_profile_failed", ticker=ticker, error=str(e))
+            return {"error": str(e)}

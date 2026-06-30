@@ -17,7 +17,7 @@ from src.config import settings
 from src.bot.handlers import (
     start_cmd, status_cmd, scan_cmd, portfolio_cmd, trades_cmd,
     add_cmd, remove_cmd, edit_cmd, analyze_cmd, briefing_cmd, regime_cmd, pnl_cmd,
-    audit_cmd, guide_cmd, stop_cmd, resume_cmd, button_callback,
+    idx_cmd, audit_cmd, guide_cmd, stop_cmd, resume_cmd, button_callback,
 )
 from src.data.cache import CacheManager
 from src.utils.logging import get_logger
@@ -45,6 +45,7 @@ async def lifespan(app: FastAPI):
     telegram_app.add_handler(CommandHandler("briefing", briefing_cmd))
     telegram_app.add_handler(CommandHandler("regime", regime_cmd))
     telegram_app.add_handler(CommandHandler("pnl", pnl_cmd))
+    telegram_app.add_handler(CommandHandler("idx", idx_cmd))
     telegram_app.add_handler(CommandHandler("guide", guide_cmd))
     telegram_app.add_handler(CommandHandler("stop", stop_cmd))
     telegram_app.add_handler(CommandHandler("resume", resume_cmd))
