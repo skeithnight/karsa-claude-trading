@@ -1,0 +1,95 @@
+src/risk/sor.py
+  7b387a63c00025e2 1-185
+db/migrations/add_crypto_market.sql
+  7b387a63c00025e2 1-36
+src/advisory/crypto_audit.py
+  8052607704ce27d1 1-149
+src/advisory/crypto_regime.py
+  7b387a63c00025e2 1-228
+src/config.py
+  7b387a63c00025e2 33-42
+src/agents/crypto_auditor.py
+  8052607704ce27d1 1-92
+src/models/tables.py
+  7b387a63c00025e2 46,73,105,132,151,172
+src/risk/crypto_risk_manager.py
+  7b387a63c00025e2 1-228
+src/bot/crypto_main.py
+  7b387a63c00025e2 1-17,20-53,55-98
+  8052607704ce27d1 18-19,54
+docker-compose.yml
+  019fca47b19eb463 89-104,125,131-132
+  7b387a63c00025e2 105-124,126-130,133-136
+src/agents/orchestrator.py
+  7b387a63c00025e2 11,65-67,69-70,92-94,99-101,103-115,161-180,190-192,260-388,447
+  8052607704ce27d1 68,465-476
+src/main.py
+  7b387a63c00025e2 214-217,219-220,228-229,262-269
+  019fca47b19eb463 218,221-227,270-335
+src/data/bybit_client.py
+  8052607704ce27d1 509-510,514-516,519,527,533-545,551,556
+  7b387a63c00025e2 1-60,66-508,511-513,517-518,520-526,528-532,546-550,552-555,557-584
+  019fca47b19eb463 61-65
+src/data/mcp_client.py
+  7b387a63c00025e2 39-40,71-80,83-84,238-245,262-269,352-363
+pyproject.toml
+  7b387a63c00025e2 20
+  019fca47b19eb463 21
+src/bot/crypto_handlers.py
+  7b387a63c00025e2 1-66,68-144,156-418,550-563,574-583,585-588,590-598,600,603,613,616,618-619,626,631,633,637-639,647-650,653-654,660-664
+  8052607704ce27d1 67,145-155,419-549,564-573,584,589,599,601-602,604-612,614-615,617,620-625,627-630,632,634-636,640-646,651-652,655-659,665-769
+.env.example
+  7b387a63c00025e2 63-74
+Dockerfile.bot
+  7b387a63c00025e2 15
+src/risk/emergency.py
+  7b387a63c00025e2 11,56-90
+src/agents/crypto_analyst.py
+  7b387a63c00025e2 1-141
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "7bf23fba91771981d64ad5682181575e6843affd",
+  "prompts": {
+    "019fca47b19eb463": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "167d92ca-882a-46d5-a2f1-9158a49ffb6b",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 105,
+      "total_deletions": 9,
+      "accepted_lines": 99,
+      "overriden_lines": 0
+    },
+    "7b387a63c00025e2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c3820758-a9b9-4272-9021-2e0404e66fc5",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 2375,
+      "total_deletions": 83,
+      "accepted_lines": 2268,
+      "overriden_lines": 0
+    },
+    "8052607704ce27d1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0b9f6107-41b1-4c1c-9f3a-de3f4d396dff",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 583,
+      "total_deletions": 32,
+      "accepted_lines": 582,
+      "overriden_lines": 0
+    }
+  }
+}
