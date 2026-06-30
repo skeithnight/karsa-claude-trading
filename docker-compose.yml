@@ -74,6 +74,9 @@ services:
     env_file: [.env]
     ports:
       - "127.0.0.1:8443:8443"
+    environment:
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+      - POSTGRES_URL=postgresql://trader:${DB_PASSWORD}@postgres:5432/trading
     depends_on:
       redis:
         condition: service_healthy

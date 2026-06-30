@@ -32,12 +32,12 @@
 Redis-backed kill switch. `activate(reason, operator)` halts all trading decisions. `is_active()` checked by orchestrator before every scan. Triggered by kill switch job at -1.5% daily P&L or manual `/stop` command.
 
 ### IDX Limits (`src/risk/idx_limits.py`)
-IDX market compliance: tick size tiers (Fraksi Harga), `validate_order()` enforces ARA/ARB bounds, `settlement_date()` calculates T+2. Used by orchestrator `_save_signal()` for IDX signals.
+IDX market compliance: tick size tiers (Fraksi Harga), `validate_order()` enforces ARA/ARB bounds, `settlement_date()` calculates T+2. `max_lots_by_adv()` enforces 10% ADV liquidity gate. Used by orchestrator `_save_signal()` for IDX signals.
 
 ## Advisory Layer (not agents — deterministic modules)
 
 ### Regime Filters (`src/advisory/regime.py`)
-`USRegimeFilter` and `IDXRegimeFilter` classify market regime as BULL/BEAR/NEUTRAL based on VIX level, SPY/IHSG price vs 200-day SMA. Used by `/briefing` and `/regime` commands.
+`USRegimeFilter` and `IDXRegimeFilter` classify market regime as BULL/BEAR/NEUTRAL based on VIX level, SPY/IHSG price vs 200-day SMA. Hard veto: ETF mean reversion disabled in BEAR regime. Used by `/briefing` and `/regime` commands.
 
 ### PositionSizer (`src/advisory/sizing.py`)
 Calculates volatility-target position sizes using ATR. Used for paper trade sizing in the execution pipeline.
@@ -46,6 +46,16 @@ Calculates volatility-target position sizes using ATR. Used for paper trade sizi
 
 ### MCPClient (`src/data/mcp_client.py`)
 Wraps `tradingview_ta.TA_Handler` with 3-tier fallback (TradingView → Massive → Finnhub). Methods: `get_quote()`, `get_ohlcv()`, `get_indicators()`. Circuit breaker blocks failing providers for 10min. Uses `asyncio.to_thread()` for non-blocking I/O.
+
+### Approval Flow (`src/bot/_approval.py`)
+`send_signal_alert()`: sends Telegram alert with APPROVE/REJECT inline buttons for signals with confidence >= 60.
+`handle_approval()`: on APPROVE, creates PaperPosition and marks signal APPROVED. On REJECT, marks signal REJECTED.
+
+### Format Engine (`src/utils/format.py`)
+Composable Telegram HTML formatters (GramIO style). `HTML` marker class prevents double-escaping. `bold()`, `italic()`, `code()`, `pre()`, `fmt()`, `join()` auto-escape plain text. Used by all 16 bot commands.
+
+### Input Validation (`src/utils/validation.py`)
+`validate_ticker()`: regex alphanumeric + dots, max 20 chars. `validate_market()`: IDX/US/ETF allowlist. `sanitize_for_prompt()`: strips non-alphanumeric for LLM prompts.
 
 ### MarketHours (`src/utils/market_hours.py`)
 `is_idx_open()` and `is_us_open()` — used by scheduler jobs to skip scans when markets are closed.
