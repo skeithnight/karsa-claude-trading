@@ -30,6 +30,16 @@ class Settings(BaseSettings):
     MASSIVE_API_KEY: str = ""
     MASSIVE_BASE_URL: str = "https://api.massive.com/v3"
 
+    # Bybit (Crypto)
+    BYBIT_API_KEY: str = ""
+    BYBIT_API_SECRET: str = ""
+    BYBIT_TESTNET: bool = True
+    CRYPTO_TELEGRAM_TOKEN: str = ""
+    CRYPTO_MAX_RISK_PER_TRADE_PCT: float = 1.0
+    CRYPTO_MAX_POSITION_PCT: float = 10.0
+    CRYPTO_MAX_CONCURRENT_POSITIONS: int = 5
+    CRYPTO_DAILY_LOSS_LIMIT_PCT: float = 3.0
+
     # Trading Safety Gate
     TRADING_MODE: str = "paper"  # "paper" | "live"
 

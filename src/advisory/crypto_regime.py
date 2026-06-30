@@ -1,0 +1,228 @@
+"""Karsa Trading System - Crypto Regime Classifier (Deterministic)
+
+Pure Python — LLM is forbidden from guessing the regime.
+Uses Hurst Exponent (trend persistence) and ADX (trend strength) on BTC.
+
+Regime states:
+- TREND_BULL: H > 0.5, ADX > 25, price > 200 EMA
+- TREND_BEAR: H > 0.5, ADX > 25, price < 200 EMA
+- MEAN_REVERSION: H < 0.5 (price tends to revert)
+- CHOP: ADX < 20 (no clear trend)
+"""
+
+import time
+from typing import Any
+
+from src.utils.logging import get_logger
+
+logger = get_logger("crypto_regime")
+
+_regime_cache: dict[str, dict] = {}
+_regime_cache_ttl = 300  # 5 minutes
+
+
+def _get_cached() -> dict | None:
+    entry = _regime_cache.get("CRYPTO")
+    if entry and time.time() - entry.get("ts", 0) < _regime_cache_ttl:
+        return entry["data"]
+    return None
+
+
+def _set_cached(data: dict):
+    _regime_cache["CRYPTO"] = {"data": data, "ts": time.time()}
+
+
+def _hurst_exponent(prices: list[float]) -> float:
+    """Estimate Hurst Exponent using Rescaled Range (R/S) method.
+
+    H > 0.5: trending (persistent)
+    H = 0.5: random walk
+    H < 0.5: mean-reverting (anti-persistent)
+    """
+    if len(prices) < 20:
+        return 0.5
+
+    import math
+    returns = [math.log(prices[i] / prices[i - 1]) for i in range(1, len(prices)) if prices[i - 1] > 0]
+    if len(returns) < 10:
+        return 0.5
+
+    window_sizes = [10, 20, 40, 60]
+    rs_values = []
+
+    for n in window_sizes:
+        if n > len(returns):
+            continue
+
+        rs_list = []
+        for start in range(0, len(returns) - n + 1, n):
+            sub = returns[start:start + n]
+            mean_r = sum(sub) / len(sub)
+            deviations = [r - mean_r for r in sub]
+            cumulative = []
+            cumsum = 0.0
+            for d in deviations:
+                cumsum += d
+                cumulative.append(cumsum)
+
+            R = max(cumulative) - min(cumulative)
+            S = (sum(r ** 2 for r in sub) / len(sub)) ** 0.5
+
+            if S > 0:
+                rs_list.append(R / S)
+
+        if rs_list:
+            rs_values.append((n, sum(rs_list) / len(rs_list)))
+
+    if len(rs_values) < 2:
+        return 0.5
+
+    log_n = [math.log(n) for n, _ in rs_values]
+    log_rs = [math.log(max(rs, 0.001)) for _, rs in rs_values]
+
+    n_points = len(log_n)
+    sum_x = sum(log_n)
+    sum_y = sum(log_rs)
+    sum_xy = sum(x * y for x, y in zip(log_n, log_rs))
+    sum_x2 = sum(x ** 2 for x in log_n)
+
+    denominator = n_points * sum_x2 - sum_x ** 2
+    if denominator == 0:
+        return 0.5
+
+    hurst = (n_points * sum_xy - sum_x * sum_y) / denominator
+    return max(0.0, min(1.0, hurst))
+
+
+def _adx(highs: list[float], lows: list[float], closes: list[float], period: int = 14) -> float:
+    """Calculate Average Directional Index (ADX).
+
+    ADX > 25: strong trend
+    ADX < 20: weak/no trend (chop)
+    """
+    if len(highs) < period + 1:
+        return 0.0
+
+    tr_list, plus_dm, minus_dm = [], [], []
+    for i in range(1, len(highs)):
+        h, l, pc = highs[i], lows[i], closes[i - 1]
+        tr_list.append(max(h - l, abs(h - pc), abs(l - pc)))
+
+        up_move = highs[i] - highs[i - 1]
+        down_move = lows[i - 1] - lows[i]
+        plus_dm.append(up_move if up_move > down_move and up_move > 0 else 0)
+        minus_dm.append(down_move if down_move > up_move and down_move > 0 else 0)
+
+    if len(tr_list) < period:
+        return 0.0
+
+    def wilder_smooth(data: list[float], p: int) -> list[float]:
+        result = [sum(data[:p])]
+        for i in range(p, len(data)):
+            result.append(result[-1] - result[-1] / p + data[i])
+        return [v / p for v in result]
+
+    atr = wilder_smooth(tr_list, period)
+    smooth_plus = wilder_smooth(plus_dm, period)
+    smooth_minus = wilder_smooth(minus_dm, period)
+
+    plus_di = [100 * p / a if a > 0 else 0 for p, a in zip(smooth_plus, atr)]
+    minus_di = [100 * m / a if a > 0 else 0 for m, a in zip(smooth_minus, atr)]
+
+    dx = []
+    for pd, md in zip(plus_di, minus_di):
+        total = pd + md
+        dx.append(100 * abs(pd - md) / total if total > 0 else 0)
+
+    if len(dx) < period:
+        return 0.0
+
+    adx_vals = wilder_smooth(dx, period)
+    return adx_vals[-1] if adx_vals else 0.0
+
+
+def _size_multiplier(regime: str) -> float:
+    return {
+        "TREND_BULL": 1.2,
+        "TREND_BEAR": 0.5,
+        "MEAN_REVERSION": 0.8,
+        "CHOP": 0.5,
+    }.get(regime, 1.0)
+
+
+class CryptoRegimeFilter:
+    """Deterministic crypto regime classifier using BTC as benchmark."""
+
+    def __init__(self, mcp_client: Any):
+        self.mcp = mcp_client
+
+    async def get_current_regime(self) -> dict:
+        cached = _get_cached()
+        if cached:
+            return cached
+
+        try:
+            btc_ohlcv_4h = await self.mcp.get_ohlcv("BTCUSDT", "CRYPTO", timeframe="4h", limit=200)
+            btc_ohlcv_1d = await self.mcp.get_ohlcv("BTCUSDT", "CRYPTO", timeframe="1D", limit=200)
+
+            if not btc_ohlcv_4h or len(btc_ohlcv_4h) < 60:
+                logger.warning("crypto_regime_insufficient_data", count=len(btc_ohlcv_4h) if btc_ohlcv_4h else 0)
+                return self._unknown(f"Insufficient BTC data ({len(btc_ohlcv_4h) if btc_ohlcv_4h else 0} candles, need 60+)")
+
+            closes_4h = [c["close"] for c in btc_ohlcv_4h]
+            hurst = _hurst_exponent(closes_4h)
+
+            adx_value = 0.0
+            if btc_ohlcv_1d and len(btc_ohlcv_1d) >= 20:
+                highs = [c["high"] for c in btc_ohlcv_1d]
+                lows = [c["low"] for c in btc_ohlcv_1d]
+                closes_1d = [c["close"] for c in btc_ohlcv_1d]
+                adx_value = _adx(highs, lows, closes_1d)
+
+            btc_price = closes_4h[-1] if closes_4h else 0
+            ema_200 = sum(closes_4h[-200:]) / min(200, len(closes_4h)) if closes_4h else btc_price
+
+            if adx_value < 20:
+                regime = "CHOP"
+                rec = "No clear trend. Reduce position sizes. Wait for breakout."
+            elif hurst < 0.45:
+                regime = "MEAN_REVERSION"
+                rec = "Mean-reverting conditions. Fade extremes. Smaller positions."
+            elif btc_price > ema_200:
+                regime = "TREND_BULL"
+                rec = "Bullish trend confirmed. Full position sizing. Long bias."
+            else:
+                regime = "TREND_BEAR"
+                rec = "Bearish trend confirmed. Reduce sizing. Short bias or stay flat."
+
+            result = {
+                "state": regime,
+                "benchmark": "BTCUSDT",
+                "benchmark_price": round(btc_price, 2),
+                "hurst": round(hurst, 3),
+                "adx": round(adx_value, 1),
+                "ema_200_proxy": round(ema_200, 2),
+                "recommendation": rec,
+                "size_multiplier": _size_multiplier(regime),
+            }
+            _set_cached(result)
+            return result
+
+        except Exception as e:
+            logger.error("crypto_regime_failed", error=str(e))
+            cached = _regime_cache.get("CRYPTO")
+            if cached:
+                return cached["data"]
+            return self._unknown(str(e))
+
+    def _unknown(self, reason: str) -> dict:
+        return {
+            "state": "UNKNOWN",
+            "benchmark": "BTCUSDT",
+            "benchmark_price": "N/A",
+            "hurst": "N/A",
+            "adx": "N/A",
+            "ema_200_proxy": "N/A",
+            "recommendation": f"Data unavailable: {reason}",
+            "size_multiplier": 1.0,
+        }

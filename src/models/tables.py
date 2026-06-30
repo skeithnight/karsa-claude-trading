@@ -43,7 +43,7 @@ class PortfolioState(Base):
 
     __table_args__ = (
         UniqueConstraint("ticker", "market", name="uq_portfolio_ticker_market"),
-        CheckConstraint("market IN ('IDX', 'US', 'ETF')", name="ck_portfolio_market"),
+        CheckConstraint("market IN ('IDX', 'US', 'ETF', 'CRYPTO')", name="ck_portfolio_market"),
     )
 
 
@@ -70,7 +70,7 @@ class Signal(Base):
     approval: Mapped["PendingApproval | None"] = relationship(back_populates="signal")
 
     __table_args__ = (
-        CheckConstraint("market IN ('IDX', 'US', 'ETF')", name="ck_signal_market"),
+        CheckConstraint("market IN ('IDX', 'US', 'ETF', 'CRYPTO')", name="ck_signal_market"),
         CheckConstraint("direction IN ('LONG', 'SHORT', 'CLOSE')", name="ck_signal_direction"),
         CheckConstraint("confidence_score >= 0 AND confidence_score <= 100", name="ck_signal_confidence"),
         CheckConstraint("status IN ('PENDING', 'APPROVED', 'REJECTED', 'EXPIRED', 'EXECUTED')", name="ck_signal_status"),
@@ -102,7 +102,7 @@ class PaperPosition(Base):
     signal: Mapped["Signal | None"] = relationship(back_populates="paper_positions")
 
     __table_args__ = (
-        CheckConstraint("market IN ('IDX', 'US', 'ETF')", name="ck_paper_market"),
+        CheckConstraint("market IN ('IDX', 'US', 'ETF', 'CRYPTO')", name="ck_paper_market"),
         CheckConstraint("side IN ('LONG', 'SHORT')", name="ck_paper_side"),
     )
 
@@ -129,7 +129,7 @@ class ClosedPaperTrade(Base):
     notes: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (
-        CheckConstraint("market IN ('IDX', 'US', 'ETF')", name="ck_closed_market"),
+        CheckConstraint("market IN ('IDX', 'US', 'ETF', 'CRYPTO')", name="ck_closed_market"),
         CheckConstraint("side IN ('LONG', 'SHORT')", name="ck_closed_side"),
     )
 
@@ -148,7 +148,7 @@ class AuditLog(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "component IN ('ORCHESTRATOR', 'IDX_AGENT', 'US_AGENT', 'ETF_AGENT', 'RISK_AGENT', 'TELEGRAM', 'BROKER')",
+            "component IN ('ORCHESTRATOR', 'IDX_AGENT', 'US_AGENT', 'ETF_AGENT', 'CRYPTO_AGENT', 'RISK_AGENT', 'TELEGRAM', 'BROKER')",
             name="ck_audit_component"
         ),
     )
@@ -169,7 +169,7 @@ class OHLCVCache(Base):
     volume: Mapped[int] = mapped_column(BigInteger)
 
     __table_args__ = (
-        CheckConstraint("market IN ('IDX', 'US', 'ETF')", name="ck_ohlcv_market"),
+        CheckConstraint("market IN ('IDX', 'US', 'ETF', 'CRYPTO')", name="ck_ohlcv_market"),
         CheckConstraint("timeframe IN ('1m', '5m', '15m', '1h', '4h', '1D')", name="ck_ohlcv_timeframe"),
     )
 
