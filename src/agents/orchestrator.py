@@ -8,6 +8,7 @@ from src.agents.idx_analyst import IDXAnalyst
 from src.agents.us_analyst import USAnalyst
 from src.agents.etf_analyst import ETFAnalyst
 from src.agents.portfolio_analyst import PortfolioAnalyst
+from src.agents.crypto_analyst import CryptoAnalyst
 from src.data.mcp_client import MCPClient
 from src.data.cache import CacheManager
 from src.utils.rate_limit import RateLimiter
@@ -61,6 +62,12 @@ ETF_UNIVERSE = [
     "EEM",
 ]
 
+CRYPTO_UNIVERSE = [
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+    "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT",
+    "XAUUSDT",
+]
+
 # Required fields for a valid signal from an agent
 _REQUIRED_SIGNAL_FIELDS = {"ticker", "confidence_score", "direction"}
 _VALID_DIRECTIONS = {"LONG", "SHORT", "CLOSE"}
@@ -82,9 +89,29 @@ class Orchestrator:
         self.portfolio_analyst = PortfolioAnalyst(mcp, rate_limiter)
         self.portfolio_analyst.combo_name = ROUTINE_COMBO
 
+        self.crypto_agent = CryptoAnalyst(mcp, rate_limiter)
+        self.crypto_agent.combo_name = ROUTINE_COMBO
+
         # Shared intelligence engine — reuse across scans to preserve in-memory cache
         from src.advisory.idx_intelligence import IDXMarketIntelligence
         self.idx_intel = IDXMarketIntelligence(mcp)
+
+        # Crypto risk manager + SOR (lazy init — only if Bybit configured)
+        self._crypto_risk_manager = None
+        self._crypto_sor = None
+
+    def _get_crypto_risk_manager(self):
+        if self._crypto_risk_manager is None:
+            from src.risk.crypto_risk_manager import CryptoRiskManager
+            self._crypto_risk_manager = CryptoRiskManager(self.mcp)
+        return self._crypto_risk_manager
+
+    def _get_crypto_sor(self):
+        if self._crypto_sor is None:
+            bybit = self.mcp._get_bybit()
+            from src.risk.sor import SmartOrderRouter
+            self._crypto_sor = SmartOrderRouter(bybit)
+        return self._crypto_sor
 
     async def scan_all_markets(self, market_filter: str | None = None) -> list[dict]:
         """Run market scans in parallel.
@@ -131,6 +158,26 @@ class Orchestrator:
             else:
                 tasks.append(self._scan_market("ETF", self.etf_agent, ETF_UNIVERSE))
 
+        # CRYPTO: 24/7, no market-hours gate. Auto-execute after scan.
+        crypto_signals = []
+        if market_filter in (None, "CRYPTO") and settings.BYBIT_API_KEY:
+            try:
+                from src.advisory.crypto_regime import CryptoRegimeFilter
+                crypto_regime_filter = CryptoRegimeFilter(self.mcp)
+                crypto_regime = await crypto_regime_filter.get_current_regime()
+                regime_state = crypto_regime.get("state", "UNKNOWN")
+                logger.info("crypto_regime", state=regime_state, hurst=crypto_regime.get("hurst"), adx=crypto_regime.get("adx"))
+
+                if regime_state == "CHOP":
+                    logger.info("crypto_scan_skipped_chop_regime")
+                else:
+                    scan_result = await self._scan_market("CRYPTO", self.crypto_agent, CRYPTO_UNIVERSE, composite=crypto_regime)
+                    # Auto-execute: risk check → SOR → save
+                    if scan_result:
+                        crypto_signals = await self._auto_execute_crypto(scan_result, crypto_regime)
+            except Exception as e:
+                logger.error("crypto_scan_failed", error=str(e))
+
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         all_signals = []
@@ -139,6 +186,9 @@ class Orchestrator:
                 logger.error("market_scan_failed", error=str(result))
                 continue
             all_signals.extend(result)
+
+        # Include crypto signals (already auto-executed and saved)
+        all_signals.extend(crypto_signals)
 
         # Persist all signals to database
         for signal in all_signals:
@@ -207,6 +257,135 @@ class Orchestrator:
             logger.error("regime_check_failed", error=str(e))
             return False  # Fail open — don't block scans on regime check failure
 
+    async def _auto_execute_crypto(self, signals: list[dict], regime: dict | None = None) -> list[dict]:
+        """Risk-check and auto-execute crypto signals on Bybit testnet."""
+        risk_mgr = self._get_crypto_risk_manager()
+        sor = self._get_crypto_sor()
+        executed = []
+
+        # Get current positions and wallet balance
+        bybit = self.mcp._get_bybit()
+        open_positions = await bybit.get_positions()
+        wallet = await bybit.get_wallet_balance()
+        balance = wallet.get("balance", 0)
+
+        if balance <= 0:
+            logger.warning("crypto_wallet_empty", available=wallet.get("available", 0))
+            return signals
+
+        # Fix #3: Compute today's realized P&L for daily loss limit
+        daily_pnl_pct = 0.0
+        try:
+            from src.models.database import async_session
+            from src.models.tables import ClosedPaperTrade
+            from sqlalchemy import select, func, cast, Date
+            from datetime import datetime, timezone
+            async with async_session() as session:
+                today = datetime.now(timezone.utc).date()
+                result = await session.execute(
+                    select(func.sum(ClosedPaperTrade.realized_pnl_pct))
+                    .where(
+                        ClosedPaperTrade.market == "CRYPTO",
+                        cast(ClosedPaperTrade.exit_date, Date) == today,
+                    )
+                )
+                daily_pnl_pct = result.scalar() or 0.0
+        except Exception as e:
+            logger.debug("daily_pnl_query_failed", error=str(e))
+
+        for signal in signals:
+            ticker = signal.get("ticker", "?")
+
+            # Fix #4: Check emergency halt between each signal execution
+            from src.risk import emergency
+            if await emergency.is_active():
+                logger.warning("crypto_execution_halted_emergency", ticker=ticker)
+                signal["status"] = "HALTED"
+                executed.append(signal)
+                break
+
+            # Risk evaluation (with daily P&L)
+            risk_result = await risk_mgr.evaluate(
+                signal=signal,
+                open_positions=open_positions,
+                wallet_balance=balance,
+                regime=regime,
+                daily_pnl_pct=daily_pnl_pct,
+            )
+
+            if not risk_result.get("approved"):
+                logger.info("crypto_signal_rejected", ticker=ticker, reason=risk_result.get("reason"))
+                signal["status"] = "REJECTED"
+                signal["rejection_reason"] = risk_result.get("reason")
+                executed.append(signal)
+                continue
+
+            # Auto-execute via SOR
+            fill_result = await sor.execute_order(signal, risk_result)
+
+            if fill_result.get("success"):
+                signal["status"] = "EXECUTED"
+                signal["fill_price"] = fill_result.get("fill_price")
+                signal["qty"] = risk_result.get("qty")
+                signal["stop_loss"] = risk_result.get("stop_loss")
+                signal["take_profit"] = risk_result.get("take_profit")
+                signal["risk_amount"] = risk_result.get("risk_amount")
+                signal["order_id"] = fill_result.get("order_id")
+                logger.info(
+                    "crypto_auto_executed",
+                    ticker=ticker,
+                    side=signal.get("direction"),
+                    qty=risk_result.get("qty"),
+                    fill=fill_result.get("fill_price"),
+                    risk=risk_result.get("risk_amount"),
+                )
+                # Send Telegram notification
+                await self._notify_crypto_trade(signal, risk_result)
+
+                # Fix #2: Track new position in-loop to prevent duplicate entries
+                open_positions.append({"symbol": ticker, "ticker": ticker})
+            else:
+                signal["status"] = "EXECUTION_FAILED"
+                signal["execution_error"] = fill_result.get("error")
+                logger.warning("crypto_execution_failed", ticker=ticker, error=fill_result.get("error"))
+
+            # Save signal to DB regardless
+            await self._save_signal(signal)
+            executed.append(signal)
+
+        return executed
+
+    async def _notify_crypto_trade(self, signal: dict, risk_result: dict):
+        """Send Telegram notification for an executed crypto trade."""
+        try:
+            import httpx
+            direction = signal.get("direction", "?")
+            ticker = signal.get("ticker", "?")
+            emoji = "🟢" if direction == "LONG" else "🔴"
+            msg = (
+                f"{emoji} <b>CRYPTO AUTO-TRADE</b>\n"
+                f"━━━━━━━━━━━━━━━━\n"
+                f"Ticker  : {ticker}\n"
+                f"Side    : {direction}\n"
+                f"Entry   : {signal.get('fill_price', 0):,.4f}\n"
+                f"Qty     : {risk_result.get('qty', 0)}\n"
+                f"Stop    : {risk_result.get('stop_loss', 0):,.4f}\n"
+                f"Target  : {risk_result.get('take_profit', 0):,.4f}\n"
+                f"Risk    : ${risk_result.get('risk_amount', 0):,.2f} ({risk_result.get('risk_pct', 0):.1f}%)\n"
+                f"Leverage: {risk_result.get('leverage', 1)}x\n"
+                f"Conf    : {signal.get('confidence_score', 0)}/100"
+            )
+            # Use the main telegram bot token (not crypto bot) for unified notifications
+            token = settings.TELEGRAM_TOKEN or settings.CRYPTO_TELEGRAM_TOKEN
+            if token and settings.TELEGRAM_CHAT_ID:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    await client.post(
+                        f"https://api.telegram.org/bot{token}/sendMessage",
+                        json={"chat_id": settings.TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"},
+                    )
+        except Exception as e:
+            logger.error("crypto_notify_failed", error=str(e))
+
     def _validate_signal(self, signal: dict, market: str) -> list[str]:
         """Validate agent output structure. Returns list of issues (empty = valid)."""
         issues = []
@@ -265,7 +444,7 @@ class Orchestrator:
             logger.warning("scan_single_blocked_emergency_stop", ticker=ticker)
             return {"error": "Trading halted — emergency stop is active"}
 
-        agents = {"IDX": self.idx_agent, "US": self.us_agent, "ETF": self.etf_agent}
+        agents = {"IDX": self.idx_agent, "US": self.us_agent, "ETF": self.etf_agent, "CRYPTO": self.crypto_agent}
         agent = agents.get(market)
         if not agent:
             return {"error": f"Unknown market: {market}"}
@@ -282,6 +461,18 @@ class Orchestrator:
                 result["validation_issues"] = issues
             else:
                 await self._save_signal(result)
+
+        # Auto-execute crypto signals (same path as scan_all_markets)
+        if market == "CRYPTO" and not result.get("error") and result.get("confidence_score", 0) >= 50:
+            try:
+                from src.advisory.crypto_regime import CryptoRegimeFilter
+                regime_filter = CryptoRegimeFilter(self.mcp)
+                regime = await regime_filter.get_current_regime()
+                executed = await self._auto_execute_crypto([result], regime)
+                if executed:
+                    return executed[0]
+            except Exception as e:
+                logger.error("crypto_auto_execute_single_failed", ticker=ticker, error=str(e))
 
         return result
 

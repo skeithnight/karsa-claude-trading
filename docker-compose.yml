@@ -86,6 +86,54 @@ services:
     command: ["python", "-m", "src.bot.main"]
     restart: unless-stopped
 
+  # 6. VPN GATEWAY (Cloudflare WARP - free, routes crypto bot traffic)
+  warp:
+    image: caomingjun/warp
+    container_name: karsa-warp
+    restart: unless-stopped
+    networks: [trading-net]
+    ports:
+      - "127.0.0.1:1080:1080"  # SOCKS5 proxy port
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s --socks5 localhost:1080 https://api.bybit.com/v5/market/time || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # 7. CRYPTO BOT (separate Telegram instance)
+  karsa-crypto-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    container_name: karsa-crypto-bot
+    env_file: [.env]
+    ports:
+      - "127.0.0.1:8444:8444"
+    environment:
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+      - POSTGRES_URL=postgresql://trader:${DB_PASSWORD}@postgres:5432/trading
+      - BYBIT_API_KEY=${BYBIT_API_KEY}
+      - BYBIT_API_SECRET=${BYBIT_API_SECRET}
+      - BYBIT_TESTNET=${BYBIT_TESTNET:-true}
+      - CRYPTO_TELEGRAM_TOKEN=${CRYPTO_TELEGRAM_TOKEN}
+      - CRYPTO_MAX_RISK_PER_TRADE_PCT=${CRYPTO_MAX_RISK_PER_TRADE_PCT:-1.0}
+      - CRYPTO_MAX_POSITION_PCT=${CRYPTO_MAX_POSITION_PCT:-10.0}
+      - CRYPTO_MAX_CONCURRENT_POSITIONS=${CRYPTO_MAX_CONCURRENT_POSITIONS:-5}
+      - CRYPTO_DAILY_LOSS_LIMIT_PCT=${CRYPTO_DAILY_LOSS_LIMIT_PCT:-3.0}
+      - PORT=8444
+      - BYBIT_PROXY=socks5://warp:1080
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      warp:
+        condition: service_healthy
+    networks: [trading-net]
+    command: ["python", "-m", "src.bot.crypto_main"]
+    restart: unless-stopped
+
 networks:
   trading-net:
     driver: bridge

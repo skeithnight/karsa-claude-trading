@@ -211,6 +211,22 @@ class KarsaApp:
             replace_existing=True,
         )
 
+        # --- CRYPTO (24/7, no weekday/hour gate) ---
+        if settings.BYBIT_API_KEY:
+            s.add_job(
+                self._job_scan_crypto,
+                "cron", hour="*", minute=15,
+                id="scan_crypto", name="Crypto Market Scan (24/7)",
+                replace_existing=True, misfire_grace_time=600,
+            )
+            # Monitor open positions every 15 minutes
+            s.add_job(
+                self._job_monitor_crypto_positions,
+                "cron", minute="*/15",
+                id="crypto_monitor", name="Crypto Position Monitor",
+                replace_existing=True, misfire_grace_time=120,
+            )
+
         logger.info("jobs_registered", count=len(self.scheduler.get_jobs()))
 
     # --- Job implementations ---
@@ -242,6 +258,80 @@ class KarsaApp:
             logger.info("us_etf_scan_done", signals=len(signals))
         except Exception as e:
             logger.error("us_etf_scan_failed", error=str(e))
+
+    async def _job_scan_crypto(self):
+        """Scan crypto market — auto-execute pipeline: agents → risk → SOR → save → notify."""
+        try:
+            signals = await self.orchestrator.scan_all_markets("CRYPTO")
+            logger.info("crypto_scan_done", signals=len(signals))
+        except Exception as e:
+            logger.error("crypto_scan_failed", error=str(e))
+
+    async def _job_monitor_crypto_positions(self):
+        """Monitor open crypto positions — update P&L, alert on significant moves."""
+        try:
+            bybit = self.mcp._get_bybit()
+            positions = await bybit.get_positions()
+
+            if not positions:
+                return
+
+            from src.models.database import async_session
+            from src.models.tables import PaperPosition
+            from sqlalchemy import select
+
+            alerts = []
+            async with async_session() as session:
+                for pos in positions:
+                    symbol = pos.get("symbol", "")
+                    pnl_pct = 0
+                    entry = pos.get("entry_price", 0)
+                    current = pos.get("current_price", 0)
+                    if entry > 0:
+                        if pos.get("side") == "Buy":
+                            pnl_pct = ((current - entry) / entry) * 100
+                        else:
+                            pnl_pct = ((entry - current) / entry) * 100
+
+                    # Update paper position in DB
+                    result = await session.execute(
+                        select(PaperPosition).where(
+                            PaperPosition.ticker == symbol,
+                            PaperPosition.market == "CRYPTO",
+                        )
+                    )
+                    paper_pos = result.scalar_one_or_none()
+                    if paper_pos:
+                        paper_pos.current_price = current
+                        paper_pos.unrealized_pnl = pos.get("unrealized_pnl", 0)
+                        paper_pos.unrealized_pnl_pct = pnl_pct
+
+                    # Alert on significant moves
+                    if pnl_pct <= -0.5:
+                        alerts.append(f"⚠️ {symbol}: {pnl_pct:+.1f}% (${pos.get('unrealized_pnl', 0):+,.2f})")
+                    elif pnl_pct >= 2.0:
+                        alerts.append(f"🟢 {symbol}: {pnl_pct:+.1f}% consider taking profit")
+
+                await session.commit()
+
+            # Send Telegram alert if needed
+            if alerts:
+                try:
+                    import httpx
+                    token = settings.TELEGRAM_TOKEN or settings.CRYPTO_TELEGRAM_TOKEN
+                    if token and settings.TELEGRAM_CHAT_ID:
+                        msg = "📊 <b>CRYPTO POSITION UPDATE</b>\n\n" + "\n".join(alerts)
+                        async with httpx.AsyncClient(timeout=10) as client:
+                            await client.post(
+                                f"https://api.telegram.org/bot{token}/sendMessage",
+                                json={"chat_id": settings.TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"},
+                            )
+                except Exception:
+                    pass
+
+            logger.info("crypto_monitor_done", positions=len(positions), alerts=len(alerts))
+        except Exception as e:
+            logger.error("crypto_monitor_failed", error=str(e))
 
     async def _job_update_paper_positions(self):
         """Update current prices for paper positions AND portfolio."""

@@ -8,6 +8,7 @@ import redis.asyncio as aioredis
 from src.config import settings
 
 KILL_KEY = f"{settings.REDIS_PREFIX}:emergency_stop"
+GLOBAL_HALT_KEY = f"{settings.REDIS_PREFIX}:global_halt"
 
 _client: aioredis.Redis | None = None
 
@@ -52,3 +53,38 @@ async def get_status() -> dict | None:
     """Get full emergency stop status payload."""
     val = await _get_redis().get(KILL_KEY)
     return json.loads(val) if val else None
+
+
+# --- Global Halt (OOB Kill Switch for Crypto) ---
+
+async def activate_global_halt(reason: str, operator: str) -> bool:
+    """Activate global halt — bypasses message queues, forces all agents to stop.
+
+    Sets both the global halt key AND the standard emergency stop for compatibility.
+    Used by /kill command on crypto bot.
+    """
+    payload = json.dumps({
+        "active": True,
+        "reason": reason,
+        "operator": operator,
+        "activated_at": datetime.now(timezone.utc).isoformat(),
+        "type": "global_halt",
+    })
+    r = _get_redis()
+    result = await r.set(GLOBAL_HALT_KEY, payload, nx=True)
+    # Also set standard emergency stop
+    await r.set(KILL_KEY, payload)
+    return bool(result)
+
+
+async def deactivate_global_halt(operator: str) -> None:
+    """Deactivate global halt — resume all trading."""
+    r = _get_redis()
+    await r.delete(GLOBAL_HALT_KEY)
+    await r.delete(KILL_KEY)
+
+
+async def is_global_halt() -> bool:
+    """Check if global halt is active."""
+    val = await _get_redis().get(GLOBAL_HALT_KEY)
+    return bool(val)

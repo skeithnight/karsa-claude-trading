@@ -36,8 +36,8 @@ FINNHUB_BASE_URL = "https://finnhub.io/api/v1"
 CIRCUIT_BREAKER_TTL = 600  # 10 minutes
 MAX_FAILURES = 3
 
-SCREENER_MAP = {"IDX": "indonesia", "US": "america", "ETF": "america"}
-EXCHANGE_MAP = {"IDX": "IDX", "US": "NASDAQ", "ETF": "AMEX"}
+SCREENER_MAP = {"IDX": "indonesia", "US": "america", "ETF": "america", "CRYPTO": "crypto"}
+EXCHANGE_MAP = {"IDX": "IDX", "US": "NASDAQ", "ETF": "AMEX", "CRYPTO": "BYBIT"}
 
 
 def _ensure_imports():
@@ -68,8 +68,20 @@ class MCPClient:
         # HTTP client for fallback APIs
         self._http_client = httpx.AsyncClient(timeout=10.0)
 
+        # Bybit client for CRYPTO market (lazy init)
+        self._bybit = None
+
+    def _get_bybit(self):
+        """Lazy-init Bybit client."""
+        if self._bybit is None:
+            from src.data.bybit_client import BybitClient
+            self._bybit = BybitClient(self.cache)
+        return self._bybit
+
     async def close(self):
         await self._http_client.aclose()
+        if self._bybit:
+            await self._bybit.close()
 
     def _is_provider_blocked(self, provider: str) -> bool:
         """Check if a provider is blocked by circuit breaker."""
@@ -223,6 +235,14 @@ class MCPClient:
 
     async def get_quote(self, ticker: str, market: str) -> dict:
         """Get real-time quote with caching and fallback."""
+        # CRYPTO: delegate to BybitClient
+        if market == "CRYPTO":
+            cached = await self.cache.get_quote(ticker, market)
+            if cached:
+                return cached
+            bybit = self._get_bybit()
+            return await bybit.get_ticker(ticker)
+
         # Check Redis cache first
         cached = await self.cache.get_quote(ticker, market)
         if cached:
@@ -239,6 +259,14 @@ class MCPClient:
 
     async def get_ohlcv(self, ticker: str, market: str, timeframe: str = "1D", limit: int = 100) -> list[dict]:
         """Get OHLCV data with caching."""
+        # CRYPTO: delegate to BybitClient
+        if market == "CRYPTO":
+            cached = await self.cache.get_ohlcv(ticker, market, timeframe)
+            if cached:
+                return cached
+            bybit = self._get_bybit()
+            return await bybit.get_ohlcv(ticker, timeframe, limit)
+
         cached = await self.cache.get_ohlcv(ticker, market, timeframe)
         if cached:
             return cached
@@ -321,3 +349,15 @@ class MCPClient:
         except Exception as e:
             logger.error("get_volume_profile_failed", ticker=ticker, error=str(e))
             return {"error": str(e)}
+
+    # --- Crypto-specific methods (delegate to BybitClient) ---
+
+    async def get_funding_rate(self, ticker: str) -> dict:
+        """Get funding rate for a crypto perpetual symbol."""
+        bybit = self._get_bybit()
+        return await bybit.get_funding_rate(ticker)
+
+    async def get_open_interest(self, ticker: str) -> dict:
+        """Get open interest for a crypto perpetual symbol."""
+        bybit = self._get_bybit()
+        return await bybit.get_open_interest(ticker)
