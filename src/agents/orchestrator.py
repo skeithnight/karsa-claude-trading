@@ -3,6 +3,7 @@
 import asyncio
 import json
 import time
+from decimal import Decimal
 
 from src.agents.base import BaseAgent
 from src.agents.idx_analyst import IDXAnalyst
@@ -170,6 +171,13 @@ class Orchestrator:
                 logger.info("crypto_regime", state=regime_state, hurst=crypto_regime.get("hurst"), adx=crypto_regime.get("adx"),
                             btc_dom=crypto_regime.get("btc_dominance"), season=crypto_regime.get("market_season"))
 
+                # Phase 1: Update agent strategy based on current regime
+                strategy_config = self.crypto_agent.update_strategy(regime_state)
+                logger.info("crypto_strategy_applied",
+                            regime=regime_state,
+                            strategy=strategy_config.get("primary_strategy"),
+                            size_multiplier=strategy_config.get("size_multiplier"))
+
                 if regime_state == "CHOP":
                     logger.info("crypto_scan_skipped_chop_regime")
                 else:
@@ -190,12 +198,14 @@ class Orchestrator:
                 continue
             all_signals.extend(result)
 
-        # Include crypto signals (already auto-executed and saved)
+        # Include crypto signals (already auto-executed and saved by _auto_execute_crypto)
         all_signals.extend(crypto_signals)
 
-        # Persist all signals to database
+        # Persist non-crypto signals to database (crypto already saved in _auto_execute_crypto)
+        crypto_ids = {id(s) for s in crypto_signals}
         for signal in all_signals:
-            await self._save_signal(signal)
+            if id(signal) not in crypto_ids:
+                await self._save_signal(signal)
 
         logger.info("scan_complete", total=len(all_signals))
         return all_signals
@@ -231,6 +241,9 @@ class Orchestrator:
                     logger.warning("agent_error", market=market, ticker=ticker, error=result["error"])
                     continue
 
+                # Phase 2: Extract and save reasoning trace (if captured)
+                trace_data = result.pop("_trace", None)
+
                 # Validate signal structure
                 issues = self._validate_signal(result, market)
                 if issues:
@@ -239,6 +252,10 @@ class Orchestrator:
 
                 if result.get("confidence_score", 0) >= 50:
                     signals.append(result)
+
+                # Save trace for all crypto signals (even low confidence)
+                if trace_data and market == "CRYPTO":
+                    await self._save_trace(trace_data, result)
             except Exception as e:
                 logger.error("ticker_scan_failed", market=market, ticker=ticker, error=str(e))
         logger.info("market_scan_done", market=market, tickers=len(universe), signals=len(signals))
@@ -408,16 +425,48 @@ class Orchestrator:
         """Persist executed crypto trade to CryptoPosition table."""
         try:
             from src.models.tables import CryptoPosition
+            from datetime import datetime, timezone
+
+            # Fetch entry funding rate and regime for metadata
+            entry_funding_rate = None
+            regime_at_entry = None
+            try:
+                from src.risk.funding_tracker import FundingTracker
+                bybit = self.mcp._get_bybit()
+                ft = FundingTracker(bybit)
+                rates = await ft.get_current_rates([signal.get("ticker", "")])
+                if rates:
+                    entry_funding_rate = rates[0].get("funding_rate")
+            except Exception:
+                pass
+            try:
+                from src.advisory.crypto_regime import CryptoRegimeFilter
+                crf = CryptoRegimeFilter(self.mcp)
+                regime_data = await crf.get_current_regime()
+                regime_at_entry = regime_data.get("state") if regime_data else None
+            except Exception:
+                pass
+
+            entry_price = Decimal(str(fill_result.get("fill_price", signal.get("entry_price", 0))))
+
             async with async_session() as session:
                 session.add(CryptoPosition(
                     ticker=signal.get("ticker", ""),
                     side="Buy" if signal.get("direction") == "LONG" else "Sell",
                     size=risk_result.get("qty", 0),
-                    entry_price=fill_result.get("fill_price", signal.get("entry_price", 0)),
+                    entry_price=entry_price,
                     leverage=risk_result.get("leverage", 1),
                     liquidation_price=None,  # populated by position sync job
                     stop_loss=risk_result.get("stop_loss"),
                     take_profit=risk_result.get("take_profit"),
+                    # Phase 1: lifecycle metadata
+                    highest_price=entry_price,
+                    trailing_stop_price=None,  # set by trailing stop manager
+                    entry_funding_rate=entry_funding_rate,
+                    regime_at_entry=regime_at_entry,
+                    signal_source=signal.get("strategy", "crypto_analyst"),
+                    partial_exits_taken=0,
+                    last_management_check=datetime.now(timezone.utc),
                 ))
                 await session.commit()
         except Exception as e:
@@ -446,13 +495,14 @@ class Orchestrator:
                 tp=tp,
                 reasoning=reasoning
             ))
-            # Use the main telegram bot token (not crypto bot) for unified notifications
-            token = settings.TELEGRAM_TOKEN or settings.CRYPTO_TELEGRAM_TOKEN
-            if token and settings.TELEGRAM_CHAT_ID:
+            # Use the crypto telegram bot token (falls back to main token) for notifications
+            token = settings.CRYPTO_TELEGRAM_TOKEN or settings.TELEGRAM_TOKEN
+            chat_id = settings.CRYPTO_TELEGRAM_CHAT_ID or settings.TELEGRAM_CHAT_ID
+            if token and chat_id:
                 async with httpx.AsyncClient(timeout=10) as client:
                     await client.post(
                         f"https://api.telegram.org/bot{token}/sendMessage",
-                        json={"chat_id": settings.TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"},
+                        json={"chat_id": chat_id, "text": msg, "parse_mode": "HTML"},
                     )
         except Exception as e:
             logger.error("crypto_notify_failed", error=str(e))
@@ -539,6 +589,8 @@ class Orchestrator:
                 from src.advisory.crypto_regime import CryptoRegimeFilter
                 regime_filter = CryptoRegimeFilter(self.mcp)
                 regime = await regime_filter.get_current_regime()
+                # Phase 1: Update strategy for single-ticker scan too
+                self.crypto_agent.update_strategy(regime.get("state", "UNKNOWN"))
                 executed = await self._auto_execute_crypto([result], regime)
                 if executed:
                     return executed[0]
@@ -546,6 +598,35 @@ class Orchestrator:
                 logger.error("crypto_auto_execute_single_failed", ticker=ticker, error=str(e))
 
         return result
+
+    async def _save_trace(self, trace_data: dict, signal_data: dict):
+        """Save a reasoning trace to the database."""
+        if not trace_data:
+            return
+        try:
+            from src.models.database import async_session
+            from src.models.tables import ReasoningTrace
+            async with async_session() as session:
+                trace = ReasoningTrace(
+                    agent_name=trace_data.get("agent_name", ""),
+                    ticker=signal_data.get("ticker"),
+                    market=signal_data.get("market"),
+                    system_prompt=trace_data.get("system_prompt", ""),
+                    user_prompt=trace_data.get("user_prompt", ""),
+                    tools_used=trace_data.get("tools_used"),
+                    tool_results=trace_data.get("tool_results"),
+                    llm_response=trace_data.get("llm_response"),
+                    reasoning_extracted=trace_data.get("reasoning"),
+                    strategy_used=trace_data.get("strategy"),
+                    regime_at_time=getattr(self.crypto_agent, '_current_config', {}).get("primary_strategy"),
+                    confidence_score=trace_data.get("confidence"),
+                    iterations=trace_data.get("iterations", 1),
+                    model_used=trace_data.get("model"),
+                )
+                session.add(trace)
+                await session.commit()
+        except Exception as e:
+            logger.error("trace_save_failed", error=str(e))
 
     async def _save_signal(self, signal_data: dict):
         """Save a signal to the database with IDX order validation."""
@@ -601,7 +682,7 @@ class Orchestrator:
                     stop_loss_price=signal_data.get("stop_loss_price"),
                     risk_reward_ratio=signal_data.get("risk_reward_ratio"),
                     reasoning=signal_data.get("reasoning"),
-                    status="PENDING",
+                    status=signal_data.get("status", "PENDING"),
                     expires_at=datetime.utcnow() + timedelta(hours=24),
                 )
                 session.add(signal)

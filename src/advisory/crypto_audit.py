@@ -2,11 +2,13 @@
 
 Queries Signal + ClosedPaperTrade tables to compute trading performance metrics.
 Pure Python/SQL — no LLM calls. Returns structured dict for the auditor agent.
+
+Phase 4: Added regime performance, confidence calibration, time-of-day, strategy perf.
 """
 
 from datetime import datetime, timedelta, timezone
 from src.models.database import async_session
-from src.models.tables import Signal, ClosedPaperTrade
+from src.models.tables import Signal, ClosedPaperTrade, CryptoRegimeHistory
 from src.utils.logging import get_logger
 from sqlalchemy import select
 
@@ -21,7 +23,7 @@ class CryptoAuditMetrics:
 
         Returns a structured dict ready for LLM consumption.
         """
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
 
         async with async_session() as session:
             # --- Closed trades ---
@@ -125,6 +127,99 @@ class CryptoAuditMetrics:
         high_conf_wins = len([t for t in trades if t["ticker"] in high_conf_tickers and t["pnl_pct"] > 0])
         high_conf_total = len([t for t in trades if t["ticker"] in high_conf_tickers])
 
+        # --- Phase 4: Confidence Calibration ---
+        # Bucket signals by confidence range → actual win rate
+        conf_buckets = {"50-60": [], "60-70": [], "70-80": [], "80+": []}
+        for s in sigs:
+            conf = s["confidence"]
+            if conf >= 80:
+                bucket = "80+"
+            elif conf >= 70:
+                bucket = "70-80"
+            elif conf >= 60:
+                bucket = "60-70"
+            elif conf >= 50:
+                bucket = "50-60"
+            else:
+                continue
+            # Find matching trade
+            matching = [t for t in trades if t["ticker"] == s["ticker"]]
+            if matching:
+                conf_buckets[bucket].append(matching[-1]["pnl_pct"])
+
+        confidence_calibration = {}
+        for bucket, pnls in conf_buckets.items():
+            if pnls:
+                wins_b = len([p for p in pnls if p > 0])
+                confidence_calibration[bucket] = {
+                    "count": len(pnls),
+                    "win_rate": round(wins_b / len(pnls) * 100, 1),
+                    "avg_pnl": round(sum(pnls) / len(pnls), 2),
+                }
+
+        # --- Phase 4: Time-of-Day Performance ---
+        by_hour = {}
+        for t in trades:
+            if t["exit_date"]:
+                hour = t["exit_date"].hour if isinstance(t["exit_date"], datetime) else 0
+                if hour not in by_hour:
+                    by_hour[hour] = {"wins": 0, "losses": 0, "pnl": 0}
+                if t["pnl_pct"] > 0:
+                    by_hour[hour]["wins"] += 1
+                else:
+                    by_hour[hour]["losses"] += 1
+                by_hour[hour]["pnl"] += t["pnl_pct"]
+
+        # Best/worst hours
+        best_hour = max(by_hour.items(), key=lambda x: x[1]["pnl"]) if by_hour else None
+        worst_hour = min(by_hour.items(), key=lambda x: x[1]["pnl"]) if by_hour else None
+
+        # --- Phase 4: Strategy Performance ---
+        by_strategy = {}
+        for t in trades:
+            strat = t["strategy"] or "Unknown"
+            if strat not in by_strategy:
+                by_strategy[strat] = {"wins": 0, "losses": 0, "pnl": 0, "count": 0}
+            by_strategy[strat]["count"] += 1
+            by_strategy[strat]["pnl"] += t["pnl_pct"]
+            if t["pnl_pct"] > 0:
+                by_strategy[strat]["wins"] += 1
+            else:
+                by_strategy[strat]["losses"] += 1
+
+        # --- Phase 4: Regime Performance ---
+        by_regime = {}
+        try:
+            async with async_session() as session:
+                regime_result = await session.execute(
+                    select(CryptoRegimeHistory)
+                    .where(CryptoRegimeHistory.timestamp >= cutoff)
+                    .order_by(CryptoRegimeHistory.timestamp.desc())
+                )
+                regimes = regime_result.scalars().all()
+
+            # Map each trade to a regime based on closest timestamp
+            for t in trades:
+                if not t["entry_date"]:
+                    continue
+                entry_dt = t["entry_date"] if isinstance(t["entry_date"], datetime) else datetime.fromisoformat(t["entry_date"])
+                # Find closest regime snapshot before trade entry
+                closest_regime = "UNKNOWN"
+                for r in regimes:
+                    if r.timestamp <= entry_dt:
+                        closest_regime = r.regime
+                        break
+                if closest_regime not in by_regime:
+                    by_regime[closest_regime] = {"wins": 0, "losses": 0, "pnl": 0, "count": 0}
+                by_regime[closest_regime]["count"] += 1
+                by_regime[closest_regime]["pnl"] += t["pnl_pct"]
+                if t["pnl_pct"] > 0:
+                    by_regime[closest_regime]["wins"] += 1
+                else:
+                    by_regime[closest_regime]["losses"] += 1
+        except Exception as e:
+            logger.debug("regime_perf_query_failed", error=str(e))
+
         return {
             "period_days": days,
             "total_trades": total,
@@ -144,6 +239,14 @@ class CryptoAuditMetrics:
                 "pending": sig_pending,
                 "avg_confidence": round(avg_confidence, 1),
                 "high_confidence_win_rate": round(high_conf_wins / high_conf_total * 100, 1) if high_conf_total else 0,
+            },
+            "confidence_calibration": confidence_calibration,
+            "by_strategy": by_strategy,
+            "by_regime": by_regime,
+            "time_of_day": {
+                "best_hour": {"hour": best_hour[0], "pnl": round(best_hour[1]["pnl"], 2)} if best_hour else None,
+                "worst_hour": {"hour": worst_hour[0], "pnl": round(worst_hour[1]["pnl"], 2)} if worst_hour else None,
+                "by_hour": {str(h): {"wins": d["wins"], "losses": d["losses"], "pnl": round(d["pnl"], 2)} for h, d in sorted(by_hour.items())},
             },
             "recent_trades": trades[:5],
             "recent_signals": sigs[:10],

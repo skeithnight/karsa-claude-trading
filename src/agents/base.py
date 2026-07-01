@@ -19,6 +19,9 @@ class BaseAgent:
     Agents point to 9Router (not Anthropic directly). The combo_name is passed
     as the model parameter — 9Router maps it to the actual model and handles
     fallback routing.
+
+    Trace capture: set self._capture_traces = True in subclasses to record
+    full LLM conversation history. Traces returned as "_trace" key in result.
     """
 
     def __init__(
@@ -38,6 +41,7 @@ class BaseAgent:
         self.mcp = mcp
         self.rate_limiter = rate_limiter
         self.max_iterations = max_iterations
+        self._capture_traces = False
 
         self.client = anthropic.AsyncAnthropic(
             base_url=LLM_BASE_URL,
@@ -48,8 +52,14 @@ class BaseAgent:
         """Execute the agentic tool-use loop.
 
         Returns parsed JSON dict from the agent's final response.
+        If _capture_traces is True, result includes "_trace" dict.
         """
         messages = [{"role": "user", "content": task}]
+
+        # Trace capture state
+        trace_tools_used: list[dict] = []
+        trace_tool_results: list[dict] = []
+        trace_iterations = 0
 
         for iteration in range(self.max_iterations):
             if self.rate_limiter:
@@ -129,7 +139,8 @@ class BaseAgent:
 
             # 9Router may omit stop_reason — treat no stop_reason + no tool_use as end_turn
             if stop == "end_turn" or (not stop and not has_tool_use):
-                return self._extract_response(response)
+                result = self._extract_response(response)
+                return self._attach_trace(result, task, trace_tools_used, trace_tool_results, trace_iterations)
 
             # Process tool calls
             tool_results = []
@@ -142,9 +153,16 @@ class BaseAgent:
                         "tool_use_id": block.id,
                         "content": json.dumps(result) if isinstance(result, dict) else str(result),
                     })
+                    # Trace: record tool calls and results
+                    if self._capture_traces:
+                        trace_tools_used.append({"name": block.name, "input": block.input})
+                        trace_tool_results.append({"tool": block.name, "result_summary": str(result)[:500]})
+
+            trace_iterations = iteration + 1
 
             if not tool_results:
-                return self._extract_response(response)
+                result = self._extract_response(response)
+                return self._attach_trace(result, task, trace_tools_used, trace_tool_results, trace_iterations)
 
             messages.append({"role": "assistant", "content": response.content})
             messages.append({"role": "user", "content": tool_results})
@@ -181,3 +199,26 @@ class BaseAgent:
             return json.loads(clean_text)
         except (json.JSONDecodeError, ValueError):
             return {"text": full_text, "agent": self.name}
+
+    def _attach_trace(
+        self, result: dict, task: str,
+        tools_used: list[dict], tool_results: list[dict], iterations: int,
+    ) -> dict:
+        """Attach reasoning trace to result if capture is enabled."""
+        if not self._capture_traces:
+            return result
+
+        result["_trace"] = {
+            "agent_name": self.name,
+            "system_prompt": self.system_prompt[:2000],  # truncate for storage
+            "user_prompt": task[:1000],
+            "tools_used": tools_used,
+            "tool_results": tool_results,
+            "llm_response": json.dumps(result)[:2000],
+            "reasoning": result.get("reasoning", ""),
+            "strategy": result.get("strategy", ""),
+            "confidence": result.get("confidence_score", 0),
+            "iterations": iterations,
+            "model": self.combo_name,
+        }
+        return result

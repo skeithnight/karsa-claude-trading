@@ -1,5 +1,6 @@
 """Karsa Trading System - Crypto Telegram Bot Handlers (Separate Instance)"""
 
+import json
 import redis.asyncio as redis
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -62,15 +63,25 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n",
         "Welcome to the autonomous crypto execution desk.\n",
         "Strategies run 24/7 on Bybit perpetuals with vol-targeted risk.\n\n",
-        bold("Available Commands:"), "\n",
-        code("/briefing"), " — Morning/evening market digest\n",
-        code("/market <coin>"), " — Full technical/crowding analysis\n",
-        code("/status"), " — System vitals and wallet balance\n",
-        code("/portfolio"), " — Live positions, entry levels, and uPnL\n",
-        code("/scan <coin>"), " — Force-scan single coin or run universe scan\n",
-        code("/pnl"), " — Closed trades and statistics\n",
-        code("/risk"), " — Cooldowns and limits\n",
-        code("/kill"), " — Emergency stop + flatten all\n"
+        bold("Trading:"), "\n",
+        code("/briefing"), " — Market digest\n",
+        code("/market <coin>"), " — Technical analysis\n",
+        code("/scan <coin>"), " — Scan & auto-execute\n",
+        code("/portfolio"), " — Live positions\n",
+        code("/pnl"), " — Closed trades\n",
+        code("/risk"), " — Limits & cooldowns\n",
+        code("/kill"), " — Emergency stop\n\n",
+        bold("Research:"), "\n",
+        code("/research <coin>"), " — AI reasoning trace\n",
+        code("/whytrade"), " — Last trade reasoning\n",
+        code("/compare <coin>"), " — Compare 2 analyses\n",
+        code("/backtest <coin>"), " — Backtest strategy\n",
+        code("/replay <coin>"), " — Replay AI signals\n\n",
+        bold("Intelligence:"), "\n",
+        code("/stats"), " — Performance stats\n",
+        code("/equity"), " — Equity curve\n",
+        code("/calibration"), " — Confidence calibration\n",
+        code("/regimestats"), " — Performance by regime\n"
     )
     keyboard = build_nav_keyboard([
         [("🌐 Briefing", "cmd_briefing"), ("📊 Status", "cmd_status")],
@@ -729,6 +740,22 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await scan_cmd(update, context)
     elif data == "cmd_briefing":
         await briefing_cmd(update, context)
+    elif data == "cmd_backtest":
+        await backtest_cmd(update, context)
+    elif data == "cmd_replay":
+        await replay_cmd(update, context)
+    elif data == "cmd_stats":
+        await stats_cmd(update, context)
+    elif data == "cmd_equity":
+        await equity_cmd(update, context)
+    elif data == "cmd_calibration":
+        await calibration_cmd(update, context)
+    elif data == "cmd_regimestats":
+        await regimestats_cmd(update, context)
+    elif data == "cmd_research":
+        await research_cmd(update, context)
+    elif data == "cmd_whytrade":
+        await whytrade_cmd(update, context)
 
 
 async def activity_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -904,10 +931,19 @@ async def audit_agent_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     report_lines.append(fmt(code(f"Grade: {grade}"), f" — {summary}\n"))
 
                     for rec in analysis.get("recommendations", []):
-                        report_lines.append(fmt("• ", rec, "\n"))
+                        if isinstance(rec, dict):
+                            priority = rec.get("priority", "")
+                            title = rec.get("title", "")
+                            desc = rec.get("description", "")
+                            report_lines.append(fmt(f"• ", bold(f"[{priority}] {title}"), f"\n  {desc}\n"))
+                        else:
+                            report_lines.append(fmt("• ", str(rec), "\n"))
 
                     if analysis.get("confidence_note"):
                         report_lines.append(fmt("\n", bold("Confidence:"), f" {analysis['confidence_note']}"))
+
+                    # Phase 4: Save recommendations to DB
+                    await auditor.save_recommendations(analysis, metrics)
                 else:
                     report_lines.append(italic("Orchestrator not connected — skipping LLM analysis.\n"))
             except Exception as e:
@@ -939,31 +975,62 @@ async def guide_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from src.utils.telegram_helpers import build_nav_keyboard
 
     guide_text = fmt(
-        bold("📖 KARSA CRYPTO 101"), "\n",
+        bold("📖 KARSA CRYPTO GUIDE"), "\n",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n",
-        bold("🤖 What is Karsa Crypto?"), "\n",
-        "AI-powered perpetual futures on Bybit.\n",
-        "EXECUTES trades automatically after AI analysis.\n\n",
-        bold("⚡ HOW IT WORKS"), "\n",
-        "🔍 Step 1: AI scans 10 perpetual pairs (every 4h)\n",
-        "🛡️ Step 2: Risk gates (1% risk, 3% daily loss, 5 max positions)\n",
-        "📈 Step 3: Smart execution (limit → reprice → market fallback)\n\n",
+        bold("🤖 What is this?"), "\n",
+        "AI-driven perpetual futures on Bybit.\n",
+        "Auto-executes trades after 8 risk gates.\n\n",
+        bold("⚡ PIPELINE"), "\n",
+        "🔍 AI scans 10 perpetual pairs (every 4h)\n",
+        "🛡️ Risk gates → sizing → SL/TP via ATR\n",
+        "📈 Smart Order Router (limit → reprice → market)\n\n",
         bold("🌡️ REGIME"), "\n",
         "  🟢 TREND_BULL → full sizing (1.2x)\n",
         "  🔴 TREND_BEAR → reduced (0.5x)\n",
         "  🟡 MEAN_REVERSION → moderate (0.8x)\n",
-        "  ⚪ CHOP → minimal (0.5x)\n\n",
+        "  ⚪ CHOP → scan skipped (needs 75%+ conf)\n\n",
         bold("🚨 EMERGENCY"), "\n",
-        "  ", code("/kill"), " Close ALL + halt\n",
-        "  ", code("/sellall"), " Close + 15min cooldown\n",
-        "  ", code("/resume"), " Reactivate\n\n",
-        bold("📋 COMMANDS"), "\n",
-        code("/status"), " ", code("/portfolio"), " ", code("/pnl"), " ", code("/risk"), "\n",
-        code("/scan"), " ", code("/activity"), " ", code("/regime"), " ", code("/funding"), "\n",
+        "  ", code("/kill"), " Close ALL + global halt\n",
+        "  ", code("/sellall"), " Close ALL + 15m cooldown\n",
+        "  ", code("/resume"), " Reactivate trading\n\n",
+        bold("📋 DESK"), "\n",
+        "  ", code("/status"), " System vitals & capital\n",
+        "  ", code("/portfolio"), " Open positions & uPnL\n",
+        "  ", code("/pnl"), " Closed trades & daily P&L\n",
+        "  ", code("/trades"), " Recent executed trades\n",
+        "  ", code("/risk"), " Risk config & limits\n",
+        "  ", code("/activity"), " Signal & exit log\n\n",
+        bold("🔍 SCAN"), "\n",
+        "  ", code("/scan"), " Scan all pairs\n",
+        "  ", code("/scan BTCUSDT"), " Scan single pair\n",
+        "  ", code("/briefing"), " Market briefing\n",
+        "  ", code("/market"), " Market overview\n\n",
+        bold("🌊 DATA"), "\n",
+        "  ", code("/regime"), " Regime filter metrics\n",
+        "  ", code("/funding"), " Funding rates & crowd risk\n",
+        "  ", code("/liquidity"), " Orderbook depth check\n\n",
+        bold("🔄 LIFECYCLE"), "\n",
+        "  ", code("/position"), " Open position details\n",
+        "  ", code("/trailing"), " Trailing stop status\n",
+        "  ", code("/circuitbreakers"), " Active circuit breakers\n",
+        "  ", code("/halt"), " Manual emergency stop\n",
+        "  ", code("/reconcile"), " Bybit↔DB position sync\n",
+        "  ", code("/drift"), " Drift detection logs\n\n",
+        bold("🔬 RESEARCH"), "\n",
+        "  ", code("/research"), " AI thesis trace\n",
+        "  ", code("/whytrade"), " Last trade thesis\n",
+        "  ", code("/compare"), " Compare AI analyses\n\n",
+        bold("📈 STATS"), "\n",
+        "  ", code("/stats"), " Performance stats\n",
+        "  ", code("/equity"), " Equity curve\n",
+        "  ", code("/calibration"), " Confidence calibration\n",
+        "  ", code("/regimestats"), " Performance by regime\n",
+        "  ", code("/audit_agent"), " Agent self-audit\n"
     )
     keyboard = build_nav_keyboard([
-        [("📊 Status", "cmd_status"), ("💼 Portfolio", "cmd_portfolio")],
-        [("🛡️ Risk", "cmd_risk"), ("📋 Activity", "cmd_activity")],
+        [("🌐 Briefing", "cmd_briefing"), ("📊 Status", "cmd_status")],
+        [("💼 Portfolio", "cmd_portfolio"), ("📋 Activity", "cmd_activity")],
+        [("🛡️ Risk", "cmd_risk"), ("🌡️ Regime", "cmd_regime")],
     ])
     if update.callback_query:
         await update.callback_query.edit_message_text(str(guide_text), parse_mode="HTML", reply_markup=keyboard)
@@ -1016,39 +1083,35 @@ async def funding_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     try:
         from src.risk.funding_tracker import FundingTracker
-        from src.utils.telegram_helpers import send_long_message, format_pre_table, build_nav_keyboard
-        from src.utils.trader_format import funding_gauge
+        from src.utils.telegram_helpers import send_long_message, build_nav_keyboard
 
         bybit = _get_bybit(context)
         tracker = FundingTracker(bybit)
         rates = await tracker.get_current_rates()
 
         lines = [bold("📊 FUNDING RATES & CROWDING"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"]
-        
-        headers = ["Symbol", "Rate", "Annualized", "Direction"]
-        rows = []
+
+        # Data-relative scale: max rate fills 5 blocks
+        sorted_rates = sorted(rates, key=lambda x: abs(x.get("funding_rate", 0)), reverse=True)
+        max_abs_rate = max((abs(ri.get("funding_rate", 0)) for ri in sorted_rates), default=0.0001)
+
         gauge_lines = []
-        
-        for ri in sorted(rates, key=lambda x: abs(x.get("funding_rate", 0)), reverse=True):
+        for ri in sorted_rates:
             rate = ri.get("funding_rate", 0)
             annual = ri.get("annualized_pct", 0)
-            d = "L→S (Crowded Long)" if rate > 0 else "S→L (Crowded Short)" if rate < 0 else "—"
             alert = " ⚠️" if ri.get("alert") else ""
-            
-            rows.append([
-                ri['symbol'],
-                f"{rate*100:+.4f}%",
-                f"{annual:+.0f}%",
-                f"{d}{alert}"
-            ])
-            
+
+            # Scale relative to max rate in this batch
+            filled = min(5, max(1, round(abs(rate) / max_abs_rate * 5))) if max_abs_rate > 0 else 1
+            bar = "█" * filled + "░" * (5 - filled)
+            color = "🟢" if rate < 0 else "🔴" if rate > 0 else "⚪️"
+            d = "L→S" if rate > 0 else "S→L" if rate < 0 else "—"
+
             gauge_lines.append(
-                f"• {bold(ri['symbol'])}: " + str(funding_gauge(rate)) + f" (Annual: {annual:+.0f}%)\n"
+                f"• <b>{ri['symbol']}</b>: {color} <code>{bar}</code> {rate*100:+.4f}% "
+                f"(Annual: {annual:+.0f}%) {d}{alert}\n"
             )
-            
-        table = format_pre_table(headers, rows, align_right=[1, 2])
-        lines.append(pre(table))
-        lines.append("\n" + bold("Heatmap:") + "\n")
+
         lines.extend(gauge_lines)
         lines.append("\n💡 L→S = Longs pay Shorts. S→L = Shorts pay Longs. High rates indicate potential reversal squeeze points.\n")
         
@@ -1125,6 +1188,543 @@ async def trades_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error("trades_cmd_failed", error=str(e))
         await _reply(update, "❌ Trades check failed.")
+
+
+# --- Phase 2: Reasoning Trace Commands ---
+
+async def research_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the latest AI reasoning trace for a coin."""
+    if not _is_authorized(update):
+        return
+    ticker = context.args[0].upper() if context.args else None
+    if not ticker:
+        await _reply(update, "💡 Usage: /research <coin> (e.g. /research BTCUSDT)")
+        return
+    if not ticker.endswith("USDT"):
+        ticker += "USDT"
+    try:
+        from src.models.database import async_session
+        from src.models.tables import ReasoningTrace
+        from sqlalchemy import select, desc
+
+        async with async_session() as session:
+            result = await session.execute(
+                select(ReasoningTrace)
+                .where(ReasoningTrace.ticker == ticker)
+                .order_by(desc(ReasoningTrace.created_at))
+                .limit(1)
+            )
+            trace = result.scalar_one_or_none()
+
+        if not trace:
+            await _reply(update, f"📭 No reasoning traces found for {ticker}.")
+            return
+
+        from src.utils.telegram_helpers import send_long_message, build_nav_keyboard
+        ts = trace.created_at.strftime("%b %d, %H:%M") if trace.created_at else "?"
+
+        tools_summary = ""
+        if trace.tools_used:
+            tool_names = [t.get("name", "?") for t in trace.tools_used]
+            tools_summary = ", ".join(tool_names)
+
+        text = fmt(
+            bold(f"🧠 AI RESEARCH: {ticker}"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n",
+            bold("Time:"), f" {ts}\n",
+            bold("Strategy:"), f" {trace.strategy_used or 'N/A'}\n",
+            bold("Regime:"), f" {trace.regime_at_time or 'N/A'}\n",
+            bold("Confidence:"), f" {trace.confidence_score or 0}/100\n",
+            bold("Iterations:"), f" {trace.iterations}\n\n",
+            bold("Tools Used:"), f" {tools_summary or 'None'}\n\n",
+            bold("Reasoning:"), "\n", italic(trace.reasoning_extracted or "No reasoning captured."), "\n\n",
+            bold("User Prompt:"), "\n", code(trace.user_prompt[:300] if trace.user_prompt else ""),
+        )
+        keyboard = build_nav_keyboard([
+            [("💼 Portfolio", "cmd_portfolio"), ("📋 Activity", "cmd_activity")],
+        ])
+        await send_long_message(update, str(text), reply_markup=keyboard)
+    except Exception as e:
+        logger.error("research_cmd_failed", ticker=ticker, error=str(e))
+        await _reply(update, "❌ Research check failed.")
+
+
+async def whytrade_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the reasoning behind the most recent executed trade."""
+    if not _is_authorized(update):
+        return
+    try:
+        from src.models.database import async_session
+        from src.models.tables import ReasoningTrace
+        from sqlalchemy import select, desc
+
+        async with async_session() as session:
+            result = await session.execute(
+                select(ReasoningTrace)
+                .where(ReasoningTrace.market == "CRYPTO")
+                .order_by(desc(ReasoningTrace.created_at))
+                .limit(1)
+            )
+            trace = result.scalar_one_or_none()
+
+        if not trace:
+            await _reply(update, "📭 No reasoning traces yet. Run a /scan first.")
+            return
+
+        from src.utils.telegram_helpers import send_long_message, build_nav_keyboard
+        ts = trace.created_at.strftime("%b %d, %H:%M") if trace.created_at else "?"
+
+        tools_detail = ""
+        if trace.tools_used:
+            for t in trace.tools_used:
+                tools_detail += f"• {t.get('name', '?')}: {json.dumps(t.get('input', {}))[:100]}\n"
+
+        text = fmt(
+            bold("🔍 WHY THIS TRADE?"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n",
+            bold("Ticker:"), f" {trace.ticker or '?'}\n",
+            bold("Time:"), f" {ts}\n",
+            bold("Strategy:"), f" {trace.strategy_used or 'N/A'}\n",
+            bold("Regime:"), f" {trace.regime_at_time or 'N/A'}\n",
+            bold("Confidence:"), f" {trace.confidence_score or 0}/100\n\n",
+            bold("AI Thesis:"), "\n", italic(trace.reasoning_extracted or "No reasoning."), "\n\n",
+            bold("Tools Called:"), "\n", pre(tools_detail or "None"), "\n",
+        )
+        keyboard = build_nav_keyboard([
+            [("📊 P&L", "cmd_pnl"), ("📋 Activity", "cmd_activity")],
+        ])
+        await send_long_message(update, str(text), reply_markup=keyboard)
+    except Exception as e:
+        logger.error("whytrade_cmd_failed", error=str(e))
+        await _reply(update, "❌ Why-trade lookup failed.")
+
+
+async def compare_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Compare the last 2 reasoning traces for a coin side by side."""
+    if not _is_authorized(update):
+        return
+    ticker = context.args[0].upper() if context.args else None
+    if not ticker:
+        await _reply(update, "💡 Usage: /compare <coin> (e.g. /compare ETHUSDT)")
+        return
+    if not ticker.endswith("USDT"):
+        ticker += "USDT"
+    try:
+        from src.models.database import async_session
+        from src.models.tables import ReasoningTrace
+        from sqlalchemy import select, desc
+
+        async with async_session() as session:
+            result = await session.execute(
+                select(ReasoningTrace)
+                .where(ReasoningTrace.ticker == ticker)
+                .order_by(desc(ReasoningTrace.created_at))
+                .limit(2)
+            )
+            traces = list(result.scalars().all())
+
+        if len(traces) < 2:
+            await _reply(update, f"📭 Need 2+ traces for {ticker} to compare. Only {len(traces)} found.")
+            return
+
+        from src.utils.telegram_helpers import send_long_message, build_nav_keyboard
+        t1, t2 = traces[0], traces[1]
+
+        def _fmt_trace(t, label):
+            ts = t.created_at.strftime("%b %d %H:%M") if t.created_at else "?"
+            return fmt(
+                bold(f"{label}"), f" ({ts})\n",
+                f"Strategy: {t.strategy_used or 'N/A'}\n",
+                f"Confidence: {t.confidence_score or 0}/100\n",
+                f"Regime: {t.regime_at_time or 'N/A'}\n",
+                italic((t.reasoning_extracted or "No reasoning")[:200]), "\n\n",
+            )
+
+        text = fmt(
+            bold(f"🔄 COMPARE: {ticker}"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n",
+            _fmt_trace(t1, "🆕 Latest"),
+            "─────────────────────────────\n\n",
+            _fmt_trace(t2, "📅 Previous"),
+        )
+        keyboard = build_nav_keyboard([
+            [("📋 Activity", "cmd_activity"), ("💼 Portfolio", "cmd_portfolio")],
+        ])
+        await send_long_message(update, str(text), reply_markup=keyboard)
+    except Exception as e:
+        logger.error("compare_cmd_failed", ticker=ticker, error=str(e))
+        await _reply(update, "❌ Compare failed.")
+
+
+# --- Phase 3: Backtest & Replay Commands ---
+
+async def backtest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Run backtest on a crypto pair using historical OHLCV data."""
+    if not _is_authorized(update):
+        return
+    ticker = context.args[0].upper() if context.args else "BTCUSDT"
+    if not ticker.endswith("USDT"):
+        ticker += "USDT"
+    try:
+        from src.models.database import async_session
+        from src.backtest.engine import load_ohlcv, backtest_crypto_trend
+
+        msg = await _reply(update, fmt("📊 ", bold(f"Backtesting {ticker}...")))
+
+        async with async_session() as session:
+            candles = await load_ohlcv(session, ticker, "CRYPTO", "4h")
+            if not candles:
+                await msg.edit_text(f"📭 No OHLCV cache for {ticker}. Run OHLCV collector first.")
+                return
+
+            result = backtest_crypto_trend(candles, ticker)
+
+        from src.utils.telegram_helpers import build_nav_keyboard
+
+        if result.passed:
+            grade = "✅ PASS"
+        else:
+            grade = "❌ FAIL"
+
+        stats_block = (
+            f"Trades     : {result.total_trades}\n"
+            f"Win Rate   : {result.win_rate:.1f}%\n"
+            f"Total Ret  : {result.total_return_pct:+.2f}%\n"
+            f"Sharpe     : {result.sharpe_ratio:.2f}\n"
+            f"Max DD     : {result.max_drawdown_pct:.1f}%\n"
+            f"PF         : {result.profit_factor:.2f}\n"
+            f"Grade      : {grade}"
+        )
+
+        failures = ""
+        if result.failures:
+            failures = "\n\n" + bold("Failures:") + "\n" + "\n".join(f"• {f}" for f in result.failures)
+
+        text = fmt(
+            bold(f"📊 BACKTEST: {ticker}"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n",
+            bold("Strategy:"), " Crypto Trend Convergence (4h)\n",
+            bold("Data:"), f" {len(candles)} candles\n\n",
+            pre(stats_block), failures
+        )
+
+        keyboard = build_nav_keyboard([
+            [("💼 Portfolio", "cmd_portfolio"), ("📋 Activity", "cmd_activity")],
+        ])
+        await msg.edit_text(str(text), parse_mode="HTML", reply_markup=keyboard)
+    except Exception as e:
+        logger.error("backtest_cmd_failed", ticker=ticker, error=str(e))
+        await _reply(update, "❌ Backtest failed.")
+
+
+async def replay_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Replay historical AI signals against actual price data."""
+    if not _is_authorized(update):
+        return
+    ticker = context.args[0].upper() if context.args else "BTCUSDT"
+    if not ticker.endswith("USDT"):
+        ticker += "USDT"
+    try:
+        from src.models.database import async_session
+        from src.backtest.engine import SignalReplayEngine
+
+        msg = await _reply(update, fmt("🔄 ", bold(f"Replaying signals for {ticker}...")))
+
+        engine = SignalReplayEngine()
+        async with async_session() as session:
+            result = await engine.replay(session, ticker, "CRYPTO", days=30, timeframe="4h")
+
+        if result.get("error"):
+            await msg.edit_text(f"❌ {result['error']}")
+            return
+
+        from src.utils.telegram_helpers import format_pre_table, send_long_message, build_nav_keyboard
+
+        headers = ["Dir", "Conf", "Entry", "Exit", "P&L", "Reason"]
+        rows = []
+        for r in result["replays"][:15]:  # show last 15
+            pnl = r["pnl_pct"]
+            emoji = "🟢" if pnl > 0 else "🔴"
+            rows.append([
+                r["direction"],
+                f"{r['confidence']}%",
+                f"${r['entry']:,.2f}",
+                f"${r['exit_price']:,.2f}",
+                f"{emoji} {pnl:+.1f}%",
+                r["exit_reason"][:10],
+            ])
+
+        stats_block = (
+            f"Signals    : {result['total_signals']}\n"
+            f"Replayed   : {result['replayed']}\n"
+            f"Win Rate   : {result['win_rate']}%\n"
+            f"Total P&L  : {result['total_pnl_pct']:+.1f}%\n"
+            f"Avg P&L    : {result['avg_pnl_pct']:+.1f}%"
+        )
+
+        lines = [
+            bold(f"🔄 SIGNAL REPLAY: {ticker}"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n",
+            bold("Performance:"), "\n", pre(stats_block), "\n\n",
+        ]
+        if rows:
+            table = format_pre_table(headers, rows, align_right=[2, 3, 4])
+            lines.extend([bold("Trades:"), "\n", pre(table)])
+        else:
+            lines.append(italic("📭 No replayable signals found."))
+
+        keyboard = build_nav_keyboard([
+            [("📊 Backtest", "cmd_backtest"), ("📋 Activity", "cmd_activity")],
+        ])
+        await send_long_message(update, str(fmt(*lines)), reply_markup=keyboard)
+    except Exception as e:
+        logger.error("replay_cmd_failed", ticker=ticker, error=str(e))
+        await _reply(update, "❌ Replay failed.")
+
+
+async def collect_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manually trigger OHLCV data collection for all crypto pairs."""
+    if not _is_authorized(update):
+        return
+    try:
+        from src.backtest.engine import OHLCVCollector
+        from src.advisory.crypto_universe import CRYPTO_UNIVERSE
+
+        orch = context.bot_data.get("orchestrator")
+        if not orch:
+            await _reply(update, "⚠️ Orchestrator not connected.")
+            return
+
+        bybit = orch.mcp._get_bybit()
+        msg = await _reply(update, fmt("📥 ", bold("Collecting OHLCV data...")))
+
+        collector = OHLCVCollector()
+        result = await collector.collect(bybit, CRYPTO_UNIVERSE, timeframe="4h", limit=200)
+
+        text = fmt(
+            bold("📥 OHLCV COLLECTION"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n",
+            bold("Collected:"), f" {result['collected']} pairs\n",
+            bold("Errors:"), f" {len(result['errors'])}\n",
+        )
+        if result["errors"]:
+            text = fmt(text, "\n", bold("Errors:"), "\n",
+                       "\n".join(f"• {e}" for e in result["errors"][:5]))
+
+        await msg.edit_text(str(text), parse_mode="HTML")
+    except Exception as e:
+        logger.error("collect_cmd_failed", error=str(e))
+        await _reply(update, "❌ Collection failed.")
+
+
+# --- Phase 4: Self-Improvement Commands ---
+
+async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show cumulative trading statistics with performance tracker."""
+    if not _is_authorized(update):
+        return
+    try:
+        from src.advisory.performance_tracker import PerformanceTracker
+
+        tracker = PerformanceTracker()
+        stats = await tracker.get_cumulative_stats(days=30)
+        dd = await tracker.get_max_drawdown(days=30)
+
+        from src.utils.telegram_helpers import build_nav_keyboard
+
+        pnl_emoji = "🟢" if stats["total_realized_pnl"] >= 0 else "🔴"
+        dd_emoji = "🟢" if dd["max_drawdown_pct"] < 5 else "🟡" if dd["max_drawdown_pct"] < 10 else "🔴"
+
+        stats_block = (
+            f"Period         : {stats['period_days']} days\n"
+            f"Total Trades   : {stats['trade_count']}\n"
+            f"Realized P&L   : {pnl_emoji} ${stats['total_realized_pnl']:+,.2f}\n"
+            f"Open Positions : {stats['open_positions']}\n"
+            f"Current Equity : ${stats['current_equity']:,.2f}\n"
+            f"Last Snapshot  : {stats['last_snapshot']}\n\n"
+            f"Max Drawdown   : {dd_emoji} {dd['max_drawdown_pct']:.1f}%\n"
+            f"Peak Equity    : ${dd['peak_equity']:,.2f}\n"
+            f"Trough Equity  : ${dd['trough_equity']:,.2f}"
+        )
+
+        text = fmt(
+            bold("📈 TRADING STATISTICS"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n",
+            bold("30-Day Performance:"), "\n", pre(stats_block)
+        )
+        keyboard = build_nav_keyboard([
+            [("📊 P&L", "cmd_pnl"), ("💼 Portfolio", "cmd_portfolio")],
+            [("🛡️ Risk", "cmd_risk"), ("📋 Activity", "cmd_activity")],
+        ])
+        await _reply(update, text, reply_markup=keyboard)
+    except Exception as e:
+        logger.error("stats_cmd_failed", error=str(e))
+        await _reply(update, "❌ Stats check failed.")
+
+
+async def equity_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show equity curve from daily PnL snapshots."""
+    if not _is_authorized(update):
+        return
+    try:
+        from src.advisory.performance_tracker import PerformanceTracker
+        from src.utils.telegram_helpers import format_pre_table, send_long_message, build_nav_keyboard
+
+        tracker = PerformanceTracker()
+        curve = await tracker.get_equity_curve(days=30)
+
+        if not curve:
+            await _reply(update, "📭 No equity snapshots yet. Wait for daily PnL snapshot job.")
+            return
+
+        headers = ["Date", "Equity", "P&L", "Positions"]
+        rows = []
+        for point in curve[-10:]:  # last 10 days
+            pnl = point["total_pnl"]
+            emoji = "🟢" if pnl >= 0 else "🔴"
+            rows.append([
+                point["date"],
+                f"${point['equity']:,.2f}",
+                f"{emoji} ${pnl:+,.2f}",
+                str(point["open_positions"]),
+            ])
+
+        table = format_pre_table(headers, rows, align_right=[1, 2, 3])
+
+        # Equity change
+        if len(curve) >= 2:
+            start_eq = curve[0]["equity"]
+            end_eq = curve[-1]["equity"]
+            eq_change = ((end_eq - start_eq) / start_eq * 100) if start_eq > 0 else 0
+            change_emoji = "🟢" if eq_change >= 0 else "🔴"
+            change_line = f"{change_emoji} {eq_change:+.1f}% over {len(curve)} days"
+        else:
+            change_line = "Insufficient data for trend"
+
+        text = fmt(
+            bold("💰 EQUITY CURVE"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n",
+            bold("Trend:"), f" {change_line}\n\n",
+            pre(table)
+        )
+        keyboard = build_nav_keyboard([
+            [("📈 Stats", "cmd_stats"), ("📊 P&L", "cmd_pnl")],
+        ])
+        await send_long_message(update, str(text), reply_markup=keyboard)
+    except Exception as e:
+        logger.error("equity_cmd_failed", error=str(e))
+        await _reply(update, "❌ Equity check failed.")
+
+
+async def calibration_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show confidence calibration — do high-confidence signals actually win more?"""
+    if not _is_authorized(update):
+        return
+    try:
+        from src.advisory.crypto_audit import CryptoAuditMetrics
+
+        msg = await _reply(update, fmt("📊 ", bold("Analyzing confidence calibration...")))
+
+        engine = CryptoAuditMetrics()
+        metrics = await engine.gather(days=30)
+
+        cal = metrics.get("confidence_calibration", {})
+        if not cal:
+            await msg.edit_text("📭 Not enough data for calibration analysis. Need 50+ confidence signals.")
+            return
+
+        from src.utils.telegram_helpers import format_pre_table, build_nav_keyboard
+
+        headers = ["Conf Range", "Trades", "Win Rate", "Avg P&L"]
+        rows = []
+        for bucket in ["50-60", "60-70", "70-80", "80+"]:
+            data = cal.get(bucket, {})
+            if data:
+                wr = data["win_rate"]
+                wr_emoji = "🟢" if wr >= 60 else "🟡" if wr >= 50 else "🔴"
+                rows.append([
+                    bucket,
+                    str(data["count"]),
+                    f"{wr_emoji} {wr}%",
+                    f"{data['avg_pnl']:+.1f}%",
+                ])
+
+        table = format_pre_table(headers, rows, align_right=[1, 2, 3])
+
+        # Assessment
+        if cal.get("80+", {}).get("win_rate", 0) > cal.get("50-60", {}).get("win_rate", 0):
+            assessment = "✅ Calibration looks good — higher confidence = higher win rate."
+        else:
+            assessment = "⚠️ Calibration issue — high confidence signals not winning more. Consider raising thresholds."
+
+        text = fmt(
+            bold("📊 CONFIDENCE CALIBRATION"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n",
+            bold("30-Day Analysis:"), "\n", pre(table), "\n\n",
+            bold("Assessment:"), f" {assessment}"
+        )
+        keyboard = build_nav_keyboard([
+            [("📈 Stats", "cmd_stats"), ("📋 Activity", "cmd_activity")],
+        ])
+        await msg.edit_text(str(text), parse_mode="HTML", reply_markup=keyboard)
+    except Exception as e:
+        logger.error("calibration_cmd_failed", error=str(e))
+        await _reply(update, "❌ Calibration check failed.")
+
+
+async def regimestats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show performance breakdown by market regime."""
+    if not _is_authorized(update):
+        return
+    try:
+        from src.advisory.performance_tracker import PerformanceTracker
+        from src.utils.telegram_helpers import format_pre_table, build_nav_keyboard
+
+        msg = await _reply(update, fmt("🌡️ ", bold("Analyzing regime performance...")))
+
+        tracker = PerformanceTracker()
+        by_regime = await tracker.get_regime_performance(days=30)
+
+        if not by_regime:
+            await msg.edit_text("📭 Not enough data for regime analysis. Need closed trades + regime history.")
+            return
+
+        regime_icons = {
+            "TREND_BULL": "🟢", "TREND_BEAR": "🔴",
+            "MEAN_REVERSION": "🟡", "CHOP": "⚪", "UNKNOWN": "❓"
+        }
+
+        headers = ["Regime", "Trades", "Win Rate", "P&L"]
+        rows = []
+        for regime in ["TREND_BULL", "TREND_BEAR", "MEAN_REVERSION", "CHOP", "UNKNOWN"]:
+            data = by_regime.get(regime)
+            if data:
+                icon = regime_icons.get(regime, "❓")
+                wr = data["win_rate"]
+                wr_emoji = "🟢" if wr >= 60 else "🟡" if wr >= 50 else "🔴"
+                pnl_emoji = "🟢" if data["pnl"] >= 0 else "🔴"
+                rows.append([
+                    f"{icon} {regime}",
+                    str(data["count"]),
+                    f"{wr_emoji} {wr}%",
+                    f"{pnl_emoji} {data['pnl']:+.1f}%",
+                ])
+
+        table = format_pre_table(headers, rows, align_right=[1, 2, 3])
+
+        # Best regime
+        best = max(by_regime.items(), key=lambda x: x[1]["pnl"]) if by_regime else None
+        worst = min(by_regime.items(), key=lambda x: x[1]["pnl"]) if by_regime else None
+
+        insight = ""
+        if best and worst:
+            insight = fmt(
+                bold("Best:"), f" {best[0]} (${best[1]['pnl']:+.1f})\n",
+                bold("Worst:"), f" {worst[0]} (${worst[1]['pnl']:+.1f})"
+            )
+
+        text = fmt(
+            bold("🌡️ REGIME PERFORMANCE"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n",
+            bold("30-Day Breakdown:"), "\n", pre(table), "\n\n", insight
+        )
+        keyboard = build_nav_keyboard([
+            [("📊 Regime", "cmd_regime"), ("📈 Stats", "cmd_stats")],
+        ])
+        await msg.edit_text(str(text), parse_mode="HTML", reply_markup=keyboard)
+    except Exception as e:
+        logger.error("regimestats_cmd_failed", error=str(e))
+        await _reply(update, "❌ Regime stats failed.")
 
 
 async def briefing_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1221,3 +1821,292 @@ async def market_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error("market_cmd_failed", ticker=ticker, error=str(e))
         await msg.edit_text("❌ Failed to compile snapshot.")
+
+
+# --- Phase 1: Lifecycle Management Commands ---
+
+async def position_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show detailed position info with lifecycle metadata."""
+    if not _is_authorized(update):
+        return
+    try:
+        from src.models.tables import CryptoPosition
+        from src.models.database import async_session
+        from sqlalchemy import select
+
+        # Get ticker from args or show all
+        ticker = context.args[0].upper() if context.args else None
+
+        async with async_session() as session:
+            if ticker:
+                result = await session.execute(
+                    select(CryptoPosition).where(
+                        CryptoPosition.ticker == ticker,
+                        CryptoPosition.status == "OPEN",
+                    )
+                )
+            else:
+                result = await session.execute(
+                    select(CryptoPosition).where(CryptoPosition.status == "OPEN")
+                )
+            positions = list(result.scalars().all())
+
+        if not positions:
+            await _reply(update, fmt(bold("📊 POSITION DETAILS"), "\n\n", italic("No open positions found.")))
+            return
+
+        lines = [bold("📊 POSITION LIFECYCLE"), "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"]
+        for pos in positions:
+            pnl = float(pos.unrealized_pnl or 0)
+            emoji = "🟢" if pnl >= 0 else "🔴"
+            side_emoji = "🟢" if pos.side == "Buy" else "🔴"
+            side_label = "LONG" if pos.side == "Buy" else "SHORT"
+
+            lines.append(
+                f"{bold(pos.ticker)} {side_emoji} {side_label} ({pos.leverage}x)\n"
+                f"  Size: {float(pos.size):.4f} | Entry: ${float(pos.entry_price):,.4f}\n"
+                f"  Mark: ${float(pos.current_price or 0):,.4f} | uPnL: {emoji} ${pnl:+,.2f}\n"
+                f"  Stop: ${float(pos.stop_loss or 0):,.4f} | TP: ${float(pos.take_profit or 0):,.4f}\n"
+                f"  Trailing: ${float(pos.trailing_stop_price or 0):,.4f} | Highest: ${float(pos.highest_price or 0):,.4f}\n"
+                f"  Regime: {pos.regime_at_entry or 'N/A'} | Source: {pos.signal_source or 'N/A'}\n"
+                f"  Funding: {float(pos.entry_funding_rate or 0)*100:.4f}% | Cumulative: ${float(pos.funding_cost_cumulative or 0):,.2f}\n"
+                f"  Partial Exits: {pos.partial_exits_taken}/2 | Last Check: {pos.last_management_check or 'Never'}\n"
+            )
+
+        await _reply(update, "\n".join(lines))
+
+    except Exception as e:
+        logger.error("position_cmd_failed", error=str(e))
+        await _reply(update, "❌ Failed to fetch position details.")
+
+
+async def trailing_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show trailing stop status for all positions."""
+    if not _is_authorized(update):
+        return
+    try:
+        from src.models.tables import CryptoPosition, CryptoTrailingStop
+        from src.models.database import async_session
+        from sqlalchemy import select, desc
+
+        async with async_session() as session:
+            # Get open positions
+            result = await session.execute(
+                select(CryptoPosition).where(CryptoPosition.status == "OPEN")
+            )
+            positions = list(result.scalars().all())
+
+            # Get recent trailing stop adjustments
+            result = await session.execute(
+                select(CryptoTrailingStop)
+                .order_by(desc(CryptoTrailingStop.created_at))
+                .limit(10)
+            )
+            recent_stops = list(result.scalars().all())
+
+        lines = [bold("🔄 TRAILING STOPS"), "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"]
+
+        if not positions:
+            lines.append(italic("No open positions."))
+        else:
+            for pos in positions:
+                trail = float(pos.trailing_stop_price or 0)
+                highest = float(pos.highest_price or 0)
+                entry = float(pos.entry_price)
+                regime = pos.regime_at_entry or "N/A"
+
+                lines.append(
+                    f"{bold(pos.ticker)} | Regime: {regime}\n"
+                    f"  Entry: ${entry:,.4f} | Highest: ${highest:,.4f}\n"
+                    f"  Trailing Stop: ${trail:,.4f}\n"
+                )
+
+        if recent_stops:
+            lines.append(f"\n{bold('Recent Adjustments:')}\n")
+            for stop in recent_stops[:5]:
+                lines.append(
+                    f"  • {stop.reason}: ${float(stop.old_price or 0):,.4f} → ${float(stop.new_price):,.4f}\n"
+                    f"    Trigger: ${float(stop.trigger_price or 0):,.4f} | {stop.created_at}\n"
+                )
+
+        await _reply(update, "\n".join(lines))
+
+    except Exception as e:
+        logger.error("trailing_cmd_failed", error=str(e))
+        await _reply(update, "❌ Failed to fetch trailing stop data.")
+
+
+async def circuitbreakers_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show active circuit breakers."""
+    if not _is_authorized(update):
+        return
+    try:
+        redis = _get_redis(context)
+        bybit = _get_bybit(context)
+        from src.risk.circuit_breaker import CircuitBreakerManager
+
+        manager = CircuitBreakerManager(redis, bybit)
+        active = await manager.get_active_breakers()
+
+        lines = [bold("🚨 CIRCUIT BREAKERS"), "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"]
+
+        if not active:
+            lines.append(italic("✅ No active circuit breakers. All clear."))
+        else:
+            for cb in active:
+                ttl = cb.get("ttl", 0)
+                details = cb.get("details", {})
+                lines.append(
+                    f"{bold(cb['type'])} (TTL: {ttl}s)\n"
+                    f"  Details: {details}\n"
+                )
+
+        await _reply(update, "\n".join(lines))
+
+    except Exception as e:
+        logger.error("circuitbreakers_cmd_failed", error=str(e))
+        await _reply(update, "❌ Failed to fetch circuit breaker status.")
+
+
+async def halt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manual halt — activate emergency stop."""
+    if not _is_authorized(update):
+        return
+    try:
+        from src.risk import emergency
+
+        reason = " ".join(context.args) if context.args else "Manual halt via /halt"
+        activated = await emergency.activate_global_halt(reason, "telegram-halt")
+
+        if activated:
+            text = fmt(
+                bold("🚨 TRADING HALTED"), "\n\n",
+                f"Reason: {reason}\n",
+                "Use /resume to reactivate."
+            )
+        else:
+            text = fmt(
+                bold("⚠️ ALREADY HALTED"), "\n\n",
+                "Trading is already paused. Use /resume to reactivate."
+            )
+
+        await _reply(update, text)
+
+    except Exception as e:
+        logger.error("halt_cmd_failed", error=str(e))
+        await _reply(update, "❌ Failed to activate halt.")
+
+
+async def reconcile_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Trigger manual position reconciliation."""
+    if not _is_authorized(update):
+        return
+    try:
+        bybit = _get_bybit(context)
+        from src.risk.position_sync import PositionReconciler
+
+        msg = await _reply(update, "🔄 Running reconciliation...")
+
+        reconciler = PositionReconciler(bybit)
+        drifts = await reconciler.reconcile()
+
+        lines = [bold("🔄 RECONCILIATION COMPLETE"), "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"]
+
+        if not drifts:
+            lines.append(italic("✅ No drift detected. All positions in sync."))
+        else:
+            lines.append(f"⚠️ {len(drifts)} drift(s) detected:\n")
+            for d in drifts:
+                lines.append(
+                    f"• {bold(d['drift_type'])}: {d['ticker']}\n"
+                    f"  Resolution: {d.get('resolution', 'N/A')}\n"
+                )
+
+        await msg.edit_text("\n".join(lines), parse_mode="HTML")
+
+    except Exception as e:
+        logger.error("reconcile_cmd_failed", error=str(e))
+        await _reply(update, "❌ Reconciliation failed.")
+
+
+async def drift_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show recent drift detections."""
+    if not _is_authorized(update):
+        return
+    try:
+        from src.models.tables import CryptoReconciliationLog
+        from src.models.database import async_session
+        from sqlalchemy import select, desc
+
+        async with async_session() as session:
+            result = await session.execute(
+                select(CryptoReconciliationLog)
+                .order_by(desc(CryptoReconciliationLog.detected_at))
+                .limit(20)
+            )
+            logs = list(result.scalars().all())
+
+        lines = [bold("📊 DRIFT HISTORY"), "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"]
+
+        if not logs:
+            lines.append(italic("No drift events recorded."))
+        else:
+            for log in logs:
+                lines.append(
+                    f"• {bold(log.drift_type)} at {log.detected_at}\n"
+                    f"  Resolution: {log.resolution or 'N/A'}\n"
+                )
+
+        await _reply(update, "\n".join(lines))
+
+    except Exception as e:
+        logger.error("drift_cmd_failed", error=str(e))
+        await _reply(update, "❌ Failed to fetch drift history.")
+
+
+async def liquidity_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show orderbook liquidity for a ticker. Usage: /liquidity BTCUSDT [size_usd]"""
+    if not _is_authorized(update):
+        return
+    try:
+        args = context.args or []
+        if not args:
+            await _reply(update, "Usage: /liquidity <ticker> [size_usd]\nExample: /liquidity BTCUSDT 5000")
+            return
+
+        ticker = args[0].upper()
+        if not ticker.endswith("USDT"):
+            ticker = f"{ticker}USDT"
+
+        size_usd = float(args[1]) if len(args) > 1 else 10000.0
+
+        bybit = _get_bybit(context)
+        from src.risk.liquidity import LiquidityMonitor, SlippageEstimator
+
+        monitor = LiquidityMonitor(bybit)
+        estimator = SlippageEstimator(bybit)
+
+        liq = await monitor.check_liquidity(ticker, "BUY", size_usd)
+        slip = await estimator.estimate_slippage(ticker, "BUY", size_usd)
+
+        status = "✅" if liq["can_trade"] else "❌"
+        exec_status = "✅" if slip["can_execute"] else "❌"
+
+        lines = [
+            bold(f"💧 LIQUIDITY — {ticker}"), "\n",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n",
+            bold("Spread:"), f" {liq['spread_pct']:.4%}\n",
+            bold("Depth (top 10):"), f" ${liq['depth_usd']:,.0f}\n",
+            bold("Tradeable:"), f" {status} {liq['reason']}\n\n",
+            bold(f"Slippage (size: ${size_usd:,.0f}:"), "\n",
+            bold("  Effective price:"), f" ${slip['effective_price']:,.4f}\n",
+            bold("  Mid price:"), f" ${slip['mid_price']:,.4f}\n",
+            bold("  Est. slippage:"), f" {slip['slippage_pct']:.4%}\n",
+            bold("  Executable:"), f" {exec_status} {slip['reason']}\n",
+        ]
+
+        await _reply(update, "\n".join(lines))
+
+    except Exception as e:
+        logger.error("liquidity_cmd_failed", error=str(e))
+        await _reply(update, "❌ Failed to check liquidity.")

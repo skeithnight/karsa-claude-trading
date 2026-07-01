@@ -19,6 +19,15 @@ from src.bot.crypto_handlers import (
     audit_agent_cmd, button_callback,
     guide_cmd, regime_cmd, funding_cmd, trades_cmd,
     briefing_cmd, market_cmd,
+    # Phase 2: Reasoning traces
+    research_cmd, whytrade_cmd, compare_cmd,
+    # Phase 3: Backtest & Replay
+    backtest_cmd, replay_cmd, collect_cmd,
+    # Phase 4: Self-improvement
+    stats_cmd, equity_cmd, calibration_cmd, regimestats_cmd,
+    # Phase 1: Lifecycle management
+    position_cmd, trailing_cmd, circuitbreakers_cmd,
+    halt_cmd, reconcile_cmd, drift_cmd, liquidity_cmd,
 )
 from src.data.cache import CacheManager
 from src.data.mcp_client import MCPClient
@@ -60,6 +69,27 @@ async def lifespan(app: FastAPI):
     telegram_app.add_handler(CommandHandler("trades", trades_cmd))
     telegram_app.add_handler(CommandHandler("briefing", briefing_cmd))
     telegram_app.add_handler(CommandHandler("market", market_cmd))
+    # Phase 2: Reasoning traces
+    telegram_app.add_handler(CommandHandler("research", research_cmd))
+    telegram_app.add_handler(CommandHandler("whytrade", whytrade_cmd))
+    telegram_app.add_handler(CommandHandler("compare", compare_cmd))
+    # Phase 3: Backtest & Replay
+    telegram_app.add_handler(CommandHandler("backtest", backtest_cmd))
+    telegram_app.add_handler(CommandHandler("replay", replay_cmd))
+    telegram_app.add_handler(CommandHandler("collect", collect_cmd))
+    # Phase 4: Self-improvement
+    telegram_app.add_handler(CommandHandler("stats", stats_cmd))
+    telegram_app.add_handler(CommandHandler("equity", equity_cmd))
+    telegram_app.add_handler(CommandHandler("calibration", calibration_cmd))
+    telegram_app.add_handler(CommandHandler("regimestats", regimestats_cmd))
+    # Phase 1: Lifecycle management
+    telegram_app.add_handler(CommandHandler("position", position_cmd))
+    telegram_app.add_handler(CommandHandler("trailing", trailing_cmd))
+    telegram_app.add_handler(CommandHandler("circuitbreakers", circuitbreakers_cmd))
+    telegram_app.add_handler(CommandHandler("halt", halt_cmd))
+    telegram_app.add_handler(CommandHandler("reconcile", reconcile_cmd))
+    telegram_app.add_handler(CommandHandler("drift", drift_cmd))
+    telegram_app.add_handler(CommandHandler("liquidity", liquidity_cmd))
     telegram_app.add_handler(CallbackQueryHandler(button_callback))
 
     # Wire up orchestrator

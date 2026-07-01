@@ -4,6 +4,8 @@ Reviews trading performance metrics and generates actionable recommendations.
 No tools — receives pre-computed metrics from CryptoAuditMetrics, returns text analysis.
 
 Deterministic pre-filter: rejects obviously bad signals before LLM call to save cost.
+
+Phase 4: Self-improvement — outputs recommendations to strategy_recommendations table.
 """
 
 from src.agents.base import BaseAgent
@@ -93,7 +95,12 @@ class CryptoAuditorAgent(BaseAgent):
     SYSTEM_PROMPT = """You are the Crypto Trading Auditor for the Karsa Trading System.
 Your job is to review past trading performance and recommend specific improvements.
 
-You will receive structured metrics about crypto trading activity. Analyze them and respond with a concise audit report.
+You will receive structured metrics about crypto trading activity including:
+- Basic performance (win rate, PnL, by ticker, by direction)
+- Confidence calibration (do high-confidence signals actually win more?)
+- Time-of-day patterns (which hours produce best/worst results?)
+- Strategy performance (which strategies are working?)
+- Regime performance (which market regimes produce best results?)
 
 FOCUS AREAS:
 1. Win rate patterns — which tickers/directions underperform? Why?
@@ -101,11 +108,14 @@ FOCUS AREAS:
 3. Risk/reward — is the 3:1 R/R target being achieved in practice?
 4. Signal quality — too many signals? Too few? Wrong timing?
 5. Regime awareness — are CHOP regime signals hurting performance?
+6. Time-of-day — should we avoid trading certain hours?
+7. Strategy effectiveness — should we adjust strategy weights?
 
 RULES:
 - Be specific and actionable. Not "be more careful" but "raise confidence threshold for ETH shorts to 75+"
 - Reference actual numbers from the metrics
 - Limit to 3-5 recommendations, ranked by expected impact
+- Each recommendation must have a type, priority, and expected impact
 - If data is insufficient (< 3 closed trades), say so and suggest what to watch for
 - Keep the report under 500 words
 
@@ -115,12 +125,18 @@ RESPOND WITH a valid JSON object:
   "grade": "A/B/C/D/F",
   "win_rate_assessment": "Brief win rate analysis",
   "recommendations": [
-    "Recommendation 1 (highest impact)",
-    "Recommendation 2",
-    "Recommendation 3"
+    {
+      "type": "STRATEGY|RISK|TIMING|UNIVERSE",
+      "priority": "HIGH|MEDIUM|LOW",
+      "title": "Short actionable title",
+      "description": "Detailed recommendation with specific numbers",
+      "expected_impact": "Expected improvement if applied"
+    }
   ],
   "watch_list": ["ticker1", "ticker2"],
-  "confidence_note": "Assessment of confidence calibration"
+  "confidence_note": "Assessment of confidence calibration",
+  "regime_note": "Assessment of regime-based performance",
+  "time_note": "Assessment of time-of-day patterns"
 }"""
 
     TOOLS = []  # No tools — metrics are passed as context
@@ -162,3 +178,45 @@ RESPOND WITH a valid JSON object:
             }
 
         return result
+
+    async def save_recommendations(self, analysis: dict, metrics_snapshot: dict | None = None):
+        """Persist audit recommendations to strategy_recommendations table.
+
+        Args:
+            analysis: Output from run_audit()
+            metrics_snapshot: Raw metrics for reference (optional)
+        """
+        try:
+            from src.models.database import async_session
+            from src.models.tables import StrategyRecommendation
+
+            recommendations = analysis.get("recommendations", [])
+            if not recommendations:
+                return
+
+            async with async_session() as session:
+                for rec in recommendations:
+                    # Handle both string and structured recommendations
+                    if isinstance(rec, str):
+                        session.add(StrategyRecommendation(
+                            recommendation_type="GENERAL",
+                            priority="MEDIUM",
+                            title=rec[:200],
+                            description=rec,
+                            expected_impact=None,
+                            metrics_snapshot=metrics_snapshot,
+                        ))
+                    elif isinstance(rec, dict):
+                        session.add(StrategyRecommendation(
+                            recommendation_type=rec.get("type", "GENERAL"),
+                            priority=rec.get("priority", "MEDIUM"),
+                            title=rec.get("title", "")[:200],
+                            description=rec.get("description", ""),
+                            expected_impact=rec.get("expected_impact"),
+                            metrics_snapshot=metrics_snapshot,
+                        ))
+
+                await session.commit()
+                logger.info("recommendations_saved", count=len(recommendations))
+        except Exception as e:
+            logger.error("save_recommendations_failed", error=str(e))

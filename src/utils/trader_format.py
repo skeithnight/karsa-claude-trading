@@ -5,12 +5,13 @@ def funding_gauge(rate: float) -> HTML:
     """Renders a visually appealing funding gauge with directional color coding."""
     rate_pct = rate * 100
     abs_rate = abs(rate_pct)
-    # Scale from 0 to 0.05% for gauge fill (e.g. 5 steps of 0.01%)
-    filled_blocks = min(5, max(1, int(abs_rate / 0.01)))
+    # Scale 0–0.02% across 5 blocks (0.004% per block)
+    # Most funding rates fall in 0.001%–0.015% range
+    filled_blocks = min(5, max(0, round(abs_rate / 0.004)))
     bar = "█" * filled_blocks + "░" * (5 - filled_blocks)
-    
-    # Positive funding = longs pay shorts (red flag for longs, crowded long)
-    # Negative funding = shorts pay longs (green flag for longs, crowded short)
+
+    # Positive funding = longs pay shorts (red — crowded long, bearish signal)
+    # Negative funding = shorts pay longs (green — crowded short, bullish signal)
     color_emoji = "🟢" if rate < 0 else "🔴" if rate > 0 else "⚪️"
     return HTML(f"{color_emoji} <code>{bar}</code> {rate_pct:+.4f}%")
 
