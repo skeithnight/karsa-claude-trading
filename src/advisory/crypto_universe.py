@@ -10,6 +10,7 @@ from src.risk.crypto_risk_manager import CORRELATION_TIERS, MAX_LEVERAGE_BY_TIER
 CRYPTO_UNIVERSE = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
     "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT",
+    "SUIUSDT", "NEARUSDT", "MATICUSDT", "PEPEUSDT"
 ]
 
 PAIR_CONFIG = {
@@ -23,6 +24,10 @@ PAIR_CONFIG = {
     "AVAXUSDT": {"min_order_usd": 5, "tick_size": 0.001, "category": "tier2"},
     "DOTUSDT":  {"min_order_usd": 5, "tick_size": 0.001, "category": "tier3"},
     "LINKUSDT": {"min_order_usd": 5, "tick_size": 0.001, "category": "tier2"},
+    "SUIUSDT":  {"min_order_usd": 5, "tick_size": 0.0001, "category": "tier2"},
+    "NEARUSDT": {"min_order_usd": 5, "tick_size": 0.001, "category": "tier2"},
+    "MATICUSDT":{"min_order_usd": 5, "tick_size": 0.0001, "category": "tier3"},
+    "PEPEUSDT": {"min_order_usd": 5, "tick_size": 0.0000001, "category": "tier3"},
 }
 
 

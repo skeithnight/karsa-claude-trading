@@ -25,8 +25,8 @@ logger = get_logger("crypto_risk_manager")
 # Correlation tiers
 CORRELATION_TIERS = {
     "tier1": {"symbols": {"BTCUSDT", "ETHUSDT"}, "max_positions": 2, "max_combined_pct": 0.15},
-    "tier2": {"symbols": {"SOLUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT", "BNBUSDT"}, "max_positions": 2, "max_combined_pct": 0.10},
-    "tier3": {"symbols": {"DOGEUSDT", "XRPUSDT", "ADAUSDT", "PEPEUSDT", "DOTUSDT"}, "max_positions": 1, "max_combined_pct": 0.05},
+    "tier2": {"symbols": {"SOLUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT", "BNBUSDT", "NEARUSDT"}, "max_positions": 2, "max_combined_pct": 0.10},
+    "tier3": {"symbols": {"DOGEUSDT", "XRPUSDT", "ADAUSDT", "PEPEUSDT", "DOTUSDT", "MATICUSDT"}, "max_positions": 1, "max_combined_pct": 0.05},
 }
 
 MAX_LEVERAGE_BY_TIER = {"tier1": 10, "tier2": 5, "tier3": 3}
