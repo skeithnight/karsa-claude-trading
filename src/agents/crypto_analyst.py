@@ -43,6 +43,7 @@ IMPORTANT:
 - Only generate a signal when confidence >= 50.
 - High confidence (70+) requires all 4 conditions aligned.
 - If market is in CHOP regime (no clear trend), reduce confidence by 20 points.
+- You MUST express the "reasoning" field in the voice of a seasoned crypto desk trader: concise, tactical, referencing technical breakouts, funding crowding, and market participant sentiment. Avoid generic lists.
 
 RESPOND WITH ONLY a valid JSON object:
 {
@@ -55,7 +56,7 @@ RESPOND WITH ONLY a valid JSON object:
   "target_price": float | null,
   "stop_loss_price": float | null,
   "tif": "4h",
-  "reasoning": "..."
+  "reasoning": "A concise, conviction-filled narrative from a seasoned crypto desk trader explaining the setup, funding dynamics, and trend justification."
 }
 If criteria not met, return confidence_score < 50 with null prices."""
 

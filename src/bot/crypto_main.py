@@ -18,6 +18,7 @@ from src.bot.crypto_handlers import (
     risk_cmd, kill_cmd, sellall_cmd, resume_cmd, activity_cmd,
     audit_agent_cmd, button_callback,
     guide_cmd, regime_cmd, funding_cmd, trades_cmd,
+    briefing_cmd, market_cmd,
 )
 from src.data.cache import CacheManager
 from src.data.mcp_client import MCPClient
@@ -57,6 +58,8 @@ async def lifespan(app: FastAPI):
     telegram_app.add_handler(CommandHandler("regime", regime_cmd))
     telegram_app.add_handler(CommandHandler("funding", funding_cmd))
     telegram_app.add_handler(CommandHandler("trades", trades_cmd))
+    telegram_app.add_handler(CommandHandler("briefing", briefing_cmd))
+    telegram_app.add_handler(CommandHandler("market", market_cmd))
     telegram_app.add_handler(CallbackQueryHandler(button_callback))
 
     # Wire up orchestrator

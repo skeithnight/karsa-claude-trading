@@ -35,7 +35,10 @@ def calculate_rsi(ohlcv: list[dict], period: int = 14) -> dict:
         avg_gain = (avg_gain * (period - 1) + gains[i]) / period
         avg_loss = (avg_loss * (period - 1) + losses[i]) / period
 
-    rsi = 100.0 if avg_loss == 0 else 100 - (100 / (1 + avg_gain / avg_loss))
+    if avg_loss == 0:
+        rsi = 50.0 if avg_gain == 0 else 100.0
+    else:
+        rsi = 100 - (100 / (1 + avg_gain / avg_loss))
 
     overbought = rsi > 70
     oversold = rsi < 30
