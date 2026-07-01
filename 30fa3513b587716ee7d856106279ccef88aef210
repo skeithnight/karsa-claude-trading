@@ -1,0 +1,90 @@
+src/agents/crypto_auditor.py
+  e2f51404f5998d0c 5-6,10,17-83
+src/main.py
+  e46ca6d1f0562708 229-249,330-331,333,433,462-580
+src/data/bybit_client.py
+  e2f51404f5998d0c 24-32,108-121,123-156,290-300,302-328,511,514-515
+  e46ca6d1f0562708 63,65-68,102,105,122,171,227,263,301,333,364,432,461,486,528,552,576,607,656
+src/bot/crypto_main.py
+  e46ca6d1f0562708 69
+  e2f51404f5998d0c 20,56-59
+src/advisory/crypto_regime.py
+  e2f51404f5998d0c 11-13,16,157-195,241-243,253-255
+docs/AUDIT_KARSA_CRYPTO_BOT.md
+  e46ca6d1f0562708 1-493
+src/agents/orchestrator.py
+  e2f51404f5998d0c 5,66-70,170-171,176-177,263-306
+  e46ca6d1f0562708 389-390,407-425
+src/advisory/crypto_universe.py
+  e2f51404f5998d0c 1-46
+docs/AUDIT_KARSA_3.md
+  e2f51404f5998d0c 23-48
+tests/test_advisory/test_crypto_technicals.py
+  e2f51404f5998d0c 1-74
+src/agents/crypto_analyst.py
+  e2f51404f5998d0c 5,11,103-104,109,111-150,167-168,177-195
+src/config.py
+  e2f51404f5998d0c 42-46
+src/advisory/crypto_audit.py
+  e46ca6d1f0562708 102-103,106
+src/advisory/crypto_technicals.py
+  e2f51404f5998d0c 1-176
+src/risk/crypto_risk_manager.py
+  e46ca6d1f0562708 74-82,87-95,98-103,111-120,141-143,311-315,414-425,433-435,437,442
+  e2f51404f5998d0c 13-15,18-19,25-33,35-39,53-73,83-86,96-97,104-110,121-140,144-253
+src/bot/crypto_handlers.py
+  e2f51404f5998d0c 647-656,856-863,865-888,890-906,909-928,934-946,948,950-952,957-961,971,977-1002,1009-1014,1025-1028,1034-1036
+  e46ca6d1f0562708 19,22-28,90,108,116-117,363,406-407,429-430,433,459,495-509,511-515,517,519,555-568,682,809,864,889,907-908,929-933,947,949,953-956,962-970,972-976,1003-1008,1015-1024,1029-1033
+tests/test_risk/test_crypto_risk_manager.py
+  e2f51404f5998d0c 1-126
+src/risk/funding_tracker.py
+  e2f51404f5998d0c 1-138
+src/models/tables.py
+  e2f51404f5998d0c 208-292
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "30fa3513b587716ee7d856106279ccef88aef210",
+  "prompts": {
+    "8052607704ce27d1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0b9f6107-41b1-4c1c-9f3a-de3f4d396dff",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 2,
+      "total_deletions": 2,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    },
+    "e2f51404f5998d0c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5ed9de62-f32b-4cbb-93e2-f4fafc973b98",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 1383,
+      "total_deletions": 14,
+      "accepted_lines": 1347,
+      "overriden_lines": 0
+    },
+    "e46ca6d1f0562708": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "83091ed5-e64d-4b22-b39b-6b2d5509409c",
+        "model": "<synthetic>"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 861,
+      "total_deletions": 128,
+      "accepted_lines": 854,
+      "overriden_lines": 0
+    }
+  }
+}
