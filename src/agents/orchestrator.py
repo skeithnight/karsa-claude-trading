@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 
 from src.agents.base import BaseAgent
 from src.agents.idx_analyst import IDXAnalyst
@@ -62,11 +63,11 @@ ETF_UNIVERSE = [
     "EEM",
 ]
 
-CRYPTO_UNIVERSE = [
-    "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
-    "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT",
-    "XAUUSDT",
-]
+from src.advisory.crypto_universe import CRYPTO_UNIVERSE
+
+# Signal deduplication cache: ticker+direction → last signal timestamp
+_signal_cache: dict[str, float] = {}
+_SIGNAL_DEDUP_SECONDS = 4 * 3600  # 4 hours
 
 # Required fields for a valid signal from an agent
 _REQUIRED_SIGNAL_FIELDS = {"ticker", "confidence_score", "direction"}
@@ -166,12 +167,14 @@ class Orchestrator:
                 crypto_regime_filter = CryptoRegimeFilter(self.mcp)
                 crypto_regime = await crypto_regime_filter.get_current_regime()
                 regime_state = crypto_regime.get("state", "UNKNOWN")
-                logger.info("crypto_regime", state=regime_state, hurst=crypto_regime.get("hurst"), adx=crypto_regime.get("adx"))
+                logger.info("crypto_regime", state=regime_state, hurst=crypto_regime.get("hurst"), adx=crypto_regime.get("adx"),
+                            btc_dom=crypto_regime.get("btc_dominance"), season=crypto_regime.get("market_season"))
 
                 if regime_state == "CHOP":
                     logger.info("crypto_scan_skipped_chop_regime")
                 else:
-                    scan_result = await self._scan_market("CRYPTO", self.crypto_agent, CRYPTO_UNIVERSE, composite=crypto_regime)
+                    # Parallel scanning: scan each pair concurrently (like IDX/US)
+                    scan_result = await self._scan_crypto_parallel(crypto_regime)
                     # Auto-execute: risk check → SOR → save
                     if scan_result:
                         crypto_signals = await self._auto_execute_crypto(scan_result, crypto_regime)
@@ -257,6 +260,50 @@ class Orchestrator:
             logger.error("regime_check_failed", error=str(e))
             return False  # Fail open — don't block scans on regime check failure
 
+    async def _scan_crypto_parallel(self, regime: dict | None = None) -> list[dict]:
+        """Scan all crypto pairs in parallel using asyncio.gather.
+
+        Each pair runs independently. Results are merged and deduplicated.
+        Dedup: skip if same ticker+direction signal exists within 4 hours.
+        """
+        global _signal_cache
+        now = time.time()
+
+        # Clean expired dedup entries
+        expired = [k for k, v in _signal_cache.items() if now - v > _SIGNAL_DEDUP_SECONDS]
+        for k in expired:
+            del _signal_cache[k]
+
+        # Scan each pair concurrently
+        tasks = [
+            self._scan_market("CRYPTO", self.crypto_agent, [symbol], composite=regime)
+            for symbol in CRYPTO_UNIVERSE
+        ]
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        signals = []
+        for result in results:
+            if isinstance(result, Exception):
+                logger.error("crypto_pair_scan_failed", error=str(result))
+                continue
+            if not result:
+                continue
+
+            for signal in result:
+                ticker = signal.get("ticker", "")
+                direction = signal.get("direction", "")
+                dedup_key = f"{ticker}:{direction}"
+
+                if dedup_key in _signal_cache:
+                    logger.info("crypto_signal_deduped", ticker=ticker, direction=direction)
+                    continue
+
+                _signal_cache[dedup_key] = now
+                signals.append(signal)
+
+        return signals
+
     async def _auto_execute_crypto(self, signals: list[dict], regime: dict | None = None) -> list[dict]:
         """Risk-check and auto-execute crypto signals on Bybit testnet."""
         risk_mgr = self._get_crypto_risk_manager()
@@ -339,6 +386,8 @@ class Orchestrator:
                     fill=fill_result.get("fill_price"),
                     risk=risk_result.get("risk_amount"),
                 )
+                # Persist to CryptoPosition table (survives API outages)
+                await self._save_crypto_position(signal, risk_result, fill_result)
                 # Send Telegram notification
                 await self._notify_crypto_trade(signal, risk_result)
 
@@ -354,6 +403,25 @@ class Orchestrator:
             executed.append(signal)
 
         return executed
+
+    async def _save_crypto_position(self, signal: dict, risk_result: dict, fill_result: dict):
+        """Persist executed crypto trade to CryptoPosition table."""
+        try:
+            from src.models.tables import CryptoPosition
+            async with async_session() as session:
+                session.add(CryptoPosition(
+                    ticker=signal.get("ticker", ""),
+                    side="Buy" if signal.get("direction") == "LONG" else "Sell",
+                    size=risk_result.get("qty", 0),
+                    entry_price=fill_result.get("fill_price", signal.get("entry_price", 0)),
+                    leverage=risk_result.get("leverage", 1),
+                    liquidation_price=None,  # populated by position sync job
+                    stop_loss=risk_result.get("stop_loss"),
+                    take_profit=risk_result.get("take_profit"),
+                ))
+                await session.commit()
+        except Exception as e:
+            logger.error("crypto_position_save_failed", error=str(e))
 
     async def _notify_crypto_trade(self, signal: dict, risk_result: dict):
         """Send Telegram notification for an executed crypto trade."""

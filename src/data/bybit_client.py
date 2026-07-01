@@ -21,7 +21,15 @@ logger = get_logger("bybit_client")
 
 # Circuit breaker
 _CIRCUIT_BREAKER_TTL = 600
-_MAX_FAILURES = 3
+_MAX_FAILURES = 5
+
+# Retry config
+_MAX_RETRIES = 3
+_RETRY_DELAYS = [1, 2, 4]  # exponential backoff in seconds
+
+# Bybit V5 error codes
+_RETRYABLE_CODES = {10002, 10006, 10016, 30034, 30035}  # timestamp, rate limit, timeout
+_FATAL_CODES = {10001, 10003, 10004, 110001, 110004, 110007}  # params, recv_window, auth, order, balance, risk
 
 # Interval map for Bybit klines
 _INTERVAL_MAP = {
@@ -52,17 +60,12 @@ class BybitClient:
             api_key=settings.BYBIT_API_KEY,
             api_secret=settings.BYBIT_API_SECRET,
         )
-        # Fix SSL issues in Docker — disable cert verification for Bybit API
+        # Proxy support (only for Bybit, not Telegram)
         try:
-            import urllib3
-            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-            if hasattr(self._http_client, 'client'):
-                self._http_client.client.verify = False
-                # Use proxy if configured (only for Bybit, not Telegram)
-                import os
-                proxy = os.environ.get("BYBIT_PROXY")
-                if proxy:
-                    self._http_client.client.proxies = {"https": proxy, "http": proxy}
+            import os
+            proxy = os.environ.get("BYBIT_PROXY")
+            if proxy and hasattr(self._http_client, 'client'):
+                self._http_client.client.proxies = {"https": proxy, "http": proxy}
         except Exception:
             pass
 
@@ -96,11 +99,60 @@ class BybitClient:
     def _record_success(self, provider: str):
         self._failures[provider] = 0
 
-    def _throttle(self):
+    async def _throttle(self):
         elapsed = time.time() - self._last_request
         if elapsed < self._min_interval:
-            time.sleep(self._min_interval - elapsed)
+            await asyncio.sleep(self._min_interval - elapsed)
         self._last_request = time.time()
+
+    async def _retry_call(self, func, *args, **kwargs):
+        """Retry wrapper with exponential backoff for transient Bybit errors.
+
+        Args:
+            func: Synchronous pybit method to call.
+
+        Returns: API response dict.
+
+        Raises: Exception on fatal errors or after max retries.
+        """
+        last_error = None
+        for attempt in range(_MAX_RETRIES):
+            try:
+                async with self._semaphore:
+                    await self._throttle()
+                    resp = await asyncio.to_thread(func, *args, **kwargs)
+
+                ret_code = resp.get("retCode", 0)
+
+                if ret_code == 0:
+                    self._record_success("bybit")
+                    return resp
+
+                if ret_code in _FATAL_CODES:
+                    raise Exception(f"Bybit fatal error ({ret_code}): {resp.get('retMsg')}")
+
+                if ret_code in _RETRYABLE_CODES:
+                    last_error = f"Bybit retryable ({ret_code}): {resp.get('retMsg')}"
+                    if attempt < _MAX_RETRIES - 1:
+                        delay = _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)]
+                        logger.warning("bybit_retry", attempt=attempt + 1, delay=delay, error=last_error)
+                        await asyncio.sleep(delay)
+                        continue
+
+                # Unknown error code — don't retry
+                raise Exception(f"Bybit API error ({ret_code}): {resp.get('retMsg')}")
+
+            except Exception as e:
+                if "Bybit" in str(e) and ("fatal" in str(e).lower() or "API error" in str(e)):
+                    raise
+                last_error = str(e)
+                if attempt < _MAX_RETRIES - 1:
+                    delay = _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)]
+                    logger.warning("bybit_retry", attempt=attempt + 1, delay=delay, error=last_error)
+                    await asyncio.sleep(delay)
+
+        self._record_failure("bybit")
+        raise Exception(f"Bybit max retries exceeded: {last_error}")
 
     # --- Data Methods ---
 
@@ -116,7 +168,7 @@ class BybitClient:
 
         try:
             async with self._semaphore:
-                self._throttle()
+                await self._throttle()
                 resp = await asyncio.to_thread(
                     self._http_client.get_tickers,
                     category="linear",
@@ -172,7 +224,7 @@ class BybitClient:
         try:
             bybit_interval = _INTERVAL_MAP.get(interval, "D")
             async with self._semaphore:
-                self._throttle()
+                await self._throttle()
                 resp = await asyncio.to_thread(
                     self._http_client.get_kline,
                     category="linear",
@@ -208,7 +260,7 @@ class BybitClient:
         """Get current funding rate for a perpetual symbol."""
         try:
             async with self._semaphore:
-                self._throttle()
+                await self._throttle()
                 resp = await asyncio.to_thread(
                     self._http_client.get_funding_rate_history,
                     category="linear",
@@ -235,11 +287,50 @@ class BybitClient:
             logger.error("bybit_funding_failed", symbol=symbol, error=str(e))
             return {"symbol": symbol, "funding_rate": 0, "error": str(e)}
 
+    async def get_funding_history(self, symbol: str, limit: int = 200, start_time: int | None = None) -> list[dict]:
+        """Get historical funding rate payments for a symbol.
+
+        Returns: list of {funding_rate, funding_fee, position_size, side, funded_at}
+        """
+        try:
+            params = {"category": "linear", "symbol": symbol, "limit": limit}
+            if start_time:
+                params["startTime"] = start_time
+
+            async with self._semaphore:
+                await self._throttle()
+                resp = await asyncio.to_thread(
+                    self._http_client.get_funding_history,
+                    **params,
+                )
+
+            if resp.get("retCode") != 0:
+                raise Exception(f"Bybit API error: {resp.get('retMsg')}")
+
+            records = []
+            for item in resp.get("result", {}).get("list", []):
+                records.append({
+                    "symbol": symbol,
+                    "funding_rate": _safe_float(item.get("fundingRate", 0)),
+                    "funding_fee": _safe_float(item.get("fundingFee", 0)),
+                    "position_size": _safe_float(item.get("size", 0)),
+                    "side": item.get("side", ""),
+                    "funded_at": datetime.fromtimestamp(
+                        int(item.get("fundingRateTimestamp", 0)) / 1000, tz=timezone.utc
+                    ).isoformat(),
+                })
+
+            return records
+
+        except Exception as e:
+            logger.error("bybit_funding_history_failed", symbol=symbol, error=str(e))
+            return []
+
     async def get_open_interest(self, symbol: str) -> dict:
         """Get open interest for a perpetual symbol."""
         try:
             async with self._semaphore:
-                self._throttle()
+                await self._throttle()
                 resp = await asyncio.to_thread(
                     self._http_client.get_open_interest,
                     category="linear",
@@ -270,7 +361,7 @@ class BybitClient:
         """Get L2 orderbook for a perpetual symbol."""
         try:
             async with self._semaphore:
-                self._throttle()
+                await self._throttle()
                 resp = await asyncio.to_thread(
                     self._http_client.get_orderbook,
                     category="linear",
@@ -338,7 +429,7 @@ class BybitClient:
                 params["timeInForce"] = "IOC"
 
             async with self._semaphore:
-                self._throttle()
+                await self._throttle()
                 resp = await asyncio.to_thread(
                     self._http_client.place_order,
                     **params,
@@ -367,7 +458,7 @@ class BybitClient:
         """Cancel an open order."""
         try:
             async with self._semaphore:
-                self._throttle()
+                await self._throttle()
                 resp = await asyncio.to_thread(
                     self._http_client.cancel_order,
                     category="linear",
@@ -392,7 +483,7 @@ class BybitClient:
                 params["symbol"] = symbol
 
             async with self._semaphore:
-                self._throttle()
+                await self._throttle()
                 resp = await asyncio.to_thread(
                     self._http_client.get_positions,
                     **params,
@@ -417,8 +508,11 @@ class BybitClient:
                     "unrealized_pnl": _safe_float(p.get("unrealisedPnl", 0)),
                     "leverage": _safe_float(p.get("leverage", 1)),
                     "margin": _safe_float(p.get("positionIM", 0)),
+                    "liquidation_price": _safe_float(p.get("liqPrice", 0)) or None,
                     "stop_loss": _safe_float(p.get("stopLoss", 0)) or None,
                     "take_profit": _safe_float(p.get("takeProfit", 0)) or None,
+                    "funding_fee": _safe_float(p.get("curRealisedPnl", 0)),
+                    "position_idx": p.get("positionIdx", 0),
                 })
 
             return positions
@@ -431,7 +525,7 @@ class BybitClient:
         """Set stop-loss on an existing position."""
         try:
             async with self._semaphore:
-                self._throttle()
+                await self._throttle()
                 resp = await asyncio.to_thread(
                     self._http_client.set_trading_stop,
                     category="linear",
@@ -455,7 +549,7 @@ class BybitClient:
         """Set take-profit on an existing position."""
         try:
             async with self._semaphore:
-                self._throttle()
+                await self._throttle()
                 resp = await asyncio.to_thread(
                     self._http_client.set_trading_stop,
                     category="linear",
@@ -479,7 +573,7 @@ class BybitClient:
         """Query order status by ID. Used by SOR to verify fills."""
         try:
             async with self._semaphore:
-                self._throttle()
+                await self._throttle()
                 resp = await asyncio.to_thread(
                     self._http_client.get_order_history,
                     category="linear",
@@ -510,7 +604,7 @@ class BybitClient:
         """Get wallet balance. coin=None fetches all coins; pass 'USDT' for USDT-only."""
         try:
             async with self._semaphore:
-                self._throttle()
+                await self._throttle()
                 params = {"accountType": "UNIFIED"}
                 if coin:
                     params["coin"] = coin
@@ -559,7 +653,7 @@ class BybitClient:
         """Validate API key by querying user info."""
         try:
             async with self._semaphore:
-                self._throttle()
+                await self._throttle()
                 resp = await asyncio.to_thread(
                     self._http_client.get_api_key_information,
                 )

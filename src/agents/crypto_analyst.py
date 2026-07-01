@@ -2,11 +2,13 @@
 
 Single agent per the existing pattern (like USAnalyst).
 Strategy: Trend + Funding Rate + OI convergence.
+Uses deterministic TA tools (RSI, BB, MACD, ATR) — LLM calls tools, not raw math.
 """
 
 from typing import Any
 
 from src.agents.base import BaseAgent
+from src.advisory.crypto_technicals import calculate_rsi, calculate_bollinger, calculate_ema, calculate_macd, calculate_atr, full_analysis
 from src.data.mcp_client import MCPClient
 from src.utils.rate_limit import RateLimiter
 
@@ -98,15 +100,54 @@ If criteria not met, return confidence_score < 50 with null prices."""
             },
         },
         {
-            "name": "get_ema",
-            "description": "Get EMA value for a crypto perpetual at a given period.",
+            "name": "get_crypto_rsi",
+            "description": "Get RSI (Relative Strength Index). RSI > 70 = overbought, RSI < 30 = oversold. Use for entry timing.",
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "ticker": {"type": "string"},
-                    "period": {"type": "integer"},
+                    "period": {"type": "integer", "default": 14},
                 },
-                "required": ["ticker", "period"],
+                "required": ["ticker"],
+            },
+        },
+        {
+            "name": "get_crypto_bollinger",
+            "description": "Get Bollinger Bands. %B > 1 = above upper band (overbought), %B < 0 = below lower (oversold). Bandwidth = volatility.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "ticker": {"type": "string"},
+                    "period": {"type": "integer", "default": 20},
+                },
+                "required": ["ticker"],
+            },
+        },
+        {
+            "name": "get_crypto_macd",
+            "description": "Get MACD. Bullish cross = buy signal, bearish cross = sell signal. Histogram = momentum strength.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"ticker": {"type": "string"}},
+                "required": ["ticker"],
+            },
+        },
+        {
+            "name": "get_crypto_atr",
+            "description": "Get ATR (Average True Range) for volatility and stop-loss sizing. ATR% > 3 = high volatility.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"ticker": {"type": "string"}},
+                "required": ["ticker"],
+            },
+        },
+        {
+            "name": "get_crypto_full_analysis",
+            "description": "Get all indicators at once: RSI, Bollinger, EMA20, EMA50, MACD, ATR. Use for comprehensive analysis.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"ticker": {"type": "string"}},
+                "required": ["ticker"],
             },
         },
     ]
@@ -123,6 +164,8 @@ If criteria not met, return confidence_score < 50 with null prices."""
 
     async def _handle_tool_call(self, tool_name: str, tool_input: dict) -> Any:
         ticker = tool_input.get("ticker", "")
+
+        # Data tools
         if tool_name == "get_crypto_quote":
             return await self.mcp.get_quote(ticker, "CRYPTO")
         elif tool_name == "get_crypto_ohlcv":
@@ -131,8 +174,25 @@ If criteria not met, return confidence_score < 50 with null prices."""
             return await self.mcp.get_funding_rate(ticker)
         elif tool_name == "get_open_interest":
             return await self.mcp.get_open_interest(ticker)
-        elif tool_name == "get_ema":
-            return {"value": await self.mcp.get_ema(ticker, "CRYPTO", tool_input["period"])}
+
+        # Deterministic TA tools — compute from OHLCV, no LLM math
+        elif tool_name in ("get_crypto_rsi", "get_crypto_bollinger", "get_crypto_macd",
+                           "get_crypto_atr", "get_crypto_full_analysis"):
+            ohlcv = await self.mcp.get_ohlcv(ticker, "CRYPTO", timeframe="4h", limit=200)
+            if not ohlcv:
+                return {"error": f"No OHLCV data for {ticker}"}
+
+            if tool_name == "get_crypto_rsi":
+                return calculate_rsi(ohlcv, tool_input.get("period", 14))
+            elif tool_name == "get_crypto_bollinger":
+                return calculate_bollinger(ohlcv, tool_input.get("period", 20))
+            elif tool_name == "get_crypto_macd":
+                return calculate_macd(ohlcv)
+            elif tool_name == "get_crypto_atr":
+                return calculate_atr(ohlcv)
+            elif tool_name == "get_crypto_full_analysis":
+                return full_analysis(ohlcv)
+
         return {"error": f"Unknown tool: {tool_name}"}
 
     def wipe_memory(self):

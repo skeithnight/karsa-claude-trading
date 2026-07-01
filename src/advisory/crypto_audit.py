@@ -99,10 +99,11 @@ class CryptoAuditMetrics:
             by_ticker[tk]["pnl_usd"] += t["pnl_usd"]
             by_ticker[tk]["pnl_pct"] += t["pnl_pct"]
 
-        # By direction
+        # By direction (normalize Buy/Sell → LONG/SHORT)
+        _dir_map = {"Buy": "LONG", "Sell": "SHORT"}
         by_direction = {}
         for t in trades:
-            d = t["side"]
+            d = _dir_map.get(t["side"], t["side"])
             if d not in by_direction:
                 by_direction[d] = {"wins": 0, "losses": 0, "count": 0}
             by_direction[d]["count"] += 1

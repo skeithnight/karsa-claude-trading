@@ -205,3 +205,88 @@ class PendingApproval(Base):
     __table_args__ = (
         CheckConstraint("status IN ('WAITING', 'APPROVED', 'REJECTED', 'MODIFIED', 'EXPIRED')", name="ck_approval_status"),
     )
+
+
+# --- Crypto-specific tables ---
+
+class CryptoPosition(Base):
+    """Local mirror of Bybit perpetual positions — survives API outages."""
+    __tablename__ = "crypto_positions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    ticker: Mapped[str] = mapped_column(String(20), nullable=False)
+    side: Mapped[str] = mapped_column(String(10), nullable=False)
+    size: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    entry_price: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    current_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    leverage: Mapped[int] = mapped_column(Integer, default=1)
+    margin_mode: Mapped[str] = mapped_column(String(10), default="isolated")
+    liquidation_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    unrealized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    funding_cost_cumulative: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0)
+    stop_loss: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    take_profit: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    exchange_position_id: Mapped[str | None] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(20), default="OPEN")
+    opened_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        CheckConstraint("side IN ('Buy', 'Sell')", name="ck_crypto_pos_side"),
+        CheckConstraint("status IN ('OPEN', 'CLOSED', 'LIQUIDATED')", name="ck_crypto_pos_status"),
+        CheckConstraint("leverage >= 1 AND leverage <= 100", name="ck_crypto_pos_leverage"),
+    )
+
+
+class CryptoFundingPayment(Base):
+    """Funding payment log — tracks 8-hour funding costs."""
+    __tablename__ = "crypto_funding_payments"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    ticker: Mapped[str] = mapped_column(String(20), nullable=False)
+    funding_rate: Mapped[Decimal] = mapped_column(Numeric(12, 8), nullable=False)
+    funding_fee: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    position_size: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    side: Mapped[str] = mapped_column(String(10), nullable=False)
+    funded_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("ticker", "funded_at", name="uq_crypto_funding_ticker_time"),
+    )
+
+
+class CryptoRegimeHistory(Base):
+    """Regime transition log for analysis."""
+    __tablename__ = "crypto_regime_history"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    regime: Mapped[str] = mapped_column(String(20), nullable=False)
+    hurst: Mapped[Decimal | None] = mapped_column(Numeric(4, 3))
+    adx: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
+    volatility_regime: Mapped[str | None] = mapped_column(String(20))
+    btc_dominance: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+    size_multiplier: Mapped[Decimal | None] = mapped_column(Numeric(3, 2))
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        CheckConstraint(
+            "regime IN ('TREND_BULL', 'TREND_BEAR', 'MEAN_REVERSION', 'CHOP', 'UNKNOWN')",
+            name="ck_crypto_regime"
+        ),
+    )
+
+
+class CryptoPnLSnapshot(Base):
+    """Daily PnL snapshots."""
+    __tablename__ = "crypto_pnl_snapshots"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    snapshot_date: Mapped[datetime] = mapped_column(DateTime, nullable=False, unique=True)
+    realized_pnl: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0)
+    unrealized_pnl: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0)
+    funding_costs: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0)
+    total_pnl: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0)
+    equity: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0)
+    open_positions: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
