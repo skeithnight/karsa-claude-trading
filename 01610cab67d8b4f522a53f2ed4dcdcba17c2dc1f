@@ -1,0 +1,25 @@
+CLAUDE.md
+  e46ca6d1f0562708 7,141,143,147,153,157,169,181,194-209,223
+AGENTS.md
+  e46ca6d1f0562708 6,30-40,44,49-57,70-81,85-88
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "01610cab67d8b4f522a53f2ed4dcdcba17c2dc1f",
+  "prompts": {
+    "e46ca6d1f0562708": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "83091ed5-e64d-4b22-b39b-6b2d5509409c",
+        "model": "<synthetic>"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 64,
+      "total_deletions": 10,
+      "accepted_lines": 64,
+      "overriden_lines": 0
+    }
+  }
+}
