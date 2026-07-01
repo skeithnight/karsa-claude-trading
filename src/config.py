@@ -97,7 +97,12 @@ class Settings(BaseSettings):
     def redis_rate_limit_key(self) -> str:
         return f"{self.REDIS_PREFIX}:ratelimit"
 
-    model_config = {"populate_by_name": True, "env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {
+        "populate_by_name": True,
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "extra": "ignore"
+    }
 
 
 # Global settings instance

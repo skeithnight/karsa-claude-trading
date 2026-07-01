@@ -10,7 +10,9 @@ from src.risk.crypto_risk_manager import (
 
 @pytest.fixture
 def risk_mgr():
-    return CryptoRiskManager(mcp=AsyncMock())
+    mock_redis = AsyncMock()
+    mock_redis.get.return_value = None
+    return CryptoRiskManager(mcp=AsyncMock(), redis_client=mock_redis)
 
 
 @pytest.fixture
@@ -84,7 +86,7 @@ class TestLiquidationProximity:
         assert result["should_close"] is True
 
     def test_short_safe(self, risk_mgr):
-        pos = {"liquidation_price": 75000, "current_price": 65000, "entry_price": 65000, "side": "Sell"}
+        pos = {"liquidation_price": 80000, "current_price": 65000, "entry_price": 65000, "side": "Sell"}
         assert risk_mgr.check_liquidation_proximity(pos)["level"] == "safe"
 
     def test_missing_data(self, risk_mgr):

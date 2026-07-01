@@ -427,22 +427,25 @@ class Orchestrator:
         """Send Telegram notification for an executed crypto trade."""
         try:
             import httpx
-            direction = signal.get("direction", "?")
+            from src.utils.trader_format import signal_card
+            
             ticker = signal.get("ticker", "?")
-            emoji = "🟢" if direction == "LONG" else "🔴"
-            msg = (
-                f"{emoji} <b>CRYPTO AUTO-TRADE</b>\n"
-                f"━━━━━━━━━━━━━━━━\n"
-                f"Ticker  : {ticker}\n"
-                f"Side    : {direction}\n"
-                f"Entry   : {signal.get('fill_price', 0):,.4f}\n"
-                f"Qty     : {risk_result.get('qty', 0)}\n"
-                f"Stop    : {risk_result.get('stop_loss', 0):,.4f}\n"
-                f"Target  : {risk_result.get('take_profit', 0):,.4f}\n"
-                f"Risk    : ${risk_result.get('risk_amount', 0):,.2f} ({risk_result.get('risk_pct', 0):.1f}%)\n"
-                f"Leverage: {risk_result.get('leverage', 1)}x\n"
-                f"Conf    : {signal.get('confidence_score', 0)}/100"
-            )
+            direction = signal.get("direction", "?")
+            confidence = float(signal.get("confidence_score", 0))
+            entry = float(signal.get("fill_price") or signal.get("entry_price") or 0.0)
+            sl = float(risk_result.get("stop_loss") or signal.get("stop_loss") or 0.0)
+            tp = float(risk_result.get("take_profit") or signal.get("take_profit") or 0.0)
+            reasoning = signal.get("reasoning", "No thesis provided.")
+
+            msg = str(signal_card(
+                ticker=ticker,
+                direction=direction,
+                confidence=confidence,
+                entry=entry,
+                sl=sl,
+                tp=tp,
+                reasoning=reasoning
+            ))
             # Use the main telegram bot token (not crypto bot) for unified notifications
             token = settings.TELEGRAM_TOKEN or settings.CRYPTO_TELEGRAM_TOKEN
             if token and settings.TELEGRAM_CHAT_ID:
