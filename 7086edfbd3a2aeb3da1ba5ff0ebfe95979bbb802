@@ -1,0 +1,128 @@
+src/bot/crypto_handlers.py
+  1878d7742aa0d602 3,66-84,743-758,934-940,944-946,1193-1729
+  82edbcee9e86878c 978,980-986,991,994-1028
+  e46ca6d1f0562708 1086,1093-1097,1099,1103-1109,1111-1112,1114
+  cbba113147f53ed4 1824-2112
+src/agents/crypto_auditor.py
+  1878d7742aa0d602 7-8,98-103,111-112,118,128-134,137-139,181-222
+src/advisory/strategy_selector.py
+  1878d7742aa0d602 1-130
+src/risk/position_manager.py
+  cbba113147f53ed4 1-242
+db/migrations/add_crypto_lifecycle_tables.sql
+  cbba113147f53ed4 1-66
+src/risk/liquidity.py
+  cbba113147f53ed4 1-216
+.env.example
+  82edbcee9e86878c 71
+src/models/tables.py
+  cbba113147f53ed4 234-242,304-364
+  1878d7742aa0d602 302-303,365-410
+db/init.sql
+  82edbcee9e86878c 226-341
+  1878d7742aa0d602 187-225
+  cbba113147f53ed4 7,33,52,74,92,103
+src/risk/trailing_stop.py
+  cbba113147f53ed4 1-248
+src/main.py
+  cbba113147f53ed4 251-301,635-731,735-738,740-794,798-802,804-809,816-833,837-840,842-849
+  82edbcee9e86878c 394-395,400,496,501,733-734,739,796-797,803,835-836,841
+src/agents/crypto_analyst.py
+  1878d7742aa0d602 3-4,12,17-19,21-29,35,38,41,48-49,52-67,69-76,171-173,177,182-205
+tests/test_risk/test_liquidity.py
+  cbba113147f53ed4 1-147
+src/bot/crypto_main.py
+  cbba113147f53ed4 28-30,85-92
+  1878d7742aa0d602 22-27,72-84
+tests/test_risk/test_trailing_stop.py
+  cbba113147f53ed4 1-143
+src/utils/trader_format.py
+  e46ca6d1f0562708 8-10,12-14
+src/agents/base.py
+  1878d7742aa0d602 22-24,44,55,59-62,142-143,156-161,164-165,202-224
+tests/test_risk/test_circuit_breaker.py
+  cbba113147f53ed4 1-230
+tests/test_risk/test_position_sync.py
+  cbba113147f53ed4 1-57
+src/agents/orchestrator.py
+  1878d7742aa0d602 174-180,244-246,255-258,592-593,602-630
+  82edbcee9e86878c 201,204-205,207-208,500-501,505,685
+  cbba113147f53ed4 6,428-451,457,462-469
+src/advisory/crypto_audit.py
+  1878d7742aa0d602 5-6,11,130-222,243-249
+  82edbcee9e86878c 26
+src/risk/position_sync.py
+  cbba113147f53ed4 1-530
+src/risk/circuit_breaker.py
+  cbba113147f53ed4 1-267
+db/migrations/add_adaptive_research_tables.sql
+  1878d7742aa0d602 1-48
+src/config.py
+  82edbcee9e86878c 38
+src/advisory/performance_tracker.py
+  1878d7742aa0d602 1-21,23-72,74-112,114-154
+  82edbcee9e86878c 22,73,113
+tests/test_risk/test_position_manager.py
+  cbba113147f53ed4 1-184
+src/backtest/engine.py
+  1878d7742aa0d602 10-11,15,19,166-477
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "7086edfbd3a2aeb3da1ba5ff0ebfe95979bbb802",
+  "prompts": {
+    "1878d7742aa0d602": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "76754aed-01b5-472e-93ab-97ed468818c8",
+        "model": "gemini-pro-default"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 1672,
+      "total_deletions": 53,
+      "accepted_lines": 1663,
+      "overriden_lines": 0
+    },
+    "82edbcee9e86878c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bb79aedb-7ea8-4ee5-9796-eb4106d2fbb8",
+        "model": "<synthetic>"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 191,
+      "total_deletions": 65,
+      "accepted_lines": 191,
+      "overriden_lines": 0
+    },
+    "cbba113147f53ed4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2c24c774-f061-4997-9c30-55f3d37995a5",
+        "model": "<synthetic>"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 3015,
+      "total_deletions": 25,
+      "accepted_lines": 2988,
+      "overriden_lines": 3
+    },
+    "e46ca6d1f0562708": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "83091ed5-e64d-4b22-b39b-6b2d5509409c",
+        "model": "<synthetic>"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 24,
+      "total_deletions": 27,
+      "accepted_lines": 24,
+      "overriden_lines": 0
+    }
+  }
+}
