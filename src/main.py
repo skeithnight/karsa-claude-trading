@@ -226,6 +226,27 @@ class KarsaApp:
                 id="crypto_monitor", name="Crypto Position Monitor",
                 replace_existing=True, misfire_grace_time=120,
             )
+            # Sync funding rates at 00:00, 08:00, 16:00 UTC (Bybit funding times)
+            s.add_job(
+                self._job_sync_crypto_funding,
+                "cron", hour="0,8,16", minute=5,
+                id="crypto_funding", name="Crypto Funding Rate Sync",
+                replace_existing=True, misfire_grace_time=300,
+            )
+            # Daily PnL snapshot at midnight UTC
+            s.add_job(
+                self._job_crypto_pnl_snapshot,
+                "cron", hour=0, minute=0,
+                id="crypto_pnl_snapshot", name="Crypto Daily PnL Snapshot",
+                replace_existing=True, misfire_grace_time=600,
+            )
+            # Sync Bybit positions to local DB every 5 minutes
+            s.add_job(
+                self._job_sync_crypto_positions,
+                "cron", minute="*/5",
+                id="crypto_position_sync", name="Crypto Position Sync",
+                replace_existing=True, misfire_grace_time=120,
+            )
 
         logger.info("jobs_registered", count=len(self.scheduler.get_jobs()))
 
@@ -306,10 +327,10 @@ class KarsaApp:
                         paper_pos.unrealized_pnl = pos.get("unrealized_pnl", 0)
                         paper_pos.unrealized_pnl_pct = pnl_pct
 
-                    # Alert on significant moves
-                    if pnl_pct <= -0.5:
+                    # Alert on significant moves (thresholds account for leverage noise)
+                    if pnl_pct <= -2.0:
                         alerts.append(f"⚠️ {symbol}: {pnl_pct:+.1f}% (${pos.get('unrealized_pnl', 0):+,.2f})")
-                    elif pnl_pct >= 2.0:
+                    elif pnl_pct >= 5.0:
                         alerts.append(f"🟢 {symbol}: {pnl_pct:+.1f}% consider taking profit")
 
                 await session.commit()
@@ -349,11 +370,14 @@ class KarsaApp:
                     if quote and not quote.get("error"):
                         pos.current_price = quote.get("price")
                         if pos.entry_price and pos.current_price:
+                            curr_p = float(pos.current_price)
+                            entry_p = float(pos.entry_price)
+                            qty = float(pos.quantity)
                             if pos.side == "LONG":
-                                pos.unrealized_pnl = (pos.current_price - pos.entry_price) * pos.quantity
+                                pos.unrealized_pnl = (curr_p - entry_p) * qty
                             else:
-                                pos.unrealized_pnl = (pos.entry_price - pos.current_price) * pos.quantity
-                            pos.unrealized_pnl_pct = (pos.unrealized_pnl / (pos.entry_price * pos.quantity)) * 100
+                                pos.unrealized_pnl = (entry_p - curr_p) * qty
+                            pos.unrealized_pnl_pct = (float(pos.unrealized_pnl) / (entry_p * qty)) * 100
 
                 port_result = await session.execute(select(PortfolioState))
                 portfolio = port_result.scalars().all()
@@ -363,7 +387,10 @@ class KarsaApp:
                     if quote and not quote.get("error"):
                         p.current_price = quote.get("price")
                         if p.avg_cost and p.current_price:
-                            p.unrealized_pnl = (p.current_price - p.avg_cost) * p.quantity
+                            curr_p = float(p.current_price)
+                            avg_c = float(p.avg_cost)
+                            qty = float(p.quantity)
+                            p.unrealized_pnl = (curr_p - avg_c) * qty
 
                 await session.commit()
             logger.info("price_update_done", paper=len(positions), portfolio=len(portfolio))
@@ -403,7 +430,7 @@ class KarsaApp:
                 )
                 daily_pnl_pct = result.scalar() or 0.0
 
-                if daily_pnl_pct <= -1.5:
+                if daily_pnl_pct <= -settings.CRYPTO_DAILY_LOSS_LIMIT_PCT:
                     activated = await emergency.activate(
                         reason=f"Daily loss limit breached: {daily_pnl_pct:+.2f}%",
                         operator="system-kill-switch",
@@ -431,6 +458,125 @@ class KarsaApp:
                             logger.error("kill_switch_telegram_failed", error=str(e))
         except Exception as e:
             logger.error("kill_switch_failed", error=str(e))
+
+    async def _job_sync_crypto_funding(self):
+        """Sync funding rate history from Bybit to DB."""
+        try:
+            bybit = self.mcp._get_bybit()
+            from src.risk.funding_tracker import FundingTracker
+            from src.models.tables import CryptoFundingPayment
+
+            tracker = FundingTracker(bybit)
+            async with async_session() as session:
+                for symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+                               "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT"]:
+                    records = await tracker.sync_funding_from_exchange(symbol)
+                    for rec in records[-3:]:  # last 3 payments (24h)
+                        from sqlalchemy import select
+                        existing = await session.execute(
+                            select(CryptoFundingPayment).where(
+                                CryptoFundingPayment.ticker == symbol,
+                                CryptoFundingPayment.funded_at == rec["funded_at"],
+                            )
+                        )
+                        if existing.scalar_one_or_none() is None:
+                            session.add(CryptoFundingPayment(
+                                ticker=symbol,
+                                funding_rate=rec["funding_rate"],
+                                funding_fee=rec["funding_fee"],
+                                position_size=rec["position_size"],
+                                side=rec["side"],
+                                funded_at=rec["funded_at"],
+                            ))
+                await session.commit()
+            logger.info("crypto_funding_sync_done")
+        except Exception as e:
+            logger.error("crypto_funding_sync_failed", error=str(e))
+
+    async def _job_crypto_pnl_snapshot(self):
+        """Take daily PnL snapshot and persist to DB."""
+        try:
+            bybit = self.mcp._get_bybit()
+            from src.models.tables import CryptoPnLSnapshot, ClosedPaperTrade, PaperPosition
+
+            wallet = await bybit.get_wallet_balance()
+            positions = await bybit.get_positions()
+            unrealized = sum(p.get("unrealized_pnl", 0) for p in positions)
+
+            async with async_session() as session:
+                from sqlalchemy import select, func, cast, Date
+                from datetime import datetime, timezone
+                today = datetime.now(timezone.utc).date()
+                realized_result = await session.execute(
+                    select(func.sum(ClosedPaperTrade.realized_pnl))
+                    .where(
+                        ClosedPaperTrade.market == "CRYPTO",
+                        cast(ClosedPaperTrade.exit_date, Date) == today,
+                    )
+                )
+                realized = realized_result.scalar() or 0
+
+                funding_result = await session.execute(
+                    select(func.sum(CryptoPnLSnapshot.funding_costs))
+                    .where(cast(CryptoPnLSnapshot.snapshot_date, Date) == today)
+                )
+                funding = funding_result.scalar() or 0
+
+                session.add(CryptoPnLSnapshot(
+                    snapshot_date=datetime.now(timezone.utc),
+                    realized_pnl=realized,
+                    unrealized_pnl=unrealized,
+                    funding_costs=funding,
+                    total_pnl=float(realized) + unrealized - float(funding),
+                    equity=wallet.get("balance", 0),
+                    open_positions=len(positions),
+                ))
+                await session.commit()
+            logger.info("crypto_pnl_snapshot_done", equity=wallet.get("balance", 0))
+        except Exception as e:
+            logger.error("crypto_pnl_snapshot_failed", error=str(e))
+
+    async def _job_sync_crypto_positions(self):
+        """Sync Bybit positions to local CryptoPosition table."""
+        try:
+            from datetime import datetime as dt
+            bybit = self.mcp._get_bybit()
+            from src.models.tables import CryptoPosition
+
+            positions = await bybit.get_positions()
+            async with async_session() as session:
+                from sqlalchemy import select
+                for pos in positions:
+                    symbol = pos.get("symbol", "")
+                    existing = await session.execute(
+                        select(CryptoPosition).where(
+                            CryptoPosition.ticker == symbol,
+                            CryptoPosition.status == "OPEN",
+                        )
+                    )
+                    local_pos = existing.scalar_one_or_none()
+                    if local_pos:
+                        local_pos.current_price = pos.get("current_price")
+                        local_pos.unrealized_pnl = pos.get("unrealized_pnl")
+                        local_pos.liquidation_price = pos.get("liquidation_price")
+                        local_pos.last_synced_at = dt.utcnow()
+                    else:
+                        session.add(CryptoPosition(
+                            ticker=symbol,
+                            side=pos.get("side", "Buy"),
+                            size=pos.get("size", 0),
+                            entry_price=pos.get("entry_price", 0),
+                            current_price=pos.get("current_price"),
+                            leverage=int(pos.get("leverage", 1)),
+                            liquidation_price=pos.get("liquidation_price"),
+                            unrealized_pnl=pos.get("unrealized_pnl"),
+                            stop_loss=pos.get("stop_loss"),
+                            take_profit=pos.get("take_profit"),
+                        ))
+                await session.commit()
+            logger.info("crypto_position_sync_done", count=len(positions))
+        except Exception as e:
+            logger.error("crypto_position_sync_failed", error=str(e))
 
     async def _job_flush_cache(self):
         """Flush cached OHLCV data from Redis to Postgres."""

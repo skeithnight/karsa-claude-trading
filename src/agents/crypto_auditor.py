@@ -2,13 +2,85 @@
 
 Reviews trading performance metrics and generates actionable recommendations.
 No tools — receives pre-computed metrics from CryptoAuditMetrics, returns text analysis.
+
+Deterministic pre-filter: rejects obviously bad signals before LLM call to save cost.
 """
 
 from src.agents.base import BaseAgent
+from src.advisory.crypto_technicals import calculate_rsi
 from src.data.mcp_client import MCPClient
 from src.utils.logging import get_logger
 
 logger = get_logger("crypto_auditor")
+
+
+# --- Deterministic Pre-Filter ---
+
+_PREFILTER_RULES = [
+    {
+        "name": "extreme_rsi_long",
+        "desc": "RSI > 85 — overbought, reject LONG",
+        "check": lambda signal, rsi: signal.get("direction") == "LONG" and rsi > 85,
+    },
+    {
+        "name": "extreme_rsi_short",
+        "desc": "RSI < 15 — oversold, reject SHORT",
+        "check": lambda signal, rsi: signal.get("direction") == "SHORT" and rsi < 15,
+    },
+]
+
+
+async def prefilter_signal(signal: dict, mcp: MCPClient) -> dict:
+    """Run deterministic checks before LLM auditor. Reject obviously bad signals.
+
+    Returns: {"pass": bool, "reason": str, "checks": list}
+    """
+    ticker = signal.get("ticker", "")
+    direction = signal.get("direction", "")
+    checks = []
+
+    # Check RSI
+    try:
+        ohlcv = await mcp.get_ohlcv(ticker, "CRYPTO", timeframe="4h", limit=30)
+        if ohlcv and len(ohlcv) >= 15:
+            rsi_data = calculate_rsi(ohlcv, 14)
+            rsi = rsi_data.get("rsi", 50)
+            checks.append({"name": "rsi", "value": rsi, "signal": rsi_data.get("signal")})
+
+            for rule in _PREFILTER_RULES:
+                if rule["check"](signal, rsi):
+                    return {
+                        "pass": False,
+                        "reason": f"Pre-filter rejected: {rule['desc']} (RSI={rsi})",
+                        "checks": checks,
+                    }
+    except Exception as e:
+        logger.warning("prefilter_rsi_failed", error=str(e))
+        checks.append({"name": "rsi", "error": str(e)})
+
+    # Check funding rate (reject LONG if funding > 0.1% — crowded long)
+    try:
+        funding = await mcp.get_funding_rate(ticker)
+        rate = funding.get("funding_rate", 0)
+        checks.append({"name": "funding_rate", "value": rate})
+
+        if direction == "LONG" and rate > 0.001:
+            return {
+                "pass": False,
+                "reason": f"Pre-filter rejected: funding rate {rate*100:.3f}% too high for LONG (crowded long)",
+                "checks": checks,
+            }
+        elif direction == "SHORT" and rate < -0.001:
+            return {
+                "pass": False,
+                "reason": f"Pre-filter rejected: funding rate {rate*100:.3f}% too negative for SHORT (crowded short)",
+                "checks": checks,
+            }
+    except Exception as e:
+        logger.warning("prefilter_funding_failed", error=str(e))
+        checks.append({"name": "funding_rate", "error": str(e)})
+
+    return {"pass": True, "reason": "All pre-filter checks passed", "checks": checks}
 
 
 class CryptoAuditorAgent(BaseAgent):

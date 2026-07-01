@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     CRYPTO_MAX_POSITION_PCT: float = 10.0
     CRYPTO_MAX_CONCURRENT_POSITIONS: int = 5
     CRYPTO_DAILY_LOSS_LIMIT_PCT: float = 3.0
+    CRYPTO_MAX_LEVERAGE: int = 10
+    CRYPTO_FUNDING_ALERT_THRESHOLD: float = 0.05
+    CRYPTO_LIQUIDATION_WARN_PCT: float = 20.0
+    CRYPTO_LIQUIDATION_ALERT_PCT: float = 10.0
+    CRYPTO_LIQUIDATION_FORCE_CLOSE_PCT: float = 5.0
 
     # Trading Safety Gate
     TRADING_MODE: str = "paper"  # "paper" | "live"

@@ -91,6 +91,13 @@ services:
     image: caomingjun/warp
     container_name: karsa-warp
     restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=0
+      - net.ipv4.conf.all.src_valid_mark=1
     networks: [trading-net]
     ports:
       - "127.0.0.1:1080:1080"  # SOCKS5 proxy port
@@ -122,7 +129,7 @@ services:
       - CRYPTO_MAX_CONCURRENT_POSITIONS=${CRYPTO_MAX_CONCURRENT_POSITIONS:-5}
       - CRYPTO_DAILY_LOSS_LIMIT_PCT=${CRYPTO_DAILY_LOSS_LIMIT_PCT:-3.0}
       - PORT=8444
-      - BYBIT_PROXY=socks5://warp:1080
+      - BYBIT_PROXY=socks5h://warp:1080
     depends_on:
       redis:
         condition: service_healthy

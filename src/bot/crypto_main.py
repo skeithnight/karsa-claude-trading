@@ -17,6 +17,7 @@ from src.bot.crypto_handlers import (
     start_cmd, status_cmd, portfolio_cmd, scan_cmd, pnl_cmd,
     risk_cmd, kill_cmd, sellall_cmd, resume_cmd, activity_cmd,
     audit_agent_cmd, button_callback,
+    guide_cmd, regime_cmd, funding_cmd, trades_cmd,
 )
 from src.data.cache import CacheManager
 from src.data.mcp_client import MCPClient
@@ -52,6 +53,10 @@ async def lifespan(app: FastAPI):
     telegram_app.add_handler(CommandHandler("resume", resume_cmd))
     telegram_app.add_handler(CommandHandler("activity", activity_cmd))
     telegram_app.add_handler(CommandHandler("audit_agent", audit_agent_cmd))
+    telegram_app.add_handler(CommandHandler("guide", guide_cmd))
+    telegram_app.add_handler(CommandHandler("regime", regime_cmd))
+    telegram_app.add_handler(CommandHandler("funding", funding_cmd))
+    telegram_app.add_handler(CommandHandler("trades", trades_cmd))
     telegram_app.add_handler(CallbackQueryHandler(button_callback))
 
     # Wire up orchestrator
@@ -61,6 +66,7 @@ async def lifespan(app: FastAPI):
     rl = RateLimiter(redis_client)
     orch = Orchestrator(mcp, cache, rl)
     telegram_app.bot_data["orchestrator"] = orch
+    telegram_app.bot_data["redis_client"] = redis_client
 
     await telegram_app.initialize()
     await telegram_app.start()

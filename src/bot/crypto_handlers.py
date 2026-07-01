@@ -16,11 +16,16 @@ def _get_bybit(context: ContextTypes.DEFAULT_TYPE):
     orch = context.bot_data.get("orchestrator")
     if orch:
         return orch.mcp._get_bybit()
-    # Fallback: create new
-    from src.data.mcp_client import MCPClient
-    from src.data.cache import CacheManager
-    r = redis.from_url(settings.REDIS_URL, decode_responses=True)
-    return MCPClient(CacheManager(r))._get_bybit()
+    raise RuntimeError("Orchestrator not connected — cannot access BybitClient")
+
+
+def _get_redis(context: ContextTypes.DEFAULT_TYPE):
+    """Get shared Redis client from bot_data (no connection leak)."""
+    client = context.bot_data.get("redis_client")
+    if client:
+        return client
+    # Fallback: create one (should not happen if crypto_main.py is used)
+    return redis.from_url(settings.REDIS_URL, decode_responses=True)
 
 
 def _is_authorized(update: Update) -> bool:
@@ -51,21 +56,26 @@ async def _reply(update: Update, content, **kwargs):
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
-    await _reply(update, fmt(
-        bold("🤖 Karsa Crypto Desk"), "\n\n",
+    from src.utils.telegram_helpers import build_nav_keyboard
+    text = fmt(
+        bold("🤖 Karsa Crypto Desk"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n",
         "Auto-executing crypto trading node on Bybit testnet.\n",
-        "Signals are auto-executed with 1% risk management.\n\n",
-        bold("Commands:"), "\n",
+        "Signals are auto-executed with 1% risk management.\n",
+        "Use ", code("/guide"), " for full walkthrough.\n\n",
+        bold("Quick Commands:"), "\n",
         code("/status"), " — System health & regime\n",
         code("/portfolio"), " — Open positions & P&L\n",
-        code("/scan [ticker]"), " — Scan + auto-execute\n",
+        code("/scan <ticker>"), " — Scan + auto-execute\n",
         code("/pnl"), " — Performance stats\n",
         code("/risk"), " — Risk state & limits\n",
         code("/kill"), " — Emergency halt + flatten\n",
-        code("/sellall"), " — Flatten + 15min cooldown\n",
-        code("/resume"), " — Resume after halt\n",
         code("/audit_agent"), " — Performance review & recommendations\n",
-    ))
+    )
+    keyboard = build_nav_keyboard([
+        [("📊 Status", "cmd_status"), ("💼 Portfolio", "cmd_portfolio")],
+        [("📖 Guide", "cmd_guide"), ("📋 Activity", "cmd_activity")],
+    ])
+    await _reply(update, text, reply_markup=keyboard)
 
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -77,10 +87,9 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     regime_state = "UNKNOWN"
     db_ok = False
 
+    r = _get_redis(context)
     try:
-        r = redis.from_url(settings.REDIS_URL, decode_responses=True)
         redis_ok = await r.ping()
-        await r.close()
     except Exception:
         pass
 
@@ -96,12 +105,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     wallet = {"balance": 0, "available": 0}
     api_key_valid = None
     try:
-        from src.data.mcp_client import MCPClient
-        from src.data.cache import CacheManager
-        r = redis.from_url(settings.REDIS_URL, decode_responses=True)
-        cache = CacheManager(r)
-        mcp = MCPClient(cache)
-        bybit = mcp._get_bybit()
+        bybit = _get_bybit(context)
         wallet = await bybit.get_wallet_balance()
         bybit_ok = not wallet.get("error")
 
@@ -109,18 +113,16 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         api_key_valid = await bybit.validate_api_key()
 
         from src.advisory.crypto_regime import CryptoRegimeFilter
-        regime_filter = CryptoRegimeFilter(mcp)
+        orch = context.bot_data.get("orchestrator")
+        regime_filter = CryptoRegimeFilter(orch.mcp)
         regime = await regime_filter.get_current_regime()
         regime_state = regime.get("state", "UNKNOWN")
-        await r.close()
     except Exception:
         pass
 
     halt_active = False
     try:
-        r = redis.from_url(settings.REDIS_URL, decode_responses=True)
         halt_active = bool(await r.get("karsa:global_halt"))
-        await r.close()
     except Exception:
         pass
 
@@ -154,12 +156,18 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             wallet_lines.append(f"{c['coin']:>6}  : {c['equity']:,.4f} (avail {c['available']:,.4f})")
     wallet_block = "\n".join(wallet_lines)
 
+    from src.utils.telegram_helpers import build_nav_keyboard
+    
     text = fmt(
-        bold("📊 CRYPTO STATUS"), "\n\n",
+        bold("📊 CRYPTO STATUS"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n",
         bold("System:"), "\n", pre(status_block), "\n\n",
         bold("Wallet:"), "\n", pre(wallet_block),
     )
-    await _reply(update, text)
+    keyboard = build_nav_keyboard([
+        [("💼 Portfolio", "cmd_portfolio"), ("🛡️ Risk", "cmd_risk")],
+        [("📋 Activity", "cmd_activity"), ("🔍 Scan", "cmd_scan")],
+    ])
+    await _reply(update, text, reply_markup=keyboard)
 
 
 async def portfolio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -194,8 +202,18 @@ async def portfolio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         table = format_pre_table(headers, rows, align_right=[2, 3, 4, 5])
         total_emoji = "🟢" if total_pnl >= 0 else "🔴"
-        text = fmt(bold("💼 CRYPTO PORTFOLIO"), "\n", pre(table), "\n\n", bold("Total uPnL:"), f" {total_emoji} ${total_pnl:+,.2f}")
-        await send_long_message(update, str(text))
+        from src.utils.telegram_helpers import build_nav_keyboard
+        
+        text = fmt(
+            bold("💼 CRYPTO PORTFOLIO"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n",
+            pre(table), "\n", 
+            bold("Total uPnL:"), f" {total_emoji} ${total_pnl:+,.2f}"
+        )
+        keyboard = build_nav_keyboard([
+            [("📊 P&L", "cmd_pnl"), ("🛡️ Risk", "cmd_risk")],
+            [("📋 Activity", "cmd_activity")],
+        ])
+        await send_long_message(update, str(text), reply_markup=keyboard)
     except Exception as e:
         logger.error("crypto_portfolio_failed", error=str(e))
         await _reply(update, "❌ Portfolio check failed.")
@@ -223,27 +241,32 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             direction = result.get("direction", "N/A")
             status = result.get("status", "SCANNED")
 
+            from src.utils.telegram_helpers import build_nav_keyboard
             if status == "EXECUTED":
                 text = fmt(
-                    bold("✅ AUTO-EXECUTED"), "\n",
-                    bold("Ticker:"), f" {ticker}\n", bold("Direction:"), f" {direction}\n",
+                    bold(f"✅ AUTO-EXECUTED: {ticker}"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n",
+                    bold("Direction:"), f" {direction}\n",
                     bold("Confidence:"), f" {conf}/100\n", bold("Fill:"), f" {result.get('fill_price', 'N/A')}\n",
                     bold("Stop:"), f" {result.get('stop_loss', 'N/A')}\n", bold("Target:"), f" {result.get('take_profit', 'N/A')}\n\n",
                     bold("📝 Reasoning:"), "\n", result.get("reasoning", ""),
                 )
             elif status == "REJECTED":
                 text = fmt(
-                    bold("⛔ REJECTED BY RISK"), "\n",
-                    bold("Ticker:"), f" {ticker}\n", bold("Reason:"), f" {result.get('rejection_reason', 'Unknown')}\n\n",
-                    bold("Confidence:"), f" {conf}/100", bold("Direction:"), f" {direction}",
+                    bold(f"⛔ REJECTED BY RISK: {ticker}"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n",
+                    bold("Reason:"), f" {result.get('rejection_reason', 'Unknown')}\n\n",
+                    bold("Confidence:"), f" {conf}/100\n", bold("Direction:"), f" {direction}",
                 )
             else:
                 text = fmt(
-                    bold(f"ℹ️ Scan: {ticker}"), "\n",
+                    bold(f"ℹ️ SCAN: {ticker}"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n",
                     bold("Confidence:"), f" {conf}/100\n", bold("Direction:"), f" {direction}\n\n",
                     bold("📝 Reasoning:"), "\n", result.get("reasoning", ""),
                 )
-            await msg.edit_text(str(text), parse_mode="HTML")
+            
+            keyboard = build_nav_keyboard([
+                [("💼 Portfolio", "cmd_portfolio"), ("📋 Activity", "cmd_activity")]
+            ])
+            await msg.edit_text(str(text), parse_mode="HTML", reply_markup=keyboard)
         except Exception as e:
             logger.error("crypto_scan_single_failed", error=str(e))
             await msg.edit_text("❌ Scan failed.")
@@ -251,15 +274,39 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = await _reply(update, bold("🔍 Running full crypto scan..."))
         try:
             signals = await orchestrator.scan_all_markets("CRYPTO")
-            lines = [bold(f"🔍 CRYPTO SCAN — {len(signals)} signals")]
+            
+            from src.utils.telegram_helpers import format_pre_table, build_nav_keyboard
+            lines = [bold(f"🔍 CRYPTO SCAN — {len(signals)} signals"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"]
+            
+            headers = ["Ticker", "Dir", "Conf", "Status"]
+            rows = []
+            
             for s in signals:
                 status = s.get("status", "?")
                 emoji = {"EXECUTED": "✅", "REJECTED": "⛔", "EXECUTION_FAILED": "❌"}.get(status, "ℹ️")
                 conf = s.get("confidence_score", 0)
-                lines.append(fmt(f"\n{emoji} ", bold(s.get("ticker", "?")), f" — {s.get('direction', '?')} ({conf}/100) — {status}"))
-                if status == "EXECUTED":
-                    lines.append(fmt(f"   Fill: {s.get('fill_price', 'N/A')} | Risk: ${s.get('risk_amount', 0):,.2f}"))
-            await msg.edit_text(str(fmt(*lines)), parse_mode="HTML")
+                ticker = s.get("ticker", "?")
+                dir_label = {"LONG": "🟢", "SHORT": "🔴"}.get(s.get("direction"), "⚪️")
+                stat_str = {"EXECUTED": "EXEC", "REJECTED": "REJ", "EXECUTION_FAILED": "FAIL", "PENDING": "PEND"}.get(status, status[:4])
+                
+                rows.append([f"{emoji} {ticker}", dir_label, f"{conf}", stat_str])
+                
+            if rows:
+                table = format_pre_table(headers, rows, align_right=[2])
+                lines.append(pre(table))
+                
+                executed = [s for s in signals if s.get("status") == "EXECUTED"]
+                if executed:
+                    lines.append(fmt("\n", bold("✅ Executed Details:"), "\n"))
+                    for s in executed:
+                        lines.append(fmt(f"• {s.get('ticker')}: Fill {s.get('fill_price', 'N/A')} | Risk ${s.get('risk_amount', 0):,.2f}\n"))
+            else:
+                lines.append(italic("📭 No signals found."))
+                
+            keyboard = build_nav_keyboard([
+                [("📋 Activity", "cmd_activity"), ("💼 Portfolio", "cmd_portfolio")]
+            ])
+            await msg.edit_text(str(fmt(*lines)), parse_mode="HTML", reply_markup=keyboard)
         except Exception as e:
             logger.error("crypto_scan_full_failed", error=str(e))
             await msg.edit_text("❌ Scan failed.")
@@ -287,12 +334,17 @@ async def pnl_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total_trades = stats.total_trades or 0
         open_pnl = sum(float(p.unrealized_pnl or 0) for p in open_positions)
 
+        from src.utils.telegram_helpers import build_nav_keyboard
         text = fmt(
-            bold("📊 CRYPTO P&L"), "\n\n",
+            bold("📊 CRYPTO P&L"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n",
             bold("Open:"), f" {len(open_positions)} positions | uPnL: {'🟢' if open_pnl >= 0 else '🔴'} ${open_pnl:+,.2f}\n",
             bold("Closed:"), f" {total_trades} trades | Realized: {'🟢' if total_pnl >= 0 else '🔴'} ${total_pnl:+,.2f}",
         )
-        await _reply(update, text)
+        keyboard = build_nav_keyboard([
+            [("💰 Trades", "cmd_trades"), ("💼 Portfolio", "cmd_portfolio")],
+            [("🛡️ Risk", "cmd_risk")],
+        ])
+        await _reply(update, text, reply_markup=keyboard)
     except Exception as e:
         logger.error("crypto_pnl_failed", error=str(e))
         await _reply(update, "❌ P&L check failed.")
@@ -308,9 +360,8 @@ async def risk_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         balance = wallet.get("balance", 0)
 
         position_count = len(positions)
-        r = redis.from_url(settings.REDIS_URL, decode_responses=True)
+        r = _get_redis(context)
         cooldown = await r.get("karsa:crypto_cooldown")
-        await r.close()
 
         risk_block = (
             f"Max Risk/Trade : {settings.CRYPTO_MAX_RISK_PER_TRADE_PCT}%\n"
@@ -329,8 +380,16 @@ async def risk_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Available: ${wallet.get('available', 0):,.2f}"
         )
 
-        text = fmt(bold("🛡️ CRYPTO RISK STATE"), "\n\n", bold("Risk Limits:"), "\n", pre(risk_block), "\n\n", bold("Margin:"), "\n", pre(margin_block))
-        await _reply(update, text)
+        from src.utils.telegram_helpers import build_nav_keyboard
+        text = fmt(
+            bold("🛡️ CRYPTO RISK STATE"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n", 
+            bold("Risk Limits:"), "\n", pre(risk_block), "\n\n", 
+            bold("Margin:"), "\n", pre(margin_block)
+        )
+        keyboard = build_nav_keyboard([
+            [("💼 Portfolio", "cmd_portfolio"), ("📊 P&L", "cmd_pnl")],
+        ])
+        await _reply(update, text, reply_markup=keyboard)
     except Exception as e:
         logger.error("crypto_risk_cmd_failed", error=str(e))
         await _reply(update, "❌ Risk check failed.")
@@ -342,16 +401,11 @@ async def kill_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     operator = update.effective_user.username or str(update.effective_user.id)
     try:
         from src.risk.emergency import activate_global_halt
-        from src.data.mcp_client import MCPClient
-        from src.data.cache import CacheManager
         from src.risk.sor import SmartOrderRouter
 
-        r = redis.from_url(settings.REDIS_URL, decode_responses=True)
-        cache = CacheManager(r)
-        mcp = MCPClient(cache)
-        sor = SmartOrderRouter(mcp._get_bybit())
+        bybit = _get_bybit(context)
+        sor = SmartOrderRouter(bybit)
         flatten_result = await sor.flatten_all()
-        await r.close()
 
         await activate_global_halt(reason=f"Manual kill by {operator}", operator=operator)
 
@@ -370,18 +424,14 @@ async def sellall_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
     try:
-        from src.data.mcp_client import MCPClient
-        from src.data.cache import CacheManager
         from src.risk.sor import SmartOrderRouter
 
-        r = redis.from_url(settings.REDIS_URL, decode_responses=True)
-        cache = CacheManager(r)
-        mcp = MCPClient(cache)
-        sor = SmartOrderRouter(mcp._get_bybit())
+        bybit = _get_bybit(context)
+        sor = SmartOrderRouter(bybit)
         flatten_result = await sor.flatten_all()
 
+        r = _get_redis(context)
         await r.set("karsa:crypto_cooldown", "1", ex=900)
-        await r.close()
 
         orchestrator = context.bot_data.get("orchestrator")
         if orchestrator and hasattr(orchestrator, "crypto_agent"):
@@ -406,9 +456,8 @@ async def resume_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from src.risk.emergency import deactivate_global_halt
         await deactivate_global_halt(operator=operator)
 
-        r = redis.from_url(settings.REDIS_URL, decode_responses=True)
+        r = _get_redis(context)
         await r.delete("karsa:crypto_cooldown")
-        await r.close()
 
         await _reply(update, fmt("✅ ", bold("Trading resumed."), "\n", "Global halt cleared. Cooldown cleared."))
     except Exception as e:
@@ -443,21 +492,32 @@ async def _execute_pending_signals(update: Update, context: ContextTypes.DEFAULT
 
         msg = await _reply(update, fmt("⚡ Executing ", bold(str(len(pending))), " pending signals..."))
 
+        from src.advisory.crypto_regime import CryptoRegimeFilter
+        regime_filter = CryptoRegimeFilter(orchestrator.mcp)
+        regime = await regime_filter.get_current_regime()
+
+        # Build signal dicts from DB objects
+        signal_dicts = [{
+            "ticker": s.ticker, "market": "CRYPTO", "direction": s.direction,
+            "confidence_score": s.confidence_score, "entry_price": float(s.entry_price or 0),
+            "target_price": float(s.target_price or 0) if s.target_price else None,
+            "stop_loss_price": float(s.stop_loss_price or 0) if s.stop_loss_price else None,
+            "reasoning": s.reasoning, "strategy": s.strategy,
+        } for s in pending]
+
+        executed = await orchestrator._auto_execute_crypto(signal_dicts, regime)
+
         results = []
-        for s in pending:
-            try:
-                result = await orchestrator.scan_single("CRYPTO", s.ticker)
-                status = result.get("status", "SCANNED")
-                emoji = {"EXECUTED": "✅", "REJECTED": "⛔", "EXECUTION_FAILED": "❌"}.get(status, "ℹ️")
-                conf = result.get("confidence_score", 0)
-                line = fmt(f"{emoji} ", bold(s.ticker), f" — {result.get('direction', '?')} ({conf}%) — {status}")
-                if status == "EXECUTED":
-                    line = fmt(line, f"\n   Fill: {result.get('fill_price', 'N/A')}")
-                elif status == "REJECTED":
-                    line = fmt(line, f"\n   Reason: {result.get('rejection_reason', 'Unknown')}")
-                results.append(str(line))
-            except Exception as e:
-                results.append(f"❌ {s.ticker} — Error: {str(e)[:50]}")
+        for sig in executed:
+            status = sig.get("status", "?")
+            emoji = {"EXECUTED": "✅", "REJECTED": "⛔", "EXECUTION_FAILED": "❌", "HALTED": "🚨"}.get(status, "ℹ️")
+            conf = sig.get("confidence_score", 0)
+            line = fmt(f"{emoji} ", bold(sig.get("ticker", "?")), f" — {sig.get('direction', '?')} ({conf}%) — {status}")
+            if status == "EXECUTED":
+                line = fmt(line, f"\n   Fill: {sig.get('fill_price', 'N/A')} | Risk: ${sig.get('risk_amount', 0):,.2f}")
+            elif status == "REJECTED":
+                line = fmt(line, f"\n   Reason: {sig.get('rejection_reason', 'Unknown')}")
+            results.append(str(line))
 
         text = fmt(bold("⚡ EXECUTE RESULTS"), "\n\n", "\n".join(results))
         await msg.edit_text(str(text), parse_mode="HTML")
@@ -492,7 +552,20 @@ async def _execute_single_signal(update: Update, context: ContextTypes.DEFAULT_T
             await _reply(update, "⚠️ Orchestrator not connected.")
             return
 
-        result = await orchestrator.scan_single("CRYPTO", signal.ticker)
+        from src.advisory.crypto_regime import CryptoRegimeFilter
+        regime_filter = CryptoRegimeFilter(orchestrator.mcp)
+        regime = await regime_filter.get_current_regime()
+
+        signal_dict = {
+            "ticker": signal.ticker, "market": "CRYPTO", "direction": signal.direction,
+            "confidence_score": signal.confidence_score,
+            "entry_price": float(signal.entry_price or 0),
+            "target_price": float(signal.target_price or 0) if signal.target_price else None,
+            "stop_loss_price": float(signal.stop_loss_price or 0) if signal.stop_loss_price else None,
+            "reasoning": signal.reasoning, "strategy": signal.strategy,
+        }
+        executed = await orchestrator._auto_execute_crypto([signal_dict], regime)
+        result = executed[0] if executed else signal_dict
         status = result.get("status", "SCANNED")
         emoji = {"EXECUTED": "✅", "REJECTED": "⛔", "EXECUTION_FAILED": "❌"}.get(status, "ℹ️")
         conf = result.get("confidence_score", 0)
@@ -571,6 +644,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("crypto_dismiss_"):
         signal_id = data.replace("crypto_dismiss_", "")
         await _dismiss_signal(update, signal_id)
+    elif data == "cmd_guide":
+        await guide_cmd(update, context)
+    elif data == "cmd_regime":
+        await regime_cmd(update, context)
+    elif data == "cmd_funding":
+        await funding_cmd(update, context)
+    elif data == "cmd_trades":
+        await trades_cmd(update, context)
+    elif data == "cmd_scan":
+        await scan_cmd(update, context)
 
 
 async def activity_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -596,13 +679,12 @@ async def activity_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             closed = closed_result.scalars().all()
 
-        lines = [bold("📋 CRYPTO ACTIVITY"), "\n"]
+        lines = [bold("📋 CRYPTO ACTIVITY"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"]
 
         # --- Signals section ---
         pending_count = 0
         if signals:
-            lines.append(bold("🔍 SIGNALS"))
-            lines.append("")
+            lines.append(fmt(bold("🔍 SIGNALS"), "\n\n"))
 
             status_label = {
                 "EXECUTED": "✅ Executed",
@@ -611,7 +693,7 @@ async def activity_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "EXECUTION_FAILED": "❌ Failed",
                 "HALTED": "🚨 Halted",
             }
-            direction_label = {"LONG": "🟢 Long", "SHORT": "🔴 Short", "CLOSE": "⬜ Close"}
+            direction_label = {"LONG": "🟢 Long", "SHORT": "🔴 Short", "CLOSE": "⚪ Close"}
 
             for s in signals:
                 ts = s.created_at.strftime("%b %d, %H:%M") if s.created_at else "?"
@@ -619,20 +701,23 @@ async def activity_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ticker = s.ticker or "?"
                 direction = direction_label.get(s.direction or "", s.direction or "?")
                 status = status_label.get(s.status, s.status or "?")
-                reasoning = (s.reasoning or "")[:120]
+                
+                full_reason = (s.reasoning or "").strip()
+                reasoning = full_reason[:75] + "..." if len(full_reason) > 75 else full_reason
 
-                lines.append(fmt(bold(ticker), f"  {direction}  ", code(f"{conf}%")))
-                lines.append(f"  {status}  •  {ts}")
+                lines.append(fmt(bold(ticker), f"  {direction}  ", code(f" {conf}% "), "\n"))
+                lines.append(fmt("├ ", status, f"  •  {ts}\n"))
                 if reasoning:
-                    lines.append(f"  {reasoning}")
+                    lines.append(fmt("└ ", italic(reasoning), "\n\n"))
+                else:
+                    lines.append(fmt("└ ", italic("No reasoning provided."), "\n\n"))
+                
                 if s.status == "PENDING":
                     pending_count += 1
-                lines.append("")
 
         # --- Closed trades section ---
         if closed:
-            lines.append(fmt(bold("💰 CLOSED TRADES")))
-            lines.append("")
+            lines.append(fmt(bold("💰 CLOSED TRADES"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"))
 
             for t in closed:
                 pnl = t.realized_pnl_pct or 0
@@ -640,13 +725,14 @@ async def activity_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ts = t.exit_date.strftime("%b %d, %H:%M") if t.exit_date else "?"
                 side = "Long" if t.side == "Buy" else "Short"
                 ticker = t.ticker or "?"
+                reason = t.exit_reason or "N/A"
 
-                lines.append(fmt(bold(ticker), f"  {side}"))
-                lines.append(f"  {emoji} {pnl:+.1f}%  •  {t.exit_reason or 'N/A'}  •  {ts}")
-                lines.append("")
+                lines.append(fmt(bold(ticker), f"  {side}\n"))
+                lines.append(fmt("├ ", emoji, f" {pnl:+.1f}%\n"))
+                lines.append(fmt("└ ", italic(f"{reason}  •  {ts}"), "\n\n"))
 
         if not signals and not closed:
-            lines.append(italic("📭 No activity yet. Signals will appear here after scans."))
+            lines.append(fmt(italic("📭 No activity yet. Signals will appear here after scans."), "\n"))
 
         # Build keyboard: nav buttons + execute-all if pending signals exist
         nav_rows = [
@@ -720,7 +806,7 @@ async def audit_agent_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             dir_lines.append(f"  {d:<6} {data['count']} trades  |  {d_wr:.0f}% win")
 
         report_lines = [
-            bold("🔍 AGENT AUDIT — 7 Day Review"), "\n",
+            bold("🔍 AGENT AUDIT — 7 Day Review"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n",
             bold("Performance:"), "\n", pre(perf_block), "\n",
             bold("Signals:"), "\n", pre(sig_block), "\n",
         ]
@@ -767,3 +853,184 @@ async def audit_agent_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error("audit_agent_cmd_failed", error=str(e))
         await _reply(update, "❌ Audit failed.")
+
+
+# --- Phase 5 UX: New Commands ---
+
+async def guide_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Full crypto trading walkthrough."""
+    if not _is_authorized(update):
+        return
+    from src.utils.telegram_helpers import build_nav_keyboard
+
+    guide_text = fmt(
+        bold("📖 KARSA CRYPTO 101"), "\n",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n",
+        bold("🤖 What is Karsa Crypto?"), "\n",
+        "AI-powered perpetual futures on Bybit.\n",
+        "EXECUTES trades automatically after AI analysis.\n\n",
+        bold("⚡ HOW IT WORKS"), "\n",
+        "🔍 Step 1: AI scans 10 perpetual pairs (every 4h)\n",
+        "🛡️ Step 2: Risk gates (1% risk, 3% daily loss, 5 max positions)\n",
+        "📈 Step 3: Smart execution (limit → reprice → market fallback)\n\n",
+        bold("🌡️ REGIME"), "\n",
+        "  🟢 TREND_BULL → full sizing (1.2x)\n",
+        "  🔴 TREND_BEAR → reduced (0.5x)\n",
+        "  🟡 MEAN_REVERSION → moderate (0.8x)\n",
+        "  ⚪ CHOP → minimal (0.5x)\n\n",
+        bold("🚨 EMERGENCY"), "\n",
+        "  ", code("/kill"), " Close ALL + halt\n",
+        "  ", code("/sellall"), " Close + 15min cooldown\n",
+        "  ", code("/resume"), " Reactivate\n\n",
+        bold("📋 COMMANDS"), "\n",
+        code("/status"), " ", code("/portfolio"), " ", code("/pnl"), " ", code("/risk"), "\n",
+        code("/scan"), " ", code("/activity"), " ", code("/regime"), " ", code("/funding"), "\n",
+    )
+    keyboard = build_nav_keyboard([
+        [("📊 Status", "cmd_status"), ("💼 Portfolio", "cmd_portfolio")],
+        [("🛡️ Risk", "cmd_risk"), ("📋 Activity", "cmd_activity")],
+    ])
+    if update.callback_query:
+        await update.callback_query.edit_message_text(str(guide_text), parse_mode="HTML", reply_markup=keyboard)
+    elif update.message:
+        await update.message.reply_text(str(guide_text), parse_mode="HTML", reply_markup=keyboard)
+
+
+async def regime_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Dedicated regime deep-dive."""
+    if not _is_authorized(update):
+        return
+    try:
+        from src.advisory.crypto_regime import CryptoRegimeFilter
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        orch = context.bot_data.get("orchestrator")
+        regime = await CryptoRegimeFilter(orch.mcp).get_current_regime()
+
+        state = regime.get("state", "UNKNOWN")
+        emoji = {"TREND_BULL": "🟢", "TREND_BEAR": "🔴", "MEAN_REVERSION": "🟡", "CHOP": "⚪️"}.get(state, "⚪️")
+        hurst = regime.get("hurst", "N/A")
+        adx = regime.get("adx", "N/A")
+        btc_dom = regime.get("btc_dominance")
+        season = regime.get("market_season", "UNKNOWN")
+
+        block = (
+            f"State    : {emoji} {state}\n"
+            f"Hurst    : {hurst}\n"
+            f"ADX      : {adx}\n"
+            f"BTC Price: ${regime.get('benchmark_price', 'N/A')}\n"
+            f"Sizing   : {regime.get('size_multiplier', 1.0)}x\n"
+        )
+        dom = ""
+        if btc_dom is not None:
+            season_e = {"BTC_SEASON": "₿", "ALT_SEASON": "🪙", "NEUTRAL": "⚖️"}.get(season, "❓")
+            dom = f"\nBTC Dom  : {btc_dom}% {season_e} {season}\n"
+
+        text = fmt(bold("🌡️ CRYPTO REGIME"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n", pre(block + dom), "\n", bold("💡"), f" {regime.get('recommendation', '')}")
+        from src.utils.telegram_helpers import build_nav_keyboard
+        keyboard = build_nav_keyboard([
+            [("📊 Status", "cmd_status"), ("🔍 Scan", "cmd_scan")],
+            [("💼 Portfolio", "cmd_portfolio")]
+        ])
+        await _reply(update, text, reply_markup=keyboard)
+    except Exception as e:
+        logger.error("regime_cmd_failed", error=str(e))
+        await _reply(update, "❌ Regime check failed.")
+
+
+async def funding_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Current funding rates for all universe pairs."""
+    if not _is_authorized(update):
+        return
+    try:
+        from src.risk.funding_tracker import FundingTracker
+        from src.utils.telegram_helpers import send_long_message, format_pre_table, build_nav_keyboard
+
+        bybit = _get_bybit(context)
+        tracker = FundingTracker(bybit)
+        rates = await tracker.get_current_rates()
+
+        lines = [bold("📊 FUNDING RATES"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"]
+        
+        headers = ["Symbol", "Rate", "Annual", "Dir"]
+        rows = []
+        for ri in sorted(rates, key=lambda x: abs(x.get("funding_rate", 0)), reverse=True):
+            rate = ri.get("funding_rate", 0)
+            annual = ri.get("annualized_pct", 0)
+            d = "L→S" if rate > 0 else "S→L" if rate < 0 else "—"
+            alert = " ⚠️" if ri.get("alert") else ""
+            rows.append([
+                ri['symbol'],
+                f"{rate*100:+.4f}%",
+                f"{annual:+.0f}%",
+                f"{d}{alert}"
+            ])
+            
+        table = format_pre_table(headers, rows, align_right=[1, 2])
+        lines.append(pre(table))
+        lines.append("\n💡 L→S = longs pay shorts (crowded long)\n")
+        
+        keyboard = build_nav_keyboard([
+            [("📊 Status", "cmd_status"), ("🛡️ Risk", "cmd_risk")]
+        ])
+        await send_long_message(update, str(fmt(*lines)), reply_markup=keyboard)
+    except Exception as e:
+        logger.error("funding_cmd_failed", error=str(e))
+        await _reply(update, "❌ Funding check failed.")
+
+
+async def trades_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Closed trade history."""
+    if not _is_authorized(update):
+        return
+    try:
+        from src.models.database import async_session
+        from src.models.tables import ClosedPaperTrade
+        from sqlalchemy import select, desc
+        from src.utils.telegram_helpers import send_long_message
+
+        async with async_session() as session:
+            result = await session.execute(
+                select(ClosedPaperTrade).where(ClosedPaperTrade.market == "CRYPTO")
+                .order_by(desc(ClosedPaperTrade.exit_date)).limit(20)
+            )
+            trades = result.scalars().all()
+
+        if not trades:
+            await _reply(update, italic("📭 No closed crypto trades yet."))
+            return
+
+        from src.utils.telegram_helpers import format_pre_table, build_nav_keyboard
+        
+        lines = [bold("📋 CLOSED TRADES (last 20)"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"]
+        
+        headers = ["Ticker", "Side", "P&L", "Return"]
+        rows = []
+        total_pnl, wins = 0, 0
+        for t in trades:
+            pnl = float(t.realized_pnl or 0)
+            total_pnl += pnl
+            if pnl >= 0: wins += 1
+            e = "🟢" if pnl >= 0 else "🔴"
+            ret = float(t.realized_pnl_pct or 0)
+            rows.append([
+                t.ticker,
+                t.side or '?',
+                f"{e} ${pnl:+,.2f}",
+                f"{ret:+.1f}%"
+            ])
+
+        table = format_pre_table(headers, rows, align_right=[2, 3])
+        lines.append(pre(table))
+
+        wr = (wins / len(trades) * 100) if trades else 0
+        te = "🟢" if total_pnl >= 0 else "🔴"
+        lines.append(f"\n{bold('Summary:')} {len(trades)} trades | {wr:.0f}% win | {te} ${total_pnl:+,.2f}")
+        
+        keyboard = build_nav_keyboard([
+            [("📊 P&L", "cmd_pnl"), ("📋 Activity", "cmd_activity")]
+        ])
+        await send_long_message(update, str(fmt(*lines)), reply_markup=keyboard)
+    except Exception as e:
+        logger.error("trades_cmd_failed", error=str(e))
+        await _reply(update, "❌ Trades check failed.")

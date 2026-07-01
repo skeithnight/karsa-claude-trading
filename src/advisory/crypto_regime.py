@@ -8,8 +8,12 @@ Regime states:
 - TREND_BEAR: H > 0.5, ADX > 25, price < 200 EMA
 - MEAN_REVERSION: H < 0.5 (price tends to revert)
 - CHOP: ADX < 20 (no clear trend)
+
+BTC Dominance: CoinGecko free API
+- >55% = BTC season (favor BTC/ETH), <45% = alt season (spread across alts)
 """
 
+import asyncio
 import time
 from typing import Any
 
@@ -150,6 +154,45 @@ def _size_multiplier(regime: str) -> float:
     }.get(regime, 1.0)
 
 
+async def _get_btc_dominance() -> dict:
+    """Get BTC dominance from CoinGecko free API.
+
+    Returns: {"btc_dominance": float, "season": str, "eth_dominance": float}
+    """
+    try:
+        import urllib.request
+        import json
+
+        url = "https://api.coingecko.com/api/v3/global"
+        req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "karsa/1.0"})
+
+        def _fetch():
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read())
+
+        data = await asyncio.to_thread(_fetch)
+        market_data = data.get("data", {})
+        btc_dom = market_data.get("market_cap_percentage", {}).get("btc", 0)
+        eth_dom = market_data.get("market_cap_percentage", {}).get("eth", 0)
+
+        if btc_dom > 55:
+            season = "BTC_SEASON"
+        elif btc_dom < 45:
+            season = "ALT_SEASON"
+        else:
+            season = "NEUTRAL"
+
+        return {
+            "btc_dominance": round(btc_dom, 2),
+            "eth_dominance": round(eth_dom, 2),
+            "season": season,
+        }
+
+    except Exception as e:
+        logger.warning("btc_dominance_fetch_failed", error=str(e))
+        return {"btc_dominance": None, "eth_dominance": None, "season": "UNKNOWN"}
+
+
 class CryptoRegimeFilter:
     """Deterministic crypto regime classifier using BTC as benchmark."""
 
@@ -195,6 +238,9 @@ class CryptoRegimeFilter:
                 regime = "TREND_BEAR"
                 rec = "Bearish trend confirmed. Reduce sizing. Short bias or stay flat."
 
+            # Fetch BTC dominance
+            btc_dom = await _get_btc_dominance()
+
             result = {
                 "state": regime,
                 "benchmark": "BTCUSDT",
@@ -204,6 +250,9 @@ class CryptoRegimeFilter:
                 "ema_200_proxy": round(ema_200, 2),
                 "recommendation": rec,
                 "size_multiplier": _size_multiplier(regime),
+                "btc_dominance": btc_dom.get("btc_dominance"),
+                "eth_dominance": btc_dom.get("eth_dominance"),
+                "market_season": btc_dom.get("season", "UNKNOWN"),
             }
             _set_cached(result)
             return result
