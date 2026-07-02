@@ -25,7 +25,7 @@
       "type": "stat",
       "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "targets": [ { "expr": "karsa_kill_switch_active", "refId": "A" } ],
+      "targets": [ { "expr": "karsa_kill_switch_active or vector(0)", "refId": "A" } ],
       "fieldConfig": {
         "defaults": {
           "mappings": [
@@ -53,9 +53,10 @@
       "type": "stat",
       "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "targets": [ { "expr": "karsa_warp_connected", "refId": "A" } ],
+      "targets": [ { "expr": "karsa_warp_connected or vector(0)", "refId": "A" } ],
       "fieldConfig": {
         "defaults": {
+          "noValue": "N/A",
           "mappings": [
             { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "OK", "color": "green" } } },
             { "type": "special", "options": { "match": "null", "result": { "text": "N/A", "color": "gray" } } }
@@ -69,9 +70,10 @@
       "type": "stat",
       "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "targets": [ { "expr": "karsa_open_positions_count", "refId": "A" } ],
+      "targets": [ { "expr": "karsa_open_positions_count or vector(0)", "refId": "A" } ],
       "fieldConfig": {
         "defaults": {
+          "noValue": "0",
           "min": 0, "max": 5,
           "thresholds": { "mode": "absolute", "steps": [ { "value": null, "color": "green" }, { "value": 4, "color": "yellow" }, { "value": 5, "color": "red" } ] }
         }
@@ -82,9 +84,10 @@
       "type": "stat",
       "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "targets": [ { "expr": "karsa_crypto_regime", "refId": "A" } ],
+      "targets": [ { "expr": "karsa_crypto_regime or vector(0)", "refId": "A" } ],
       "fieldConfig": {
         "defaults": {
+          "noValue": "N/A",
           "mappings": [
             { "type": "value", "options": { "0": { "text": "CHOP", "color": "gray" }, "1": { "text": "MEAN REV", "color": "blue" }, "2": { "text": "BEAR", "color": "red" }, "3": { "text": "BULL", "color": "green" } } },
             { "type": "special", "options": { "match": "null", "result": { "text": "N/A", "color": "gray" } } }
@@ -97,7 +100,7 @@
       "type": "stat",
       "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "targets": [ { "expr": "karsa_active_risk_profile", "refId": "A" } ],
+      "targets": [ { "expr": "karsa_active_risk_profile or vector(0)", "refId": "A" } ],
       "fieldConfig": {
         "defaults": {
           "mappings": [
@@ -193,7 +196,7 @@
       "type": "table",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "targets": [ { "expr": "karsa_funding_rate_pct * 100", "format": "table", "instant": true, "refId": "A" } ],
+      "targets": [ { "expr": "karsa_funding_rate_pct", "format": "table", "instant": true, "refId": "A" } ],
       "fieldConfig": {
         "defaults": {
           "custom": { "align": "center", "cellOptions": { "type": "auto" } }
@@ -252,9 +255,10 @@
       "type": "stat",
       "gridPos": { "h": 4, "w": 3, "x": 6, "y": 28 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "targets": [ { "expr": "karsa_ws_reconnect_total", "refId": "A" } ],
+      "targets": [ { "expr": "karsa_ws_reconnect_total or vector(0)", "refId": "A" } ],
       "fieldConfig": {
         "defaults": {
+          "noValue": "0",
           "thresholds": { "mode": "absolute", "steps": [ { "value": null, "color": "green" }, { "value": 5, "color": "yellow" }, { "value": 10, "color": "red" } ] }
         }
       }
@@ -278,7 +282,7 @@
       "type": "stat",
       "gridPos": { "h": 4, "w": 6, "x": 15, "y": 28 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "targets": [ { "expr": "rate(karsa_limit_order_fallback_total[1h]) / rate(karsa_order_fill_total[1h]) * 100", "refId": "A" } ],
+      "targets": [ { "expr": "rate(karsa_limit_order_fallback_total[1h]) / clamp_min(rate(karsa_order_fill_total[1h]), 0.001) * 100 or vector(0)", "refId": "A" } ],
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
