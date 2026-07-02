@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import redis.asyncio as aioredis
 
 from src.config import settings
+from src.metrics.crypto_metrics import update_kill_switch
 
 KILL_KEY = f"{settings.REDIS_PREFIX}:emergency_stop"
 GLOBAL_HALT_KEY = f"{settings.REDIS_PREFIX}:global_halt"
@@ -33,12 +34,15 @@ async def activate(reason: str, operator: str) -> bool:
         "activated_at": datetime.now(timezone.utc).isoformat(),
     })
     result = await _get_redis().set(KILL_KEY, payload, nx=True)
+    if result:
+        update_kill_switch(True)
     return bool(result)  # True if set, False if already existed
 
 
 async def deactivate(operator: str) -> None:
     """Deactivate emergency stop — resume trading."""
     await _get_redis().delete(KILL_KEY)
+    update_kill_switch(False)
 
 
 async def is_active() -> bool:
@@ -74,6 +78,7 @@ async def activate_global_halt(reason: str, operator: str) -> bool:
     result = await r.set(GLOBAL_HALT_KEY, payload, nx=True)
     # Also set standard emergency stop
     await r.set(KILL_KEY, payload)
+    update_kill_switch(True)
     return bool(result)
 
 
@@ -82,6 +87,7 @@ async def deactivate_global_halt(operator: str) -> None:
     r = _get_redis()
     await r.delete(GLOBAL_HALT_KEY)
     await r.delete(KILL_KEY)
+    update_kill_switch(False)
 
 
 async def is_global_halt() -> bool:

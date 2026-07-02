@@ -9,8 +9,14 @@ Flow:
 """
 
 import asyncio
+import time
 
+from src.config import settings
 from src.data.bybit_client import BybitClient
+from src.metrics.crypto_metrics import (
+    record_order_fill, record_slippage, record_fill_latency,
+    record_limit_fallback, record_order_rejected,
+)
 from src.utils.logging import get_logger
 
 logger = get_logger("sor")
@@ -36,6 +42,22 @@ class SmartOrderRouter:
 
         if qty <= 0:
             return {"success": False, "error": "Zero quantity"}
+            
+        if settings.TRADING_MODE == "paper":
+            logger.info("sor_paper_trade_mock", ticker=ticker, direction=direction, qty=qty)
+            # Mock fill at current price
+            ticker_data = await self.bybit.get_ticker(ticker)
+            fill_price = ticker_data.get("price") if ticker_data else signal.get("entry_price", 0)
+            return {
+                "success": True, 
+                "order_id": f"paper_{int(time.time()*1000)}",
+                "fill_price": fill_price,
+                "qty": qty,
+                "stop_loss_id": "paper_sl",
+                "take_profit_id": "paper_tp"
+            }
+
+        _start_time = time.time()
 
         # Set leverage (Bybit returns error 110043 if leverage unchanged — safe to ignore)
         try:
@@ -98,6 +120,8 @@ class SmartOrderRouter:
                 sl_tp = await self._place_sl_tp(ticker, bybit_side, qty, stop_loss, take_profit)
                 logger.info("sor_order_filled", ticker=ticker, side=direction, qty=qty,
                             fill_price=fill_result.get("fill_price"))
+                record_order_fill(ticker, "limit", direction)
+                record_fill_latency(time.time() - _start_time)
                 return {
                     "success": True, "order_id": order_id,
                     "fill_price": fill_result.get("fill_price", limit_price),
@@ -111,6 +135,7 @@ class SmartOrderRouter:
             else:
                 limit_price = orderbook["asks"][0][0] if orderbook.get("asks") else limit_price
 
+        record_limit_fallback(ticker, "max_reprice")
         return await self._market_order(ticker, direction, qty, stop_loss, take_profit)
 
     async def _market_order(self, ticker: str, direction: str, qty: float, stop_loss: float, take_profit: float) -> dict:
@@ -119,6 +144,7 @@ class SmartOrderRouter:
 
         if result.get("error"):
             logger.error("market_order_failed", ticker=ticker, error=result["error"])
+            record_order_rejected(ticker, str(result.get("retCode", "unknown")))
             return {"success": False, "error": result["error"]}
 
         # Fix #5: Get actual fill price from order status (market orders don't return price)
@@ -139,6 +165,7 @@ class SmartOrderRouter:
                     break
 
         sl_tp = await self._place_sl_tp(ticker, bybit_side, qty, stop_loss, take_profit)
+        record_order_fill(ticker, "market", direction)
         return {"success": True, "order_id": order_id,
                 "fill_price": fill_price, "qty": qty, "order_type": "market", **sl_tp}
 

@@ -1,0 +1,144 @@
+groups:
+  - name: karsa_critical
+    interval: 30s
+    rules:
+      # === RISK SAFETY ===
+      - alert: KillSwitchActive
+        expr: karsa_kill_switch_active == 1
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "TRADING HALTED — Kill switch active"
+          description: "Emergency kill switch has been activated. All trading is stopped."
+
+      - alert: DrawdownApproachingLimit
+        expr: karsa_drawdown_pct > 2.0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Drawdown {{ $value }}% approaching 3% kill limit"
+          description: "Current drawdown is {{ $value }}%. Kill switch triggers at 3%."
+
+      - alert: DrawdownCritical
+        expr: karsa_drawdown_pct >= 2.8
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "CRITICAL: Drawdown {{ $value }}% — kill switch imminent"
+
+      - alert: CircuitBreakerFired
+        expr: karsa_circuit_breaker_active == 1
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Circuit breaker {{ $labels.breaker_type }} triggered"
+
+      - alert: DailyLossApproachingLimit
+        expr: karsa_daily_loss_pct > 2.0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Daily loss {{ $value }}% approaching 3% kill limit"
+
+      # === POSITION & LIQUIDATION ===
+      - alert: LiquidationDanger
+        expr: karsa_liquidation_distance_pct < 10
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.ticker }} {{ $labels.side }} — {{ $value }}% from liquidation!"
+
+      - alert: LiquidationWarning
+        expr: karsa_liquidation_distance_pct < 20
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.ticker }} {{ $labels.side }} — {{ $value }}% from liquidation"
+
+      - alert: PositionAgedOut
+        expr: karsa_position_age_hours > 72
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.ticker }} position held {{ $value }}h (time-exit trigger)"
+
+      - alert: ExtremeFundingRate
+        expr: abs(karsa_funding_rate_pct) > 0.1
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.ticker }} funding rate {{ $value }}% (crowded trade risk)"
+
+      # === INFRASTRUCTURE ===
+      - alert: CryptoScanNotRunning
+        expr: time() - karsa_job_last_run_timestamp_seconds{job_id="scan_crypto"} > 7200
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Crypto scan has not run for 2+ hours — bot may be dead"
+
+      - alert: PositionSyncStale
+        expr: time() - karsa_job_last_run_timestamp_seconds{job_id="crypto_position_sync"} > 600
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Position sync stale — position data unreliable"
+
+      - alert: WARPProxyDown
+        expr: karsa_warp_connected == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "WARP proxy down — ALL Bybit trading is BLOCKED"
+
+      - alert: WebSocketStale
+        expr: time() - karsa_ws_last_message_timestamp_seconds > 60
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Bybit WebSocket silent for >60s — SL engine is BLIND"
+
+      - alert: BybitAPIHighLatency
+        expr: histogram_quantile(0.95, rate(karsa_bybit_api_latency_seconds_bucket[5m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Bybit API P95 latency {{ $value }}s — execution risk"
+
+      - alert: BybitAPIErrors
+        expr: rate(karsa_bybit_api_errors_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Bybit API error rate {{ $value }}/s"
+
+      - alert: JobErrorsHigh
+        expr: rate(karsa_job_errors_total[15m]) > 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Job {{ $labels.job_id }} failing frequently ({{ $value }} errors/15m)"
+
+      - alert: RedisDisconnected
+        expr: karsa_redis_connected == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis disconnected — caching and kill switch impaired"

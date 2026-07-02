@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import asyncio
 
 from src.config import settings
+from src.metrics.crypto_metrics import FUNDING_RATE
 from src.utils.logging import get_logger
 
 logger = get_logger("funding_tracker")
@@ -52,6 +53,7 @@ class FundingTracker:
                     "alert": abs(rate) > self.alert_threshold,
                     "funding_time": data.get("funding_time"),
                 })
+                FUNDING_RATE.labels(ticker=symbol).set(round(rate * 100, 4))
             except Exception as e:
                 logger.warning("funding_rate_fetch_failed", symbol=symbol, error=str(e))
                 results.append({"symbol": symbol, "funding_rate": 0, "error": str(e)})

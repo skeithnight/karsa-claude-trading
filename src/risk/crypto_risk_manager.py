@@ -18,6 +18,7 @@ Gates:
 import time
 
 from src.config import settings
+from src.metrics.crypto_metrics import LIQ_DISTANCE_PCT, OPEN_POSITIONS
 from src.utils.logging import get_logger
 
 logger = get_logger("crypto_risk_manager")
@@ -190,11 +191,16 @@ class CryptoRiskManager:
         """Scan all positions for liquidation proximity and excessive loss."""
         try:
             positions = await bybit_client.get_positions()
+            OPEN_POSITIONS.set(len(positions) if positions else 0)
             alerts = []
 
             for pos in positions:
                 symbol = pos.get("symbol", "")
+                side = pos.get("side", "Buy")
                 liq_check = self.check_liquidation_proximity(pos)
+
+                # Update Prometheus gauges per position
+                LIQ_DISTANCE_PCT.labels(ticker=symbol, side=side).set(liq_check["distance_pct"])
 
                 entry_price = pos.get("entry_price", 0)
                 size = pos.get("size", 0)
@@ -205,7 +211,7 @@ class CryptoRiskManager:
                 if liq_check["level"] != "safe" or loss_pct > 10:
                     alerts.append({
                         "symbol": symbol,
-                        "side": pos.get("side"),
+                        "side": side,
                         "unrealized_pnl": unrealized,
                         "loss_pct": round(loss_pct, 2),
                         "liquidation": liq_check,

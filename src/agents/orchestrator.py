@@ -105,11 +105,12 @@ class Orchestrator:
         # Risk profile + dynamic universe (set by main.py after init)
         self.profile_manager = None
         self.universe_engine = None
+        self.calibrator = None  # ConfidenceCalibrator, set by main.py
 
     def _get_crypto_risk_manager(self):
         if self._crypto_risk_manager is None:
             from src.risk.crypto_risk_manager import CryptoRiskManager
-            self._crypto_risk_manager = CryptoRiskManager(self.mcp)
+            self._crypto_risk_manager = CryptoRiskManager(self.mcp, redis_client=self.cache.redis)
         return self._crypto_risk_manager
 
     def _get_crypto_sor(self):
@@ -234,9 +235,75 @@ class Orchestrator:
         if market == "CRYPTO" and position_context:
             context_hint += position_context
 
+        # Emergency check before batch
+        from src.risk import emergency
+        if await emergency.is_active():
+            logger.warning("scan_aborted_emergency_stop", market=market)
+            return signals
+
+        # For CRYPTO with multi-ticker batches, use batch prompt
+        if market == "CRYPTO" and len(universe) > 1:
+            from src.utils.validation import sanitize_for_prompt
+            safe_tickers = [sanitize_for_prompt(t) for t in universe]
+            ticker_list = ", ".join(safe_tickers)
+            prompt = (
+                f"Analyze these {len(safe_tickers)} crypto perpetuals for trading opportunities: {ticker_list}.{context_hint}\n\n"
+                "Respond with a JSON ARRAY of signal objects, one per ticker. Each object must have the same structure as a single signal. "
+                "If a ticker has no qualifying setup, include it with confidence_score < 50 and null prices."
+            )
+            batch_result = await agent.run(prompt)
+            if batch_result.get("error"):
+                logger.warning("batch_scan_error", market=market, error=batch_result["error"])
+                return signals
+
+            # Expect JSON array in result
+            results_list = batch_result if isinstance(batch_result, list) else batch_result.get("signals", [batch_result])
+            min_conf = 50
+            profile_name = "default"
+            if self.profile_manager:
+                try:
+                    p = await self.profile_manager.get_active_profile()
+                    min_conf = p.min_confidence
+                    profile_name = p.name
+                except Exception:
+                    pass
+            for result in results_list:
+                if not isinstance(result, dict):
+                    continue
+                ticker = result.get("ticker", "")
+                trace_data = result.pop("_trace", None)
+                issues = self._validate_signal(result, market)
+                if issues:
+                    logger.warning("invalid_signal", market=market, ticker=ticker, issues=issues)
+                    continue
+                confidence = result.get("confidence_score", 0)
+                # Apply confidence calibration if available
+                if self.calibrator:
+                    try:
+                        confidence = await self.calibrator.calibrate_signal(confidence)
+                        result["confidence_score"] = confidence
+                    except Exception:
+                        pass
+                if confidence >= min_conf:
+                    signals.append(result)
+                    try:
+                        from src.metrics.crypto_metrics import record_signal_executed, record_signal_confidence
+                        record_signal_executed(profile_name)
+                        record_signal_confidence(profile_name, confidence, True)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        from src.metrics.crypto_metrics import record_signal_rejection, record_signal_confidence
+                        record_signal_rejection(profile_name, f"confidence_{confidence}<{min_conf}")
+                        record_signal_confidence(profile_name, confidence, False)
+                    except Exception:
+                        pass
+            logger.info("market_scan_done", market=market, tickers=len(universe), signals=len(signals))
+            return signals
+
         for ticker in universe:
             # Per-ticker emergency check — allows partial completion if stop activates mid-scan
-            from src.risk import emergency
             if await emergency.is_active():
                 logger.warning("scan_aborted_emergency_stop", market=market, ticker=ticker)
                 break
@@ -270,6 +337,13 @@ class Orchestrator:
                     except Exception:
                         pass
                 confidence = result.get("confidence_score", 0)
+                # Apply confidence calibration if available
+                if market == "CRYPTO" and self.calibrator:
+                    try:
+                        confidence = await self.calibrator.calibrate_signal(confidence)
+                        result["confidence_score"] = confidence
+                    except Exception:
+                        pass
                 if confidence >= min_conf:
                     signals.append(result)
                     if market == "CRYPTO":
@@ -369,11 +443,13 @@ class Orchestrator:
         except Exception:
             pass  # proceed without position context
 
-        # Scan each pair concurrently
+        # Scan in batches of 5 to reduce LLM API calls
+        BATCH_SIZE = 5
+        batches = [universe[i:i+BATCH_SIZE] for i in range(0, len(universe), BATCH_SIZE)]
         tasks = [
-            self._scan_market("CRYPTO", self.crypto_agent, [symbol],
+            self._scan_market("CRYPTO", self.crypto_agent, batch,
                               composite=regime, position_context=position_context)
-            for symbol in universe
+            for batch in batches
         ]
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -472,6 +548,15 @@ class Orchestrator:
                                            error=close_result.get("error"))
                     except Exception as e:
                         logger.error("crypto_counter_trade_error", ticker=ticker, error=str(e))
+
+            # Liquidity gate check
+            from src.risk.liquidity import LiquidityMonitor
+            if not LiquidityMonitor.check_liquidity(ticker, direction):
+                logger.info("crypto_signal_rejected_liquidity", ticker=ticker)
+                signal["status"] = "REJECTED"
+                signal["rejection_reason"] = "Failed liquidity/spread check"
+                executed.append(signal)
+                continue
 
             # Risk evaluation (with daily P&L)
             risk_result = await risk_mgr.evaluate(

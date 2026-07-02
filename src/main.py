@@ -70,6 +70,25 @@ class KarsaApp:
         self.universe_engine = UniverseEngine(bybit, self.redis_client, self.profile_manager)
         self.orchestrator.universe_engine = self.universe_engine
 
+        # Execution engine modules
+        from src.execution.websocket_manager import WebSocketManager
+        from src.execution.sl_engine import StopLossEngine
+        from src.execution.oms import OrderManagementSystem
+        from src.risk.portfolio_allocator import PortfolioAllocator
+        self.ws_manager = WebSocketManager(self.redis_client, bybit)
+        self.sl_engine = StopLossEngine(self.redis_client, bybit)
+        self.oms = OrderManagementSystem(self.redis_client, bybit)
+        self.portfolio_allocator = PortfolioAllocator(self.redis_client)
+        self.orchestrator.portfolio_allocator = self.portfolio_allocator
+
+        # Confidence calibration
+        from src.risk.calibration_engine import ConfidenceCalibrator
+        self.calibrator = ConfidenceCalibrator()
+        self.orchestrator.calibrator = self.calibrator
+
+        # Register Prometheus metrics (must import at startup so prometheus_client sees them)
+        import src.metrics.crypto_metrics  # noqa: F401
+
         logger.info("orchestrator_ready")
 
         # APScheduler with in-memory job store
@@ -140,6 +159,7 @@ class KarsaApp:
 
         @app.get("/metrics")
         async def metrics():
+            import src.metrics.crypto_metrics  # ensure registered
             from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
             from fastapi.responses import Response
             return Response(
@@ -323,12 +343,12 @@ class KarsaApp:
                 id="crypto_funding_limit", name="Crypto Funding Limit Enforcement",
                 replace_existing=True, misfire_grace_time=300,
             )
-            # Position reconciliation every 5 min (replaces one-way sync)
+            # Position reconciliation every 60s (exchange as source of truth)
             s.add_job(
                 self._job_reconcile_positions,
-                "cron", minute="*/5",
+                "interval", seconds=60,
                 id="crypto_reconciliation", name="Crypto Position Reconciliation",
-                replace_existing=True, misfire_grace_time=120,
+                replace_existing=True, misfire_grace_time=30,
             )
             # Liquidity check every 15 min (top 3 pairs)
             s.add_job(
@@ -336,6 +356,13 @@ class KarsaApp:
                 "cron", minute="*/15",
                 id="crypto_liquidity", name="Crypto Liquidity Check",
                 replace_existing=True, misfire_grace_time=120,
+            )
+            # OMS stuck order cleanup every 2 min
+            s.add_job(
+                self._job_oms_cleanup,
+                "interval", minutes=2,
+                id="oms_cleanup", name="OMS Stuck Order Cleanup",
+                replace_existing=True, misfire_grace_time=60,
             )
 
         logger.info("jobs_registered", count=len(self.scheduler.get_jobs()))
@@ -895,9 +922,23 @@ class KarsaApp:
         except Exception as e:
             logger.error("liquidity_check_job_failed", error=str(e))
 
+    async def _job_oms_cleanup(self):
+        """Cancel stuck limit orders and sync OMS state with exchange."""
+        try:
+            if self.oms:
+                stuck = await self.oms.cleanup_stuck_orders()
+                await self.oms.sync_from_exchange()
+                logger.info("oms_cleanup_done", stuck_cancelled=len(stuck))
+        except Exception as e:
+            logger.error("oms_cleanup_failed", error=str(e))
+
     async def shutdown(self):
         """Graceful shutdown."""
         logger.info("shutting_down")
+        if hasattr(self, 'sl_engine') and self.sl_engine:
+            await self.sl_engine.stop()
+        if hasattr(self, 'ws_manager') and self.ws_manager:
+            await self.ws_manager.stop()
         if self.scheduler and self.scheduler.running:
             self.scheduler.shutdown(wait=False)
         if self.mcp:
@@ -921,6 +962,16 @@ class KarsaApp:
         config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="warning")
         server = uvicorn.Server(config)
         loop.create_task(server.serve())
+
+        # Listen for profile changes to auto-refresh universe
+        if self.universe_engine:
+            loop.create_task(self.universe_engine.listen_profile_changes())
+
+        # Start WebSocket price streaming and stop-loss engine
+        if self.ws_manager:
+            loop.create_task(self.ws_manager.run())
+        if self.sl_engine:
+            loop.create_task(self.sl_engine.run())
 
         # Keep running until shutdown signal
         await self._shutdown.wait()

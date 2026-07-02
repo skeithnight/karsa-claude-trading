@@ -343,3 +343,51 @@ CREATE TABLE IF NOT EXISTS crypto_reconciliation_logs (
 -- ohlcv_cache: RANGE partition on timestamp (monthly)
 -- audit_logs: RANGE partition on created_at (monthly)
 -- Consider pg_partman for automated partition management.
+
+-- 18. Risk Profile Audit (from REVIEW_QWEN)
+CREATE TABLE IF NOT EXISTS risk_profile_audit (
+    id SERIAL PRIMARY KEY,
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    previous_profile VARCHAR(20) NOT NULL,
+    new_profile VARCHAR(20) NOT NULL,
+    changed_by VARCHAR(100) NOT NULL,
+    reason TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_risk_profile_audit_ts ON risk_profile_audit(timestamp DESC);
+
+-- 19. Universe History (from REVIEW_QWEN)
+CREATE TABLE IF NOT EXISTS universe_history (
+    id SERIAL PRIMARY KEY,
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    universe_json JSONB NOT NULL,
+    coin_count INTEGER,
+    selection_criteria TEXT,
+    risk_profile VARCHAR(20),
+    refresh_duration_ms INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_universe_history_ts ON universe_history(timestamp DESC);
+
+-- 20. Trade Memory (PGVector, from REVIEW_GROK)
+-- Requires: pgvector extension (use pgvector/pgvector:pg15 Docker image)
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE IF NOT EXISTS trade_memory (
+    id SERIAL PRIMARY KEY,
+    ticker VARCHAR(20) NOT NULL,
+    regime VARCHAR(30) NOT NULL,
+    strategy VARCHAR(100),
+    trade_thesis TEXT NOT NULL,
+    outcome VARCHAR(20) NOT NULL CHECK (outcome IN ('WIN', 'LOSS', 'BREAKEVEN')),
+    pnl_pct DECIMAL(10, 2),
+    reasoning TEXT,
+    embedding vector(384),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_trade_memory_ticker ON trade_memory(ticker);
+CREATE INDEX IF NOT EXISTS idx_trade_memory_regime ON trade_memory(regime);
+CREATE INDEX IF NOT EXISTS idx_trade_memory_embedding ON trade_memory USING hnsw (embedding vector_cosine_ops);
+
+-- 21. Enhance signals table with risk profile tracking
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS risk_profile_at_generation VARCHAR(20) DEFAULT 'conservative';
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS position_size_calculated DECIMAL(18, 8);
+CREATE INDEX IF NOT EXISTS idx_signals_risk_profile ON signals(risk_profile_at_generation);

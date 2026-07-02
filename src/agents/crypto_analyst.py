@@ -213,6 +213,22 @@ class CryptoAnalyst(BaseAgent):
         self._profile_name = profile_name
         self.system_prompt = _build_system_prompt(self._current_config, self._profile_name)
 
+    async def run(self, task: str) -> dict:
+        """Override run to inject trade memory context when available."""
+        try:
+            from src.agents.memory_retriever import get_relevant_trade_memory
+            import re
+            ticker_match = re.search(r'([A-Z]{3,10})USDT', task)
+            ticker = ticker_match.group(1) if ticker_match else ""
+            regime = self._current_config.get("primary_strategy", "unknown")
+            if ticker:
+                memory = await get_relevant_trade_memory(ticker, regime)
+                if memory:
+                    task = f"{task}\n\n{memory}"
+        except Exception:
+            pass  # memory is optional
+        return await super().run(task)
+
     def update_strategy(self, regime_state: str) -> dict:
         """Update agent's strategy based on current regime.
 

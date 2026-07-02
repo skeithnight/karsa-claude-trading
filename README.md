@@ -11,13 +11,15 @@ Telegram Bot ←→ Orchestrator ←→ 9Router (API Gateway) ←→ Anthropic/D
                      ↓ dispatches
          IDX Analyst / US Analyst / ETF Analyst / Portfolio Analyst / Crypto Analyst
                      ↓ data from
-         TradingView TA (direct Python) + Bybit REST (pybit) + Redis cache
+         TradingView TA (direct Python) + Bybit REST (pybit via WARP proxy) + Redis cache
                      ↓ state in
          PostgreSQL (audit, trades, signals, positions) + Redis (cache, pub/sub, rate limiting, kill switch)
                      ↓ advisory layer
          RegimeFilter (VIX/SPY/IHSG) + CryptoRegime (Hurst+ADX) + PositionSizer (ATR) + StrategySelector
                      ↓ risk gates
          8 crypto risk gates → SOR (limit→reprice→market) → TrailingStop / PositionManager / Reconciler
+                     ↓ monitoring
+         Prometheus (metrics scrape) → Grafana (dashboards) + Alertmanager (alerts)
 ```
 
 ## Quick Start
@@ -40,9 +42,14 @@ docker compose up --build
 | `9router` | 20129→20128 | LLM API gateway with fallback routing |
 | `redis` | 6379 | Cache, rate limiting, pub/sub, kill switch |
 | `postgres` | 5432 | Audit logs, trades, signals, portfolio state |
-| `karsa-orchestrator` | 8000 | Agent scheduler, health checks (`/health`, `/health/scheduler`) |
+| `warp` | 1080 | Cloudflare WARP SOCKS5 proxy for Bybit |
+| `karsa-orchestrator` | 8000 | Agent scheduler, health checks (`/health`, `/health/scheduler`, `/metrics`) |
+| `karsa-crypto-orchestrator` | 8001 | Dedicated crypto scheduler, health on 8001 |
 | `karsa-telegram-bot` | 8443 | IDX/US/ETF HITL approval (polling or webhook) |
 | `karsa-crypto-bot` | — | Crypto trading bot (separate Telegram bot, polling) |
+| `prometheus` | 9090 | Metrics scraping from orchestrator + crypto-orchestrator |
+| `grafana` | 3000 | Dashboards (admin/admin default) |
+| `alertmanager` | 9093 | Alert routing |
 
 ## Trading Strategies
 
@@ -111,6 +118,9 @@ pytest tests/test_agents/test_idx_analyst.py -v
 - **Paper trading first** — Shadow execution engine simulates trades before real capital deployment.
 - **Crypto auto-execute** — Scan → 8 risk gates → SOR → save → notify. No HITL for crypto.
 - **Bidirectional reconciliation** — Every 5min, DB ↔ Bybit exchange state drift detection and auto-fix.
+- **WARP SOCKS5 proxy** — All Bybit API traffic routed through Cloudflare WARP for IP stability.
+- **WebSocket-driven stop-loss** — Sub-second SL breach detection via persistent Bybit WS, bypasses LLM loop.
+- **Prometheus + Grafana monitoring** — 6 metric domains (P&L, risk, positions, execution, infrastructure, WS health) scraped every 15s.
 
 ## License
 

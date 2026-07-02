@@ -95,6 +95,35 @@ app = FastAPI(title="Karsa Crypto Bot", lifespan=lifespan)
 async def health_check():
     return {"status": "healthy", "service": "crypto-bot"}
 
+@app.post("/alert")
+async def alertmanager_webhook(payload: dict):
+    """Receive Alertmanager webhook and forward to Telegram."""
+    alerts = payload.get("alerts", [])
+    for alert in alerts:
+        status = alert.get("status", "firing")
+        severity = alert.get("labels", {}).get("severity", "unknown")
+        summary = alert.get("annotations", {}).get("summary", "No summary")
+        desc = alert.get("annotations", {}).get("description", "")
+
+        icon = "🚨" if status == "firing" else "✅"
+        prefix = "🔴 CRITICAL" if severity == "critical" else "🟡 WARNING"
+
+        text = f"{icon} {prefix}\n<b>{summary}</b>"
+        if desc:
+            text += f"\n{desc}"
+
+        try:
+            chat_id = settings.TELEGRAM_CHAT_ID
+            if chat_id and telegram_app:
+                await telegram_app.bot.send_message(
+                    chat_id=chat_id, text=text, parse_mode="HTML"
+                )
+                logger.info("alert_forwarded", status=status, severity=severity)
+        except Exception as e:
+            logger.error("alert_forward_failed", error=str(e))
+
+    return {"status": "ok", "processed": len(alerts)}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8444)

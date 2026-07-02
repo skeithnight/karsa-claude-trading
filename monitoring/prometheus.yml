@@ -2,20 +2,21 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+rule_files:
+  - "alerts/*.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
 scrape_configs:
   - job_name: 'karsa-orchestrator'
     static_configs:
       - targets: ['karsa-orchestrator:8000']
-    metrics_path: '/health'
+    metrics_path: '/metrics'
 
-  - job_name: 'redis-exporter'
+  - job_name: 'karsa-crypto-orchestrator'
     static_configs:
-      - targets: ['redis-exporter:9121']
-
-  - job_name: 'postgres-exporter'
-    static_configs:
-      - targets: ['postgres-exporter:9187']
-
-  - job_name: '9router'
-    static_configs:
-      - targets: ['karsa-9router:20128']
+      - targets: ['karsa-crypto-orchestrator:8001']
+    metrics_path: '/metrics'
