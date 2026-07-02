@@ -1,0 +1,71 @@
+groups:
+  - name: risk_profile_alerts
+    interval: 30s
+    rules:
+      - alert: RapidProfileSwitching
+        expr: rate(karsa_risk_profile_changes_total[5m]) > 10
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Rapid risk profile switching detected"
+          description: "Profile changed {{ $value }} times in 5 minutes"
+
+      - alert: AggressiveModeActive
+        expr: karsa_active_risk_profile == 2
+        for: 1h
+        labels:
+          severity: info
+        annotations:
+          summary: "Aggressive mode active for >1 hour"
+          description: "Current profile: AGGRESSIVE. Monitor closely."
+
+      - alert: HighRejectionRate
+        expr: |
+          sum(rate(karsa_signal_rejections_total[1h]))
+          /
+          (sum(rate(karsa_signal_rejections_total[1h])) + sum(rate(karsa_signals_executed_total[1h])))
+          > 0.8
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Signal rejection rate >80%"
+          description: "Most signals are being rejected. Check profile settings."
+
+      - alert: PositionSizeExceeded
+        expr: karsa_position_size_pct_sum / karsa_position_size_pct_count > 0.10
+        labels:
+          severity: critical
+        annotations:
+          summary: "Average position size exceeded 10% hard limit"
+
+  - name: universe_alerts
+    interval: 60s
+    rules:
+      - alert: UniverseRefreshFailed
+        expr: increase(karsa_universe_refresh_total{status="failure"}[4h]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Universe refresh failed"
+          description: "Dynamic universe generation has failed. Check Bybit API connectivity."
+
+      - alert: UniverseTooSmall
+        expr: karsa_universe_size < 5
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Universe has fewer than 5 coins"
+          description: "Current universe size: {{ $value }}. Check liquidity filters."
+
+      - alert: UniverseRefreshStale
+        expr: time() - karsa_universe_refresh_total{status="success"} > 28800
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Universe not refreshed in >8 hours"
+          description: "Last successful refresh was {{ $value }} seconds ago."

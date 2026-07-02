@@ -296,6 +296,56 @@ class BybitClient:
             logger.error("bybit_top_movers_failed", error=str(e))
             return []
 
+    async def get_all_perps(self, min_volume_usd: float = 1_000_000) -> list[dict]:
+        """Fetch all USDT perpetuals with data needed for universe scoring.
+
+        Returns list of {symbol, volume_24h_usd, price_change_pct, turnover_ratio, price, funding_rate, open_interest}.
+        Cached for 5 minutes. Used by UniverseEngine for dynamic universe generation.
+        """
+        cache_key = ("all_perps", min_volume_usd)
+        cached = self._cache.get(cache_key)
+        if cached and time.time() - cached[1] < 300:
+            return cached[0]
+
+        try:
+            async with self._semaphore:
+                await self._throttle()
+                resp = await asyncio.to_thread(
+                    self._http_client.get_tickers,
+                    category="linear",
+                )
+
+            if resp.get("retCode") != 0:
+                logger.error("bybit_all_perps_failed", error=resp.get("retMsg"))
+                return []
+
+            result_list = resp.get("result", {}).get("list", [])
+            perps = []
+            for data in result_list:
+                symbol = data.get("symbol", "")
+                if not symbol.endswith("USDT"):
+                    continue
+                turnover = _safe_float(data.get("turnover24h", 0))
+                if turnover < min_volume_usd:
+                    continue
+                oi = _safe_float(data.get("openInterest", 0))
+                perps.append({
+                    "symbol": symbol,
+                    "volume_24h_usd": turnover,
+                    "price_change_pct": _safe_float(data.get("price24hPcnt", 0)) * 100,
+                    "turnover_ratio": turnover / (oi * _safe_float(data.get("lastPrice", 1))) if oi > 0 else 0,
+                    "price": _safe_float(data.get("lastPrice", 0)),
+                    "funding_rate": _safe_float(data.get("fundingRate", 0)),
+                    "open_interest": oi,
+                })
+
+            self._cache[cache_key] = (perps, time.time())
+            return perps
+
+        except Exception as e:
+            logger.error("bybit_all_perps_failed", error=str(e))
+            return []
+
     async def get_ticker(self, symbol: str) -> dict:
         """Get real-time ticker for a Bybit perpetual symbol (e.g. BTCUSDT)."""
         cache_key = ("ticker", symbol)

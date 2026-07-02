@@ -352,25 +352,170 @@ async def walkforward_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _reply(update, "❌ Walk-Forward simulation failed.", reply_markup=build_main_keyboard())
 
 
+# --- Risk Profile Commands ---
+
+async def mode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show current risk profile with inline switching keyboard."""
+    if not _is_authorized(update): return
+    orch = context.bot_data.get("orchestrator")
+    if not orch or not orch.profile_manager:
+        await _reply(update, "⚠️ Profile manager not initialized.")
+        return
+
+    p = await orch.profile_manager.get_active_profile()
+    lines = [
+        bold(f"{p.emoji} Current Risk Profile"),
+        "",
+        bold("Mode: ") + p.name.upper().replace("_", " "),
+        "",
+        bold("Parameters:"),
+        f"├ Min Confidence: {p.min_confidence}%",
+        f"├ Max Position Size: {p.max_position_size_pct:.2%}",
+        f"├ Stop Loss: {p.stop_loss_atr_mult}x ATR",
+        f"├ Take Profit: {p.take_profit_atr_mult}x ATR",
+        f"├ Max Open Positions: {p.max_open_positions}",
+        f"├ Max Daily Trades: {p.max_daily_trades}",
+        f"└ Min 24h Volume: ${p.min_volume_24h_usd:,.0f}",
+    ]
+    keyboard = [[
+        InlineKeyboardButton("🛡️ Conservative", callback_data="mode_conservative"),
+        InlineKeyboardButton("⚖️ Semi-Agg", callback_data="mode_semi_aggressive"),
+        InlineKeyboardButton("🔥 Aggressive", callback_data="mode_aggressive"),
+    ]]
+    await _reply(update, fmt(*lines, separator="\n"),
+                 reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def setmode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Switch risk profile. Usage: /setmode <conservative|semi_aggressive|aggressive>"""
+    if not _is_authorized(update): return
+    orch = context.bot_data.get("orchestrator")
+    if not orch or not orch.profile_manager:
+        await _reply(update, "⚠️ Profile manager not initialized.")
+        return
+
+    if not context.args:
+        await _reply(update, "Usage: /setmode <conservative|semi_aggressive|aggressive>")
+        return
+
+    from src.risk.profile_manager import RiskProfile
+    name = context.args[0].lower().replace("-", "_")
+    try:
+        profile = RiskProfile(name)
+    except ValueError:
+        await _reply(update, f"❌ Invalid profile: {name}\nValid: conservative, semi_aggressive, aggressive")
+        return
+
+    user = update.effective_user
+    changed_by = f"tg_{user.id}"
+    ok = await orch.profile_manager.set_profile(profile, changed_by, f"Manual via /setmode")
+    if not ok:
+        await _reply(update, "⏳ Cooldown active — wait 5 minutes between changes.")
+        return
+
+    p = await orch.profile_manager.get_active_profile()
+    await _reply(update, fmt(bold(f"✅ Switched to {p.emoji} {p.name.upper()}"), separator="\n"),
+                 reply_markup=build_main_keyboard())
+
+
+async def universe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show current dynamic crypto universe."""
+    if not _is_authorized(update): return
+    orch = context.bot_data.get("orchestrator")
+    if not orch or not orch.universe_engine:
+        await _reply(update, "⚠️ Universe engine not initialized.")
+        return
+
+    universe = await orch.universe_engine.get_current()
+    lines = [
+        bold("📡 Crypto Universe"),
+        f"Scanning {len(universe)} coins:",
+        "",
+    ]
+    for i, sym in enumerate(universe, 1):
+        lines.append(f"  {i}. {sym}")
+    lines.append("")
+    lines.append(italic("Refreshes every 4 hours. Use /refresh_universe to force."))
+
+    keyboard = [[InlineKeyboardButton("🔄 Refresh Now", callback_data="universe_refresh")]]
+    await _reply(update, fmt(*lines, separator="\n"),
+                 reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def refresh_universe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Force regenerate the dynamic universe."""
+    if not _is_authorized(update): return
+    orch = context.bot_data.get("orchestrator")
+    if not orch or not orch.universe_engine:
+        await _reply(update, "⚠️ Universe engine not initialized.")
+        return
+
+    msg = await _reply(update, "🔄 Regenerating universe...")
+    try:
+        universe = await orch.universe_engine.generate()
+        await msg.edit_text(str(fmt(
+            bold("✅ Universe Updated"),
+            f"Now scanning {len(universe)} coins: {', '.join(universe[:8])}{'...' if len(universe) > 8 else ''}",
+            separator="\n"
+        )), parse_mode="HTML", reply_markup=build_main_keyboard())
+    except Exception as e:
+        await msg.edit_text(f"❌ Universe refresh failed: {e}")
+
+
 # --- Global Callback Router ---
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
-    
+
     # 5 Core Views
     if data == "cmd_dashboard": await dashboard_cmd(update, context)
     elif data == "cmd_activity": await activity_cmd(update, context)
     elif data == "cmd_portfolio": await portfolio_cmd(update, context)
     elif data == "cmd_performance": await performance_cmd(update, context)
     elif data == "cmd_control": await control_cmd(update, context)
-    
+
     # Operations
     elif data == "crypto_kill": await _execute_kill(update, context)
     elif data == "crypto_sellall": await _execute_sellall(update, context)
     elif data == "crypto_resume": await _execute_resume(update, context)
     elif data == "crypto_walkforward": await walkforward_cmd(update, context)
+
+    # Risk Profile switching
+    elif data.startswith("mode_"):
+        from src.risk.profile_manager import RiskProfile
+        profile_name = data.replace("mode_", "")
+        try:
+            profile = RiskProfile(profile_name)
+        except ValueError:
+            await query.edit_message_text("❌ Invalid profile")
+            return
+        orch = context.bot_data.get("orchestrator")
+        if orch and orch.profile_manager:
+            user = query.from_user
+            ok = await orch.profile_manager.set_profile(profile, f"tg_{user.id}", "Inline keyboard")
+            if not ok:
+                await query.edit_message_text("⏳ Cooldown active — wait 5 minutes.")
+                return
+            p = await orch.profile_manager.get_active_profile()
+            await query.edit_message_text(
+                str(fmt(bold(f"✅ Switched to {p.emoji} {p.name.upper()}"), separator="\n")),
+                parse_mode="HTML", reply_markup=build_main_keyboard())
+
+    # Universe refresh
+    elif data == "universe_refresh":
+        orch = context.bot_data.get("orchestrator")
+        if orch and orch.universe_engine:
+            try:
+                universe = await orch.universe_engine.generate()
+                await query.edit_message_text(
+                    str(fmt(bold("✅ Universe Updated"),
+                           f"Scanning {len(universe)} coins: {', '.join(universe[:8])}",
+                           separator="\n")),
+                    parse_mode="HTML", reply_markup=build_main_keyboard())
+            except Exception:
+                await query.edit_message_text("❌ Refresh failed")
 
 # Add fallback routing for root commands matching the UI structure
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):

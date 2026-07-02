@@ -23,6 +23,9 @@ logger = get_logger("main")
 # FastAPI app for health endpoints
 app = FastAPI(title="Karsa Orchestrator", version="0.1.0")
 
+# Module-level reference for API routes
+karsa_app: "KarsaApp | None" = None
+
 
 class KarsaApp:
     """Main application container with APScheduler integration."""
@@ -57,6 +60,16 @@ class KarsaApp:
 
         # Agents & orchestrator
         self.orchestrator = Orchestrator(self.mcp, self.cache, self.rate_limiter)
+
+        # Risk profile + dynamic universe engine
+        from src.risk.profile_manager import RiskProfileManager
+        from src.advisory.crypto_universe import UniverseEngine
+        self.profile_manager = RiskProfileManager(self.redis_client)
+        self.orchestrator.profile_manager = self.profile_manager
+        bybit = self.mcp._get_bybit()
+        self.universe_engine = UniverseEngine(bybit, self.redis_client, self.profile_manager)
+        self.orchestrator.universe_engine = self.universe_engine
+
         logger.info("orchestrator_ready")
 
         # APScheduler with in-memory job store
@@ -68,8 +81,13 @@ class KarsaApp:
         self.scheduler.start()
         logger.info("scheduler_started")
 
-        # Wire health endpoints into FastAPI
+        # Wire health endpoints + API routes into FastAPI
         self._register_health_routes()
+        self._register_api_routes()
+
+        # Set module-level reference for API routes
+        global karsa_app
+        karsa_app = self
 
         logger.info("karsa_ready")
 
@@ -114,6 +132,20 @@ class KarsaApp:
                 "jobs": jobs,
                 "job_count": len(jobs),
             }
+
+    def _register_api_routes(self):
+        """Register REST API routes and /metrics endpoint."""
+        from src.api.routes import router as api_router
+        app.include_router(api_router)
+
+        @app.get("/metrics")
+        async def metrics():
+            from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+            from fastapi.responses import Response
+            return Response(
+                content=generate_latest(),
+                media_type=CONTENT_TYPE_LATEST,
+            )
 
     def _register_jobs(self):
         """Register all periodic jobs.
@@ -217,6 +249,13 @@ class KarsaApp:
                 self._job_scan_crypto,
                 "cron", hour="*", minute=15,
                 id="scan_crypto", name="Crypto Market Scan (24/7)",
+                replace_existing=True, misfire_grace_time=600,
+            )
+            # Refresh dynamic universe every 4 hours
+            s.add_job(
+                self._job_refresh_universe,
+                "cron", hour="*/4", minute=5,
+                id="refresh_universe", name="Crypto Universe Refresh (every 4h)",
                 replace_existing=True, misfire_grace_time=600,
             )
             # Monitor open positions every 15 minutes
@@ -338,6 +377,15 @@ class KarsaApp:
             logger.info("crypto_scan_done", signals=len(signals))
         except Exception as e:
             logger.error("crypto_scan_failed", error=str(e))
+
+    async def _job_refresh_universe(self):
+        """Refresh dynamic crypto universe — score, rank, cache."""
+        try:
+            if self.universe_engine:
+                universe = await self.universe_engine.generate()
+                logger.info("universe_refreshed", count=len(universe))
+        except Exception as e:
+            logger.error("universe_refresh_failed", error=str(e))
 
     async def _job_monitor_crypto_positions(self):
         """Monitor open crypto positions — update P&L, alert on significant moves."""

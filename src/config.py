@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     COST_MONTHLY_CEILING_USD: float = 300.0
     COST_DAILY_LIMIT_USD: float = 15.0
 
+    # Risk Profile
+    DEFAULT_RISK_PROFILE: str = "conservative"
+    ENABLE_RISK_PROFILE_SWITCHING: bool = True
+
     # Redis Keys
     REDIS_PREFIX: str = "karsa"
 

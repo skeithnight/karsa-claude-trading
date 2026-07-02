@@ -50,15 +50,41 @@ RESPOND WITH ONLY a valid JSON object:
 If criteria not met, return confidence_score < 50 with null prices."""
 
 
-def _build_system_prompt(strategy_config: dict) -> str:
-    """Build dynamic system prompt from strategy config."""
+_PROFILE_GUIDANCE = {
+    "conservative": (
+        "RISK PROFILE: CONSERVATIVE — Capital preservation first.\n"
+        "- Only recommend trades with very high confidence (>=70).\n"
+        "- Require multiple confirming indicators (trend, volume, momentum).\n"
+        "- If uncertain, return confidence < 50 (NO TRADE).\n"
+        "- Risk/reward ratio must be at least 1:2.\n"
+    ),
+    "semi_aggressive": (
+        "RISK PROFILE: SEMI-AGGRESSIVE — Balanced risk-reward.\n"
+        "- Look for trades with moderate-to-high confidence (>=50).\n"
+        "- Accept trend continuation setups with solid momentum.\n"
+        "- Risk/reward ratio should be at least 1:2.\n"
+    ),
+    "aggressive": (
+        "RISK PROFILE: AGGRESSIVE — Maximize opportunity capture.\n"
+        "- Consider trades with lower confidence thresholds (>=35).\n"
+        "- Look for early momentum shifts and breakout setups.\n"
+        "- Accept higher volatility and wider stops.\n"
+        "- IMPORTANT: Do NOT artificially inflate confidence scores. Be honest.\n"
+    ),
+}
+
+
+def _build_system_prompt(strategy_config: dict, profile_name: str = "semi_aggressive") -> str:
+    """Build dynamic system prompt from strategy config + risk profile."""
     regime_rules = strategy_config.get("prompt_modifier", "")
     strategy_name = strategy_config.get("primary_strategy", "Trend Sentiment Convergence")
     size_mult = strategy_config.get("size_multiplier", 1.0)
+    profile_guidance = _PROFILE_GUIDANCE.get(profile_name, _PROFILE_GUIDANCE["semi_aggressive"])
 
     dynamic_section = (
         f"\n\nACTIVE STRATEGY: {strategy_name}\n"
         f"SIZE MULTIPLIER: {size_mult}x\n\n"
+        f"{profile_guidance}\n"
         f"REGIME-SPECIFIC RULES:\n{regime_rules}\n"
         "Apply these regime rules in addition to the core rules above. "
         "The regime rules take precedence when there is a conflict."
@@ -170,16 +196,22 @@ class CryptoAnalyst(BaseAgent):
     def __init__(self, mcp: MCPClient, rate_limiter: RateLimiter | None = None):
         self.strategy_selector = StrategySelector()
         self._current_config = self.strategy_selector.select("TREND_BULL")  # default
+        self._profile_name = "semi_aggressive"  # default, updated by orchestrator
 
         super().__init__(
             name="crypto_analyst",
             combo_name="karsa-routine",
-            system_prompt=_build_system_prompt(self._current_config),
+            system_prompt=_build_system_prompt(self._current_config, self._profile_name),
             tools=self.TOOLS,
             mcp=mcp,
             rate_limiter=rate_limiter,
         )
         self._capture_traces = True
+
+    def set_profile(self, profile_name: str):
+        """Update risk profile and rebuild system prompt."""
+        self._profile_name = profile_name
+        self.system_prompt = _build_system_prompt(self._current_config, self._profile_name)
 
     def update_strategy(self, regime_state: str) -> dict:
         """Update agent's strategy based on current regime.
@@ -188,7 +220,7 @@ class CryptoAnalyst(BaseAgent):
         Returns the strategy config that was applied.
         """
         self._current_config = self.strategy_selector.select(regime_state)
-        self.system_prompt = _build_system_prompt(self._current_config)
+        self.system_prompt = _build_system_prompt(self._current_config, self._profile_name)
 
         from src.utils.logging import get_logger
         get_logger("crypto_analyst").info(

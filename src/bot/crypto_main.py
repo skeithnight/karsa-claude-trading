@@ -14,6 +14,7 @@ from src.config import settings
 from src.bot.crypto_handlers import (
     start_cmd, dashboard_cmd, activity_cmd,
     portfolio_cmd, performance_cmd, control_cmd,
+    mode_cmd, setmode_cmd, universe_cmd, refresh_universe_cmd,
     button_callback
 )
 from src.data.cache import CacheManager
@@ -39,6 +40,10 @@ async def lifespan(app: FastAPI):
     telegram_app.add_handler(CommandHandler("portfolio", portfolio_cmd))
     telegram_app.add_handler(CommandHandler("performance", performance_cmd))
     telegram_app.add_handler(CommandHandler("control", control_cmd))
+    telegram_app.add_handler(CommandHandler("mode", mode_cmd))
+    telegram_app.add_handler(CommandHandler("setmode", setmode_cmd))
+    telegram_app.add_handler(CommandHandler("universe", universe_cmd))
+    telegram_app.add_handler(CommandHandler("refresh_universe", refresh_universe_cmd))
     
     # Unified Callback Handler
     telegram_app.add_handler(CallbackQueryHandler(button_callback))
@@ -50,6 +55,14 @@ async def lifespan(app: FastAPI):
     rl = RateLimiter(redis_client)
     orch = Orchestrator(mcp, cache, rl)
     
+    # Wire risk profile + universe engine
+    from src.risk.profile_manager import RiskProfileManager
+    from src.advisory.crypto_universe import UniverseEngine
+    profile_mgr = RiskProfileManager(redis_client)
+    orch.profile_manager = profile_mgr
+    bybit = mcp._get_bybit()
+    orch.universe_engine = UniverseEngine(bybit, redis_client, profile_mgr)
+
     telegram_app.bot_data["orchestrator"] = orch
     telegram_app.bot_data["redis_client"] = redis_client
 

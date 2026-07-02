@@ -102,6 +102,10 @@ class Orchestrator:
         self._crypto_risk_manager = None
         self._crypto_sor = None
 
+        # Risk profile + dynamic universe (set by main.py after init)
+        self.profile_manager = None
+        self.universe_engine = None
+
     def _get_crypto_risk_manager(self):
         if self._crypto_risk_manager is None:
             from src.risk.crypto_risk_manager import CryptoRiskManager
@@ -255,8 +259,33 @@ class Orchestrator:
                     logger.warning("invalid_signal", market=market, ticker=ticker, issues=issues)
                     continue
 
-                if result.get("confidence_score", 0) >= 50:
+                # Profile-aware confidence gate for crypto
+                min_conf = 50
+                profile_name = "default"
+                if market == "CRYPTO" and self.profile_manager:
+                    try:
+                        p = await self.profile_manager.get_active_profile()
+                        min_conf = p.min_confidence
+                        profile_name = p.name
+                    except Exception:
+                        pass
+                confidence = result.get("confidence_score", 0)
+                if confidence >= min_conf:
                     signals.append(result)
+                    if market == "CRYPTO":
+                        try:
+                            from src.metrics.crypto_metrics import record_signal_executed, record_signal_confidence
+                            record_signal_executed(profile_name)
+                            record_signal_confidence(profile_name, confidence, True)
+                        except Exception:
+                            pass
+                elif market == "CRYPTO":
+                    try:
+                        from src.metrics.crypto_metrics import record_signal_rejection, record_signal_confidence
+                        record_signal_rejection(profile_name, f"confidence_{confidence}<{min_conf}")
+                        record_signal_confidence(profile_name, confidence, False)
+                    except Exception:
+                        pass
 
                 # Save trace for all crypto signals (even low confidence)
                 if trace_data and market == "CRYPTO":
@@ -299,12 +328,23 @@ class Orchestrator:
 
         # Build dynamic universe from Bybit top movers
         try:
-            bybit = self.mcp._get_bybit()
-            universe = await get_dynamic_universe(bybit)
+            if self.universe_engine:
+                universe = await self.universe_engine.get_current()
+            else:
+                bybit = self.mcp._get_bybit()
+                universe = await get_dynamic_universe(bybit)
             logger.info("crypto_dynamic_universe", count=len(universe), symbols=universe[:5])
         except Exception as e:
             logger.warning("crypto_dynamic_universe_failed", error=str(e))
             universe = CRYPTO_UNIVERSE
+
+        # Update crypto agent's risk profile
+        if self.profile_manager:
+            try:
+                profile_name = await self.profile_manager.get_active_profile_name()
+                self.crypto_agent.set_profile(profile_name)
+            except Exception:
+                pass
 
         # Fetch open positions for position-aware scanning
         position_context = ""

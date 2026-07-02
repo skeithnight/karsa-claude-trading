@@ -259,6 +259,7 @@ class CryptoRiskManager:
         wallet_balance: float,
         regime: dict | None = None,
         daily_pnl_pct: float = 0.0,
+        profile_config=None,
     ) -> dict:
         """Evaluate a signal against risk constraints.
 
@@ -268,6 +269,7 @@ class CryptoRiskManager:
             wallet_balance: Total USDT equity
             regime: CryptoRegimeFilter output (optional)
             daily_pnl_pct: Today's realized P&L as percentage
+            profile_config: RiskProfileConfig (optional) — overrides thresholds
 
         Returns:
             {
@@ -285,12 +287,26 @@ class CryptoRiskManager:
         confidence = signal.get("confidence_score", 0)
         entry_price = signal.get("entry_price", 0)
 
+        # Profile-aware thresholds
+        min_confidence = 60
+        max_concurrent = self.max_concurrent
+        max_risk_pct = self.max_risk_pct
+        max_position_pct = self.max_position_pct
+        sl_mult = 1.5
+        tp_mult = 3.0
+        if profile_config:
+            min_confidence = profile_config.min_confidence
+            max_concurrent = min(profile_config.max_open_positions, self.max_concurrent)
+            max_risk_pct = min(profile_config.max_position_size_pct, self.max_position_pct)
+            sl_mult = profile_config.stop_loss_atr_mult
+            tp_mult = profile_config.take_profit_atr_mult
+
         # --- Gate 0: Basic signal validation ---
         if not entry_price or entry_price <= 0:
             return self._reject("Missing or invalid entry price")
 
-        if confidence < 60:
-            return self._reject(f"Confidence {confidence} below 60 threshold")
+        if confidence < min_confidence:
+            return self._reject(f"Confidence {confidence} below {min_confidence} threshold")
 
         if direction not in ("LONG", "SHORT"):
             return self._reject(f"Invalid direction: {direction}")
@@ -300,8 +316,8 @@ class CryptoRiskManager:
             return self._reject(f"Daily loss limit breached: {daily_pnl_pct:+.2f}%")
 
         # --- Gate 2: Max concurrent positions ---
-        if len(open_positions) >= self.max_concurrent:
-            return self._reject(f"Max {self.max_concurrent} concurrent positions reached ({len(open_positions)} open)")
+        if len(open_positions) >= max_concurrent:
+            return self._reject(f"Max {max_concurrent} concurrent positions reached ({len(open_positions)} open)")
 
         # --- Gate 3: Already have position in this ticker ---
         existing = [p for p in open_positions if p.get("symbol") == ticker or p.get("ticker") == ticker]
@@ -375,7 +391,7 @@ class CryptoRiskManager:
             else:
                 atr = entry_price * 0.02
 
-            stop_distance = atr * 2
+            stop_distance = atr * sl_mult
             if direction == "LONG":
                 stop_loss = entry_price - stop_distance
             else:
@@ -393,12 +409,12 @@ class CryptoRiskManager:
         stop_pct = stop_distance / entry_price
 
         # Position size: risk_amount / stop_distance_per_unit
-        risk_amount = wallet_balance * self.max_risk_pct * size_multiplier
+        risk_amount = wallet_balance * max_risk_pct * size_multiplier
         qty = risk_amount / stop_distance if stop_distance > 0 else 0
 
         # --- Gate 5: Max position cap ---
         position_value = qty * entry_price
-        max_position_value = wallet_balance * self.max_position_pct
+        max_position_value = wallet_balance * max_position_pct
         if position_value > max_position_value:
             qty = max_position_value / entry_price
             position_value = max_position_value
@@ -423,8 +439,8 @@ class CryptoRiskManager:
             except Exception:
                 pass  # non-fatal — proceed without funding check
 
-        # --- Take profit: 3:1 R/R ---
-        rr_ratio = 3.0
+        # --- Take profit: profile-aware R/R ---
+        rr_ratio = tp_mult
         if direction == "LONG":
             take_profit = entry_price + (stop_distance * rr_ratio)
         else:
