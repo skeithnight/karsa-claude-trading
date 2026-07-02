@@ -1,0 +1,27 @@
+docker-compose.yml
+  96c264610beec2a5 204
+monitoring/grafana/provisioning/datasources/prometheus.yml
+  96c264610beec2a5 1-10
+monitoring/grafana-dashboard.json
+  96c264610beec2a5 28,56,59,73,76,87,90,103,199,258,261,285
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "7388114c8bc4e3148512f221195fd9ef022f84de",
+  "prompts": {
+    "96c264610beec2a5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07add558-e1d9-4b2f-a70f-426aadcc2ade",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 23,
+      "total_deletions": 8,
+      "accepted_lines": 23,
+      "overriden_lines": 0
+    }
+  }
+}
