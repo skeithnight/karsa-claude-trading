@@ -231,6 +231,15 @@ class CryptoPosition(Base):
     opened_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     last_synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
+    # --- Phase 1: Lifecycle management fields ---
+    trailing_stop_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    highest_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    entry_funding_rate: Mapped[Decimal | None] = mapped_column(Numeric(12, 8))
+    regime_at_entry: Mapped[str | None] = mapped_column(String(20))
+    signal_source: Mapped[str | None] = mapped_column(String(50))
+    partial_exits_taken: Mapped[int] = mapped_column(Integer, default=0)
+    last_management_check: Mapped[datetime | None] = mapped_column(DateTime)
+
     __table_args__ = (
         CheckConstraint("side IN ('Buy', 'Sell')", name="ck_crypto_pos_side"),
         CheckConstraint("status IN ('OPEN', 'CLOSED', 'LIQUIDATED')", name="ck_crypto_pos_status"),
@@ -290,3 +299,112 @@ class CryptoPnLSnapshot(Base):
     equity: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0)
     open_positions: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class CryptoTrailingStop(Base):
+    """Trailing stop adjustment audit trail."""
+    __tablename__ = "crypto_trailing_stops"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    position_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("crypto_positions.id"), nullable=False, index=True)
+    old_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    new_price: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    trigger_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    reason: Mapped[str] = mapped_column(String(50), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class CryptoPartialExit(Base):
+    """Partial exit history — tracks scale-out events."""
+    __tablename__ = "crypto_partial_exits"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    position_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("crypto_positions.id"), nullable=False, index=True)
+    exit_pct: Mapped[int] = mapped_column(Integer, nullable=False)
+    exit_price: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    exit_qty: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    pnl_usdt: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    reason: Mapped[str] = mapped_column(String(50), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class CryptoCircuitBreakerEvent(Base):
+    """Circuit breaker trigger log."""
+    __tablename__ = "crypto_circuit_breaker_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    breaker_type: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    severity: Mapped[str] = mapped_column(String(10), nullable=False)
+    details: Mapped[dict | None] = mapped_column(JSON)
+    triggered_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    __table_args__ = (
+        CheckConstraint("breaker_type IN ('DAILY_DD', 'VOLATILITY', 'CORRELATION')", name="ck_cb_breaker_type"),
+        CheckConstraint("severity IN ('WARNING', 'HALT')", name="ck_cb_severity"),
+    )
+
+
+class CryptoReconciliationLog(Base):
+    """Position reconciliation drift log."""
+    __tablename__ = "crypto_reconciliation_logs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    position_id: Mapped[int | None] = mapped_column(BigInteger)
+    drift_type: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    exchange_state: Mapped[dict | None] = mapped_column(JSON)
+    db_state: Mapped[dict | None] = mapped_column(JSON)
+    resolution: Mapped[str | None] = mapped_column(String(50))
+    detected_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+    __table_args__ = (
+        CheckConstraint("drift_type IN ('PHANTOM', 'MISSING', 'SIZE_DRIFT')", name="ck_recon_drift_type"),
+    )
+
+
+class ReasoningTrace(Base):
+    """Agent reasoning traces — full LLM conversation log for analysis and replay."""
+    __tablename__ = "reasoning_traces"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    signal_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
+    agent_name: Mapped[str] = mapped_column(String(50), nullable=False)
+    ticker: Mapped[str | None] = mapped_column(String(20))
+    market: Mapped[str | None] = mapped_column(String(10))
+    system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    user_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    tools_used: Mapped[list | None] = mapped_column(JSON)
+    tool_results: Mapped[list | None] = mapped_column(JSON)
+    llm_response: Mapped[str | None] = mapped_column(Text)
+    reasoning_extracted: Mapped[str | None] = mapped_column(Text)
+    strategy_used: Mapped[str | None] = mapped_column(String(100))
+    regime_at_time: Mapped[str | None] = mapped_column(String(20))
+    confidence_score: Mapped[int | None] = mapped_column(Integer)
+    iterations: Mapped[int] = mapped_column(Integer, default=1)
+    model_used: Mapped[str | None] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        CheckConstraint("market IN ('IDX', 'US', 'ETF', 'CRYPTO')", name="ck_trace_market"),
+    )
+
+
+class StrategyRecommendation(Base):
+    """LLM-generated strategy improvement recommendations from CryptoAuditor."""
+    __tablename__ = "strategy_recommendations"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    recommendation_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    priority: Mapped[str] = mapped_column(String(10), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    expected_impact: Mapped[str | None] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(20), default="PENDING")
+    metrics_snapshot: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    __table_args__ = (
+        CheckConstraint("priority IN ('HIGH', 'MEDIUM', 'LOW')", name="ck_recommendation_priority"),
+        CheckConstraint("status IN ('PENDING', 'ACCEPTED', 'REJECTED', 'APPLIED')", name="ck_recommendation_status"),
+    )

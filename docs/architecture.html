@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Karsa Trading System - Architecture</title>
+<style>
+  body { background: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; padding: 20px; }
+  h1 { color: #58a6ff; text-align: center; margin-bottom: 8px; }
+  .subtitle { text-align: center; color: #8b949e; margin-bottom: 30px; }
+  .diagram { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; margin-bottom: 24px; overflow-x: auto; }
+  h2 { color: #79c0ff; margin: 0 0 16px; font-size: 18px; }
+  .mermaid { display: flex; justify-content: center; }
+  .note { background: #1c2128; border-left: 3px solid #58a6ff; padding: 10px 14px; margin: 12px 0; border-radius: 0 6px 6px 0; font-size: 13px; color: #8b949e; }
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; margin: 16px 0; }
+  .legend span { background: #21262d; padding: 4px 10px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<h1>Karsa Trading System</h1>
+<p class="subtitle">Docker Compose Architecture — 7 containers, 1 bridge network</p>
+
+<!-- 1. Container Topology -->
+<div class="diagram">
+<h2>1. Container Topology & Data Flow</h2>
+<div class="mermaid">
+graph LR
+    subgraph external["☁️ External Services"]
+        TG["📱 Telegram API"]
+        BYBIT["₿ Bybit REST"]
+        TV["📊 TradingView"]
+        LLM["🧠 9Router → Anthropic"]
+        CG["🦎 CoinGecko"]
+    end
+
+    subgraph docker["🐳 docker: trading-net"]
+        WARP["🔒 WARP<br/>SOCKS5 :1080"]
+        REDIS["🗄️ Redis 7<br/>cache+state"]
+        PG["🐘 PostgreSQL 15<br/>signals+trades"]
+        R9["🔀 9router<br/>:20129"]
+        ORCH["⚡ Orchestrator<br/>:8000 · 14 cron jobs"]
+        TBOT["📬 Trading Bot<br/>:8443 · 16 cmds"]
+        CBOT["🪙 Crypto Bot<br/>:8444 · 6 dashboards"]
+    end
+
+    TBOT -->|"poll"| TG
+    CBOT -->|"poll"| TG
+    ORCH -->|"LLM calls"| R9
+    R9 --> LLM
+    ORCH -->|"OHLCV"| TV
+    ORCH -->|"dominance"| CG
+    ORCH -->|"SOCKS5"| WARP
+    CBOT -->|"SOCKS5"| WARP
+    WARP --> BYBIT
+
+    ORCH --> REDIS & PG
+    TBOT --> REDIS & PG
+    CBOT --> REDIS & PG
+end
+</div>
+
+<!-- 2. Signal Pipeline -->
+<div class="diagram">
+<h2>2. Signal Pipeline — Scan → Validate → Approve → Execute</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant S as ⏰ Scheduler
+    participant O as ⚡ Orchestrator
+    participant A as 🤖 Analyst Agents
+    participant L as 🧠 LLM (9Router)
+    participant R as 🗄️ Redis
+    participant DB as 🐘 Postgres
+    participant T as 📬 Telegram
+    participant U as 👤 User
+
+    S->>O: cron trigger
+    O->>R: check emergency_stop
+    O->>O: IDX composite gate
+
+    par IDX / US / ETF
+        O->>A: scan_all_markets()
+        A->>A: fetch OHLCV (TradingView)
+        A->>L: tool-use analysis
+        L-->>A: signal JSON
+    end
+
+    A-->>O: signals[]
+    O->>O: validate (direction, confidence, regime)
+    O->>DB: INSERT signal (PENDING)
+    O->>T: alert with APPROVE/REJECT
+    T->>U: notification
+
+    U->>T: tap APPROVE
+    T->>DB: create PaperPosition
+    T->>R: update portfolio
+    T-->>U: ✅ position opened
+end
+</div>
+</div>
+
+<!-- 3. Crypto Auto-Execute -->
+<div class="diagram">
+<h2>3. Crypto Pipeline — Auto-Execute (no HITL)</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant S as ⏰ Scheduler
+    participant O as ⚡ Orchestrator
+    participant CA as 🤖 CryptoAnalyst
+    participant RISK as 🛡️ Risk Manager
+    participant SOR as 📤 Smart Order Router
+    participant W as 🔒 WARP
+    participant B as ₿ Bybit
+    participant DB as 🐘 Postgres
+    participant U as 👤 User (Crypto Bot)
+
+    S->>O: crypto scan (24/7)
+    O->>CA: scan 10 pairs
+    CA->>B: klines + funding (via WARP)
+    CA->>CA: RSI, BB, MACD, ATR
+    CA-->>O: signals
+
+    O->>RISK: 8-gate check
+    Note over RISK: ① emergency ② daily loss<br/>③ max positions ④ correlation<br/>⑤ liquidation ⑥ leverage<br/>⑦ position size ⑧ funding
+
+    alt approved
+        RISK-->>O: ✅ pass
+        O->>SOR: execute
+        SOR->>W: limit → reprice → market
+        W->>B: Bybit V5
+        B-->>SOR: fill
+        SOR-->>O: result
+        O->>DB: save CryptoPosition
+        O->>U: 📱 trade alert
+    else rejected
+        RISK-->>O: ❌ blocked
+        O->>U: 📱 rejection reason
+    end
+end
+</div>
+</div>
+
+<!-- 4. Emergency Kill Switch -->
+<div class="diagram">
+<h2>4. Emergency Kill Switch Flow</h2>
+<div class="mermaid">
+graph TD
+    TRIG1["/kill command"] --> REDIS_KEY["Redis:<br/>emergency_stop + global_halt"]
+    TRIG2["Daily loss ≥ 3%"] --> REDIS_KEY
+    TRIG3["Liquidation < 5%"] --> REDIS_KEY
+
+    REDIS_KEY --> CHECK{"is_active()?"}
+    CHECK -->|"yes"| FLAT["SOR flatten_all()<br/>market orders all positions"]
+    CHECK -->|"yes"| BLOCK["Block all new entries<br/>(8 risk gates fail)"]
+    CHECK -->|"no"| ALLOW["Normal operation"]
+
+    FLAT --> NOTIFY["🚨 Telegram alert"]
+    BLOCK --> NOTIFY
+
+    RESUME["/resume"] --> DEACT["deactivate()"]
+    DEACT --> CLEAR["Clear Redis keys"]
+    CLEAR --> ALLOW
+
+    style REDIS_KEY fill:#da3633,stroke:#f85149,color:#fff
+    style FLAT fill:#d29922,stroke:#e3b341,color:#000
+    style BLOCK fill:#d29922,stroke:#e3b341,color:#000
+    style ALLOW fill:#238636,stroke:#3fb950,color:#fff
+end
+</div>
+</div>
+
+<!-- 5. Dependency Graph -->
+<div class="diagram">
+<h2>5. Service Dependencies (health-gated)</h2>
+<div class="mermaid">
+graph BT
+    REDIS[("🗄️ Redis")]:::state
+    PG[("🐘 Postgres")]:::state
+    WARP["🔒 WARP"]:::vpn
+
+    ORCH["⚡ Orchestrator"]:::app
+    TBOT["📬 Trading Bot"]:::app
+    CBOT["🪙 Crypto Bot"]:::app
+    R9["🔀 9router"]:::infra
+
+    REDIS --> ORCH & TBOT & CBOT
+    PG --> ORCH & TBOT & CBOT
+    WARP --> ORCH & CBOT
+
+    classDef state fill:#238636,stroke:#3fb950,color:#fff
+    classDef vpn fill:#6e4b00,stroke:#d29922,color:#fff
+    classDef app fill:#1f6feb,stroke:#58a6ff,color:#fff
+    classDef infra fill:#6e7681,stroke:#8b949e,color:#fff
+end
+</div>
+</div>
+
+<div class="note">
+  <strong>Key observations:</strong><br>
+  • Trading Bot has no direct Bybit access — only Crypto Bot goes through WARP<br>
+  • Both bots share the same Redis/Postgres but have separate Telegram tokens<br>
+  • 9router is optional — falls back to direct Anthropic API if unavailable<br>
+  • WARP healthcheck pings Bybit API to confirm geo-unblocked connectivity<br>
+  • Orchestrator drives both equity scans AND crypto scans via cron
+</div>
+
+<div class="legend">
+  <span>📦 7 containers</span>
+  <span>🔗 1 bridge network (trading-net)</span>
+  <span>💾 3 named volumes (redis, postgres, 9router)</span>
+  <span>⏰ 14+ APScheduler cron jobs</span>
+  <span>🛡️ 8 crypto risk gates</span>
+  <span>📊 3 market groups (IDX/US+ETF/Crypto)</span>
+</div>
+
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+      darkMode: true,
+      background: '#161b22',
+      primaryColor: '#1f6feb',
+      primaryTextColor: '#c9d1d9',
+      primaryBorderColor: '#30363d',
+      lineColor: '#8b949e',
+      secondaryColor: '#21262d',
+      tertiaryColor: '#161b22',
+      noteBkgColor: '#2d333b',
+      noteTextColor: '#c9d1d9',
+      actorBkg: '#1f6feb',
+      actorTextColor: '#c9d1d9',
+      actorBorder: '#30363d',
+      signalColor: '#8b949e',
+      signalTextColor: '#c9d1d9',
+      labelBoxBkgColor: '#161b22',
+      labelTextColor: '#c9d1d9',
+      activationBkgColor: '#21262d',
+      activationBorderColor: '#30363d',
+      sequenceNumberColor: '#fff',
+    },
+    sequence: {
+      diagramMarginX: 20,
+      diagramMarginY: 20,
+      actorMargin: 80,
+      width: 180,
+      height: 50,
+      boxMargin: 10,
+      boxTextMargin: 5,
+      noteMargin: 10,
+      messageMargin: 40,
+      mirrorActors: false,
+      useMaxWidth: true,
+    },
+    flowchart: {
+      useMaxWidth: true,
+      htmlLabels: true,
+      curve: 'basis',
+    },
+  });
+</script>
+</body>
+</html>

@@ -150,8 +150,9 @@ def calculate_atr(ohlcv: list[dict], period: int = 14) -> dict:
             "period": period, "volatility": volatility}
 
 
-def full_analysis(ohlcv: list[dict]) -> dict:
-    """Run all indicators."""
+def full_analysis(ohlcv: list[dict], ob_imbalance: float = 0.0) -> dict:
+    """Run all indicators and include orderbook imbalance data."""
+    # ponytail: ob_imbalance from WebSockets directly injected here
     return {
         "rsi": calculate_rsi(ohlcv),
         "bollinger": calculate_bollinger(ohlcv),
@@ -159,6 +160,12 @@ def full_analysis(ohlcv: list[dict]) -> dict:
         "ema_50": calculate_ema(ohlcv, 50),
         "macd": calculate_macd(ohlcv),
         "atr": calculate_atr(ohlcv),
+        "orderbook_imbalance": {
+            "value": round(ob_imbalance, 4),
+            "signal": "strong_buy" if ob_imbalance > 0.4 else "buy" if ob_imbalance > 0.1 else \
+                      "strong_sell" if ob_imbalance < -0.4 else "sell" if ob_imbalance < -0.1 else "neutral",
+            "meaning": "Positive = Bid side heavy (bullish), Negative = Ask side heavy (bearish)"
+        }
     }
 
 

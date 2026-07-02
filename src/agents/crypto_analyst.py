@@ -1,7 +1,7 @@
 """Karsa Trading System - Crypto Analyst Agent
 
-Single agent per the existing pattern (like USAnalyst).
-Strategy: Trend + Funding Rate + OI convergence.
+Regime-adaptive agent: strategy and prompt change based on current market regime.
+Uses StrategySelector to map regime → strategy config, then builds dynamic prompts.
 Uses deterministic TA tools (RSI, BB, MACD, ATR) — LLM calls tools, not raw math.
 """
 
@@ -9,56 +9,70 @@ from typing import Any
 
 from src.agents.base import BaseAgent
 from src.advisory.crypto_technicals import calculate_rsi, calculate_bollinger, calculate_ema, calculate_macd, calculate_atr, full_analysis
+from src.advisory.strategy_selector import StrategySelector
 from src.data.mcp_client import MCPClient
 from src.utils.rate_limit import RateLimiter
 
 
-class CryptoAnalyst(BaseAgent):
-    """Crypto Trend + Sentiment agent.
+# Base prompt template — regime-specific rules are injected dynamically
+_BASE_SYSTEM_PROMPT = """You are the Crypto Analyst Agent for the Karsa Trading System.
+Analyze cryptocurrency perpetual contracts using regime-adaptive strategies.
 
-    Entry: Price > 20 EMA > 50 EMA (trend) + negative funding (contrarian) + rising OI.
-    Exit: Close below 20 EMA or 3:1 R/R target. Risk 1% of equity per trade.
-    24/7 market — signals valid for 4 hours.
-    """
-
-    SYSTEM_PROMPT = """You are the Crypto Analyst Agent for the Karsa Trading System.
-Analyze cryptocurrency perpetual contracts using the "Trend + Sentiment Convergence" strategy.
-
-STRATEGY RULES:
-1. Entry Signals (ALL must align):
-   - Trend: Price > 20 EMA > 50 EMA (bullish alignment)
-   - Funding: Negative or near-zero funding rate (crowds are short — contrarian long)
-   - Open Interest: Rising OI confirms new money entering the move
-   - Volume: Current volume > 1.5x 20-period average (momentum confirmation)
-2. Short Entry (inverse — ALL must align):
-   - Trend: Price < 20 EMA < 50 EMA
-   - Funding: Positive funding rate (crowds are long — contrarian short)
-   - OI: Rising OI on the sell side
-3. Exit: Close below 20 EMA (for longs) or 3:1 Risk/Reward target hit.
-4. Position: Volatility-targeted sizing. Risk 1% of total equity per trade.
-5. Time-in-Force: Signals valid for 4 hours (crypto is 24/7).
-6. Leverage: Max 3x. Conservative.
+CORE RULES (always apply):
+1. Trend Alignment: Use EMA crossovers (20/50) to confirm direction.
+2. Funding Contrarian: Negative funding = crowds are short (contrarian long). Positive = contrarian short.
+3. OI Confirmation: Rising OI confirms new money entering the move.
+4. Volume: Current volume > 1.5x 20-period average (momentum confirmation).
+5. Exit: Close below 20 EMA (for longs) or 3:1 Risk/Reward target hit.
+6. Position: Volatility-targeted sizing. Risk 1% of total equity per trade.
+7. Time-in-Force: Signals valid for 4 hours (crypto is 24/7).
+8. Leverage: Max 3x. Conservative.
 
 IMPORTANT:
 - Only generate a signal when confidence >= 50.
 - High confidence (70+) requires all 4 conditions aligned.
-- If market is in CHOP regime (no clear trend), reduce confidence by 20 points.
 - You MUST express the "reasoning" field in the voice of a seasoned crypto desk trader: concise, tactical, referencing technical breakouts, funding crowding, and market participant sentiment. Avoid generic lists.
+- ALWAYS include the regime name and strategy name in your reasoning.
 
 RESPOND WITH ONLY a valid JSON object:
-{
+{{
   "ticker": "BTCUSDT",
   "market": "CRYPTO",
-  "strategy": "Trend Sentiment Convergence",
+  "strategy": "<strategy name>",
   "direction": "LONG" | "SHORT" | "CLOSE",
   "confidence_score": 0-100,
   "entry_price": float | null,
   "target_price": float | null,
   "stop_loss_price": float | null,
   "tif": "4h",
-  "reasoning": "A concise, conviction-filled narrative from a seasoned crypto desk trader explaining the setup, funding dynamics, and trend justification."
-}
+  "reasoning": "A concise, conviction-filled narrative referencing the current regime, technical setup, funding dynamics, and market participant sentiment."
+}}
 If criteria not met, return confidence_score < 50 with null prices."""
+
+
+def _build_system_prompt(strategy_config: dict) -> str:
+    """Build dynamic system prompt from strategy config."""
+    regime_rules = strategy_config.get("prompt_modifier", "")
+    strategy_name = strategy_config.get("primary_strategy", "Trend Sentiment Convergence")
+    size_mult = strategy_config.get("size_multiplier", 1.0)
+
+    dynamic_section = (
+        f"\n\nACTIVE STRATEGY: {strategy_name}\n"
+        f"SIZE MULTIPLIER: {size_mult}x\n\n"
+        f"REGIME-SPECIFIC RULES:\n{regime_rules}\n"
+        "Apply these regime rules in addition to the core rules above. "
+        "The regime rules take precedence when there is a conflict."
+    )
+
+    return _BASE_SYSTEM_PROMPT + dynamic_section
+
+
+class CryptoAnalyst(BaseAgent):
+    """Regime-adaptive Crypto Trend + Sentiment agent.
+
+    Strategy and prompt change dynamically based on current market regime.
+    Entry/exit rules adapt to BULL, BEAR, MEAN_REVERSION, and CHOP regimes.
+    """
 
     TOOLS = [
         {
@@ -144,7 +158,7 @@ If criteria not met, return confidence_score < 50 with null prices."""
         },
         {
             "name": "get_crypto_full_analysis",
-            "description": "Get all indicators at once: RSI, Bollinger, EMA20, EMA50, MACD, ATR. Use for comprehensive analysis.",
+            "description": "Get all indicators at once (RSI, Bollinger, EMA, MACD, ATR) plus real-time Orderbook Imbalance (bid/ask volume pressure).",
             "input_schema": {
                 "type": "object",
                 "properties": {"ticker": {"type": "string"}},
@@ -154,14 +168,41 @@ If criteria not met, return confidence_score < 50 with null prices."""
     ]
 
     def __init__(self, mcp: MCPClient, rate_limiter: RateLimiter | None = None):
+        self.strategy_selector = StrategySelector()
+        self._current_config = self.strategy_selector.select("TREND_BULL")  # default
+
         super().__init__(
             name="crypto_analyst",
             combo_name="karsa-routine",
-            system_prompt=self.SYSTEM_PROMPT,
+            system_prompt=_build_system_prompt(self._current_config),
             tools=self.TOOLS,
             mcp=mcp,
             rate_limiter=rate_limiter,
         )
+        self._capture_traces = True
+
+    def update_strategy(self, regime_state: str) -> dict:
+        """Update agent's strategy based on current regime.
+
+        Call this before scanning to adapt the prompt to market conditions.
+        Returns the strategy config that was applied.
+        """
+        self._current_config = self.strategy_selector.select(regime_state)
+        self.system_prompt = _build_system_prompt(self._current_config)
+
+        from src.utils.logging import get_logger
+        get_logger("crypto_analyst").info(
+            "strategy_updated",
+            regime=regime_state,
+            strategy=self._current_config["primary_strategy"],
+            size_multiplier=self._current_config["size_multiplier"],
+        )
+        return self._current_config
+
+    @property
+    def strategy_config(self) -> dict:
+        """Current strategy configuration."""
+        return self._current_config
 
     async def _handle_tool_call(self, tool_name: str, tool_input: dict) -> Any:
         ticker = tool_input.get("ticker", "")
@@ -192,7 +233,14 @@ If criteria not met, return confidence_score < 50 with null prices."""
             elif tool_name == "get_crypto_atr":
                 return calculate_atr(ohlcv)
             elif tool_name == "get_crypto_full_analysis":
-                return full_analysis(ohlcv)
+                # Inject websocket orderbook imbalance metric (Phase 1)
+                ob_imbalance = 0.0
+                try:
+                    bybit = self.mcp._get_bybit()
+                    ob_imbalance = await bybit.get_orderbook_imbalance(ticker)
+                except Exception:
+                    pass
+                return full_analysis(ohlcv, ob_imbalance)
 
         return {"error": f"Unknown tool: {tool_name}"}
 

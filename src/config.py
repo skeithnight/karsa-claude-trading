@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     BYBIT_API_SECRET: str = ""
     BYBIT_TESTNET: bool = True
     CRYPTO_TELEGRAM_TOKEN: str = ""
+    CRYPTO_TELEGRAM_CHAT_ID: str = ""
     CRYPTO_MAX_RISK_PER_TRADE_PCT: float = 1.0
     CRYPTO_MAX_POSITION_PCT: float = 10.0
     CRYPTO_MAX_CONCURRENT_POSITIONS: int = 5

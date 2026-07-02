@@ -248,6 +248,57 @@ class KarsaApp:
                 replace_existing=True, misfire_grace_time=120,
             )
 
+            # --- Phase 1: Lifecycle management jobs ---
+            # Trailing stops: adjust stops for winning positions every 5 min
+            s.add_job(
+                self._job_update_trailing_stops,
+                "cron", minute="*/5",
+                id="crypto_trailing_stops", name="Crypto Trailing Stop Update",
+                replace_existing=True, misfire_grace_time=120,
+            )
+            # Partial exits: scale out at profit targets every 2 min
+            s.add_job(
+                self._job_check_partial_exits,
+                "cron", minute="*/2",
+                id="crypto_partial_exits", name="Crypto Partial Exit Check",
+                replace_existing=True, misfire_grace_time=60,
+            )
+            # Time-based exits: close stale positions hourly
+            s.add_job(
+                self._job_check_time_exits,
+                "cron", hour="*", minute=30,
+                id="crypto_time_exits", name="Crypto Time-Based Exit Check",
+                replace_existing=True, misfire_grace_time=300,
+            )
+            # Circuit breakers: vol spike + correlation cascade every 1 min
+            s.add_job(
+                self._job_check_circuit_breakers,
+                "cron", minute="*/1",
+                id="crypto_circuit_breakers", name="Crypto Circuit Breaker Check",
+                replace_existing=True, misfire_grace_time=60,
+            )
+            # Cumulative funding enforcement hourly
+            s.add_job(
+                self._job_enforce_funding_limit,
+                "cron", hour="*", minute=20,
+                id="crypto_funding_limit", name="Crypto Funding Limit Enforcement",
+                replace_existing=True, misfire_grace_time=300,
+            )
+            # Position reconciliation every 5 min (replaces one-way sync)
+            s.add_job(
+                self._job_reconcile_positions,
+                "cron", minute="*/5",
+                id="crypto_reconciliation", name="Crypto Position Reconciliation",
+                replace_existing=True, misfire_grace_time=120,
+            )
+            # Liquidity check every 15 min (top 3 pairs)
+            s.add_job(
+                self._job_liquidity_check,
+                "cron", minute="*/15",
+                id="crypto_liquidity", name="Crypto Liquidity Check",
+                replace_existing=True, misfire_grace_time=120,
+            )
+
         logger.info("jobs_registered", count=len(self.scheduler.get_jobs()))
 
     # --- Job implementations ---
@@ -339,13 +390,14 @@ class KarsaApp:
             if alerts:
                 try:
                     import httpx
-                    token = settings.TELEGRAM_TOKEN or settings.CRYPTO_TELEGRAM_TOKEN
-                    if token and settings.TELEGRAM_CHAT_ID:
+                    token = settings.CRYPTO_TELEGRAM_TOKEN or settings.TELEGRAM_TOKEN
+                    chat_id = settings.CRYPTO_TELEGRAM_CHAT_ID or settings.TELEGRAM_CHAT_ID
+                    if token and chat_id:
                         msg = "📊 <b>CRYPTO POSITION UPDATE</b>\n\n" + "\n".join(alerts)
                         async with httpx.AsyncClient(timeout=10) as client:
                             await client.post(
                                 f"https://api.telegram.org/bot{token}/sendMessage",
-                                json={"chat_id": settings.TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"},
+                                json={"chat_id": chat_id, "text": msg, "parse_mode": "HTML"},
                             )
                 except Exception:
                     pass
@@ -440,11 +492,13 @@ class KarsaApp:
                         # Send Telegram alert
                         try:
                             import httpx
+                            token = settings.CRYPTO_TELEGRAM_TOKEN or settings.TELEGRAM_TOKEN
+                            chat_id = settings.CRYPTO_TELEGRAM_CHAT_ID or settings.TELEGRAM_CHAT_ID
                             async with httpx.AsyncClient(timeout=10) as client:
                                 await client.post(
-                                    f"https://api.telegram.org/bot{settings.TELEGRAM_TOKEN}/sendMessage",
+                                    f"https://api.telegram.org/bot{token}/sendMessage",
                                     json={
-                                        "chat_id": settings.TELEGRAM_CHAT_ID,
+                                        "chat_id": chat_id,
                                         "text": (
                                             "🚨 <b>KILL SWITCH ACTIVATED</b>\n"
                                             f"Daily P&amp;L: {daily_pnl_pct:+.2f}%\n"
@@ -578,11 +632,220 @@ class KarsaApp:
         except Exception as e:
             logger.error("crypto_position_sync_failed", error=str(e))
 
+    # --- Phase 1: Lifecycle management job implementations ---
+
+    async def _job_update_trailing_stops(self):
+        """Adjust trailing stops for winning positions."""
+        try:
+            bybit = self.mcp._get_bybit()
+            redis = self.redis_client
+            from src.risk.trailing_stop import TrailingStopManager
+            from src.models.tables import CryptoPosition
+            from sqlalchemy import select
+
+            manager = TrailingStopManager(bybit, redis)
+            async with async_session() as session:
+                result = await session.execute(
+                    select(CryptoPosition).where(CryptoPosition.status == "OPEN")
+                )
+                positions = list(result.scalars().all())
+
+            actions = await manager.update_trailing_stops(positions)
+            if actions:
+                logger.info("trailing_stops_updated", actions=len(actions))
+        except Exception as e:
+            logger.error("trailing_stop_job_failed", error=str(e))
+
+    async def _job_check_partial_exits(self):
+        """Check and execute partial exits at profit targets."""
+        try:
+            bybit = self.mcp._get_bybit()
+            redis = self.redis_client
+            from src.risk.position_manager import PositionManager
+            from src.models.tables import CryptoPosition
+            from sqlalchemy import select
+
+            manager = PositionManager(bybit, redis)
+            async with async_session() as session:
+                result = await session.execute(
+                    select(CryptoPosition).where(CryptoPosition.status == "OPEN")
+                )
+                positions = list(result.scalars().all())
+
+            actions = await manager.check_partial_exits(positions)
+            for action in actions:
+                result = await manager.execute_partial_exit(
+                    action["position_id"],
+                    action["exit_pct"],
+                    action["reason"],
+                )
+                if result.get("success"):
+                    logger.info("partial_exit_executed", ticker=action["ticker"], exit_pct=action["exit_pct"])
+        except Exception as e:
+            logger.error("partial_exit_job_failed", error=str(e))
+
+    async def _job_check_time_exits(self):
+        """Close stale positions open >72h with <1% gain."""
+        try:
+            bybit = self.mcp._get_bybit()
+            redis = self.redis_client
+            from src.risk.position_manager import PositionManager
+            from src.models.tables import CryptoPosition
+            from sqlalchemy import select
+
+            manager = PositionManager(bybit, redis)
+            async with async_session() as session:
+                result = await session.execute(
+                    select(CryptoPosition).where(CryptoPosition.status == "OPEN")
+                )
+                positions = list(result.scalars().all())
+
+            actions = await manager.check_time_exits(positions)
+            for action in actions:
+                from src.risk.sor import SmartOrderRouter
+                sor = SmartOrderRouter(bybit)
+                result = await sor.execute_order(
+                    signal={"ticker": action["ticker"], "direction": "CLOSE", "confidence": 100},
+                    risk_params={"qty": 0, "leverage": 1, "reduce_only": True},  # qty from position
+                )
+                if result.get("success"):
+                    logger.info("time_exit_executed", ticker=action["ticker"], reason=action["reason"])
+        except Exception as e:
+            logger.error("time_exit_job_failed", error=str(e))
+
+    async def _job_check_circuit_breakers(self):
+        """Run circuit breaker checks (vol spike, correlation cascade)."""
+        try:
+            bybit = self.mcp._get_bybit()
+            redis = self.redis_client
+            from src.risk.circuit_breaker import CircuitBreakerManager
+
+            manager = CircuitBreakerManager(redis, bybit)
+            events = await manager.check_all()
+            if events:
+                logger.warning("circuit_breakers_triggered", events=len(events))
+                # Send Telegram alert for HALT severity
+                for event in events:
+                    if event.get("severity") == "HALT":
+                        try:
+                            import httpx
+                            token = settings.CRYPTO_TELEGRAM_TOKEN or settings.TELEGRAM_TOKEN
+                            chat_id = settings.CRYPTO_TELEGRAM_CHAT_ID or settings.TELEGRAM_CHAT_ID
+                            if token and chat_id:
+                                msg = f"🚨 <b>CIRCUIT BREAKER: {event['breaker']}</b>\n\n{event}"
+                                async with httpx.AsyncClient(timeout=10) as client:
+                                    await client.post(
+                                        f"https://api.telegram.org/bot{token}/sendMessage",
+                                        json={"chat_id": chat_id, "text": msg, "parse_mode": "HTML"},
+                                    )
+                        except Exception:
+                            pass
+        except Exception as e:
+            logger.error("circuit_breaker_job_failed", error=str(e))
+
+    async def _job_enforce_funding_limit(self):
+        """Close positions with cumulative funding >3%."""
+        try:
+            bybit = self.mcp._get_bybit()
+            from src.models.tables import CryptoPosition
+            from sqlalchemy import select
+            from src.config import settings
+
+            funding_limit_pct = settings.CRYPTO_FUNDING_ALERT_THRESHOLD / 100  # reuse threshold
+
+            async with async_session() as session:
+                result = await session.execute(
+                    select(CryptoPosition).where(CryptoPosition.status == "OPEN")
+                )
+                positions = list(result.scalars().all())
+
+                for pos in positions:
+                    if not pos.entry_price or pos.entry_price == 0:
+                        continue
+                    # Calculate cumulative funding as % of position value
+                    position_value = float(pos.entry_price) * float(pos.size)
+                    if position_value == 0:
+                        continue
+                    funding_pct = abs(float(pos.funding_cost_cumulative or 0)) / position_value
+                    if funding_pct > 0.03:  # 3% cumulative funding threshold
+                        from src.risk.sor import SmartOrderRouter
+                        sor = SmartOrderRouter(bybit)
+                        result = await sor.execute_order(
+                            signal={"ticker": pos.ticker, "direction": "CLOSE", "confidence": 100},
+                            risk_params={"qty": 0, "leverage": pos.leverage, "reduce_only": True},
+                        )
+                        if result.get("success"):
+                            logger.warning("funding_limit_close", ticker=pos.ticker, funding_pct=round(funding_pct * 100, 2))
+        except Exception as e:
+            logger.error("funding_limit_job_failed", error=str(e))
+
+    async def _job_reconcile_positions(self):
+        """Bidirectional position reconciliation with Bybit."""
+        try:
+            bybit = self.mcp._get_bybit()
+            from src.risk.position_sync import PositionReconciler
+
+            reconciler = PositionReconciler(bybit)
+            drifts = await reconciler.reconcile()
+            if drifts:
+                logger.warning("reconciliation_drifts", count=len(drifts))
+                # Send Telegram alert for drifts
+                try:
+                    import httpx
+                    token = settings.CRYPTO_TELEGRAM_TOKEN or settings.TELEGRAM_TOKEN
+                    chat_id = settings.CRYPTO_TELEGRAM_CHAT_ID or settings.TELEGRAM_CHAT_ID
+                    if token and chat_id:
+                        drift_summary = "\n".join(f"• {d['drift_type']}: {d['ticker']}" for d in drifts)
+                        msg = f"⚠️ <b>POSITION DRIFT DETECTED</b>\n\n{drift_summary}"
+                        async with httpx.AsyncClient(timeout=10) as client:
+                            await client.post(
+                                f"https://api.telegram.org/bot{token}/sendMessage",
+                                json={"chat_id": chat_id, "text": msg, "parse_mode": "HTML"},
+                            )
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.error("reconciliation_job_failed", error=str(e))
+
     async def _job_flush_cache(self):
         """Flush cached OHLCV data from Redis to Postgres."""
         logger.info("cache_flush_started")
         # ponytail: iterate OHLCV keys in Redis, bulk upsert to ohlcv_cache table.
         logger.info("cache_flush_done")
+
+    async def _job_liquidity_check(self):
+        """Check orderbook liquidity for top pairs. Alerts on thin markets."""
+        try:
+            bybit = self.mcp._get_bybit()
+            from src.risk.liquidity import LiquidityMonitor
+
+            monitor = LiquidityMonitor(bybit)
+            top_pairs = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+            alerts = []
+
+            for ticker in top_pairs:
+                liq = await monitor.check_liquidity(ticker, "BUY")
+                if not liq["can_trade"]:
+                    alerts.append(f"• {ticker}: {liq['reason']}")
+
+            if alerts:
+                try:
+                    import httpx
+                    token = settings.CRYPTO_TELEGRAM_TOKEN or settings.TELEGRAM_TOKEN
+                    chat_id = settings.CRYPTO_TELEGRAM_CHAT_ID or settings.TELEGRAM_CHAT_ID
+                    if token and chat_id:
+                        msg = f"💧 <b>LIQUIDITY ALERT</b>\n\n" + "\n".join(alerts)
+                        async with httpx.AsyncClient(timeout=10) as client:
+                            await client.post(
+                                f"https://api.telegram.org/bot{token}/sendMessage",
+                                json={"chat_id": chat_id, "text": msg, "parse_mode": "HTML"},
+                            )
+                except Exception:
+                    pass
+
+            logger.info("liquidity_check_done", alerts=len(alerts))
+        except Exception as e:
+            logger.error("liquidity_check_job_failed", error=str(e))
 
     async def shutdown(self):
         """Graceful shutdown."""

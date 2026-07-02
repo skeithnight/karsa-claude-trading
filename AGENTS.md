@@ -55,6 +55,21 @@ Executes approved signals on Bybit. Post-Only limit orders at bid/ask for maker 
 ### Funding Tracker (`src/risk/funding_tracker.py`)
 Tracks per-position funding payments (8h intervals). `get_current_rates()` for all universe pairs. `calculate_position_funding_cost()` for cost projection. `get_alerts()` flags extreme rates. Annualized cost calculation (rate × 3 × 365).
 
+### Circuit Breaker Manager (`src/risk/circuit_breaker.py`)
+Automated circuit breakers beyond daily DD kill switch. Three breakers: daily drawdown (refactored from emergency), volatility spike (5% move in 15min → 30min halt), correlation cascade (>60% of correlated positions losing → warning). `check_all()` called every 1min by scheduler. Redis-backed with 30min auto-expiry. Logs events to `crypto_circuit_breaker_events` table.
+
+### Liquidity Monitor (`src/risk/liquidity.py`)
+Pre-trade orderbook depth and spread checks. `LiquidityMonitor.check_liquidity()` verifies depth ≥$100k within 0.5% of mid and spread ≤0.2%. `SlippageEstimator.estimate_slippage()` simulates order fill through top 10 orderbook levels. Used by SOR before market orders and by `/liquidity` command.
+
+### Position Manager (`src/risk/position_manager.py`)
+Post-entry position lifecycle management. Partial exits at profit targets: 33% at +1R, 33% at +2R (remaining 34% rides with trailing stop). Time-based exits: close positions open >72h with <1% gain. `check_partial_exits()` and `check_time_exits()` return action dicts for scheduler to execute via SOR.
+
+### Position Reconciler (`src/risk/position_sync.py`)
+Bidirectional reconciliation between Bybit exchange state and local DB. Position drift types: PHANTOM (in DB, not exchange), MISSING (on exchange, not DB), SIZE_DRIFT (mismatch). Order drift: ORPHANED (stale), UNKNOWN (untracked). Balance drift: DB cached vs exchange wallet. Runs every 5min. Auto-fixes: marks phantom as CLOSED, creates missing positions, updates drift.
+
+### Trailing Stop Manager (`src/risk/trailing_stop.py`)
+Adjusts stop-loss orders upward for winning positions using ATR-based trailing distances. Regime-aware multipliers: TREND_BULL/BEAR=2.0x ATR, MEAN_REVERSION=1.5x ATR, CHOP=disabled. `update_trailing_stops()` runs every 5min: fetches price, updates highest_price, recalculates stop, amends order on Bybit if changed.
+
 ## Advisory Layer (not agents — deterministic modules)
 
 ### Regime Filters (`src/advisory/regime.py`)
@@ -78,6 +93,15 @@ Single source of truth for crypto trading universe (eliminates duplication). 10 
 
 ### Crypto Audit (`src/advisory/crypto_audit.py`)
 `CryptoAuditMetrics.gather()` queries Signal + ClosedPaperTrade tables for deterministic performance metrics. Win rate, by-ticker, by-direction, confidence calibration, best/worst trades. Returns structured dict for LLM auditor consumption.
+
+### Crypto Market Watch (`src/advisory/crypto_market_watch.py`)
+`CryptoMarketWatchEngine`: aggregates real-time market data across the universe. `get_top_movers()` ranks by absolute 24h change. `get_full_scan_summary()` combines quotes + technicals. `get_funding_alerts()` flags extreme funding rates.
+
+### Performance Tracker (`src/advisory/performance_tracker.py`)
+`PerformanceTracker`: tracks equity curve from daily `CryptoPnLSnapshot` entries. `get_equity_curve(days)` returns historical snapshots. Drawdown calculation and trade statistics. Used by `/pnl` command for historical performance views.
+
+### Strategy Selector (`src/advisory/strategy_selector.py`)
+`StrategySelector`: maps regime state → strategy configuration. Pure Python, no LLM calls. Per-regime config includes: primary strategy, prompt modifier, confidence boost, max positions, size multiplier, preferred pairs, data focus areas. Used by `CryptoAnalyst` to build dynamic system prompts based on current market regime.
 
 ## Utilities (not agents)
 

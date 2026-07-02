@@ -165,6 +165,23 @@ class SmartOrderRouter:
                 continue
         return {"filled": False}
 
+    async def close_position(self, symbol: str, position: dict) -> dict:
+        """Close a single position (used for counter-trade flips)."""
+        size = position.get("size", 0)
+        side = position.get("side", "Buy")
+        close_side = "Sell" if side == "Buy" else "Buy"
+        try:
+            result = await self.bybit.place_order(
+                symbol=symbol, side=close_side, qty=size,
+                order_type="Market", reduce_only=True,
+            )
+            if result.get("error"):
+                return {"success": False, "error": result["error"]}
+            logger.info("counter_trade_position_closed", ticker=symbol, size=size)
+            return {"success": True, "order_id": result.get("order_id")}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     async def flatten_all(self) -> dict:
         """Close all open positions. Used by /kill and /sellall."""
         positions = await self.bybit.get_positions()

@@ -11,7 +11,7 @@ import asyncio
 import time
 from datetime import datetime, timezone
 
-from pybit.unified_trading import HTTP
+from pybit.unified_trading import HTTP, WebSocket
 
 from src.config import settings
 from src.data.cache import CacheManager
@@ -50,7 +50,9 @@ def _safe_float(val, default=0.0) -> float:
 
 
 class BybitClient:
-    """Bybit REST API client for crypto market data and order execution."""
+    """Bybit API client for crypto market data and order execution.
+    Supports REST for execution and WebSockets for real-time orderbook data.
+    """
 
     def __init__(self, cache: CacheManager):
         self.cache = cache
@@ -60,6 +62,11 @@ class BybitClient:
             api_key=settings.BYBIT_API_KEY,
             api_secret=settings.BYBIT_API_SECRET,
         )
+
+        # WebSocket client (lazy init to avoid blocking)
+        self._ws_client = None
+        self._ob_cache = {}  # {symbol: {"bids": [], "asks": []}}
+
         # Proxy support (only for Bybit, not Telegram)
         try:
             import os
@@ -154,7 +161,140 @@ class BybitClient:
         self._record_failure("bybit")
         raise Exception(f"Bybit max retries exceeded: {last_error}")
 
+    # --- WebSocket Methods ---
+
+    def _init_ws(self):
+        """Initialize WebSocket client if not exists."""
+        if self._ws_client is None:
+            self._ws_client = WebSocket(
+                testnet=self._testnet,
+                channel_type="linear",
+            )
+            # Default empty state
+            self._ob_cache = {}
+
+    def _handle_ob_message(self, message):
+        """Handle incoming orderbook messages (Snapshot or Delta)."""
+        data = message.get("data", {})
+        symbol = data.get("s")
+        if not symbol:
+            return
+
+        if symbol not in self._ob_cache or message.get("type") == "snapshot":
+            # Initialize with snapshot
+            self._ob_cache[symbol] = {
+                "bids": {float(price): float(qty) for price, qty in data.get("b", [])},
+                "asks": {float(price): float(qty) for price, qty in data.get("a", [])},
+                "ts": message.get("ts", 0),
+            }
+        elif message.get("type") == "delta":
+            # Apply delta updates to existing snapshot
+            ob = self._ob_cache[symbol]
+            for price, qty in data.get("b", []):
+                p, q = float(price), float(qty)
+                if q == 0 and p in ob["bids"]:
+                    del ob["bids"][p]
+                elif q > 0:
+                    ob["bids"][p] = q
+
+            for price, qty in data.get("a", []):
+                p, q = float(price), float(qty)
+                if q == 0 and p in ob["asks"]:
+                    del ob["asks"][p]
+                elif q > 0:
+                    ob["asks"][p] = q
+            ob["ts"] = message.get("ts", 0)
+
+    async def get_orderbook_imbalance(self, symbol: str, depth: int = 50) -> float:
+        """Calculate Bid/Ask volume imbalance using WebSocket orderbook feed.
+
+        Subscribes to the orderbook feed if not already subscribed.
+        Returns float between -1.0 (100% Ask) and 1.0 (100% Bid).
+        """
+        self._init_ws()
+
+        if symbol not in self._ob_cache:
+            try:
+                # Subscribe and wait briefly for the first snapshot
+                self._ws_client.orderbook_stream(
+                    depth=depth,
+                    symbol=symbol,
+                    callback=self._handle_ob_message
+                )
+                await asyncio.sleep(0.5)  # Wait for ws to connect and push snapshot
+            except Exception as e:
+                logger.error("ws_subscribe_failed", symbol=symbol, error=str(e))
+                return 0.0
+
+        ob = self._ob_cache.get(symbol)
+        if not ob or not ob.get("bids") or not ob.get("asks"):
+            return 0.0
+
+        # Calculate imbalance
+        bids = sorted(ob["bids"].items(), key=lambda x: x[0], reverse=True)[:depth]
+        asks = sorted(ob["asks"].items(), key=lambda x: x[0])[:depth]
+
+        bid_vol = sum(p * q for p, q in bids)
+        ask_vol = sum(p * q for p, q in asks)
+        target = bid_vol + ask_vol
+
+        if target == 0:
+            return 0.0
+
+        return (bid_vol - ask_vol) / target
+
     # --- Data Methods ---
+
+    async def get_top_movers(self, top_n: int = 20, min_volume_usd: float = 10_000_000) -> list[dict]:
+        """Fetch top USDT perpetuals by 24h turnover from Bybit.
+
+        Returns list of {symbol, volume_usd, change_pct, price} sorted by volume desc.
+        Cached for 5 minutes. Used by dynamic universe discovery.
+        """
+        cache_key = ("top_movers", top_n)
+        cached = self._cache.get(cache_key)
+        if cached and time.time() - cached[1] < 300:  # 5min cache
+            return cached[0]
+
+        try:
+            async with self._semaphore:
+                await self._throttle()
+                resp = await asyncio.to_thread(
+                    self._http_client.get_tickers,
+                    category="linear",
+                )
+
+            if resp.get("retCode") != 0:
+                logger.error("bybit_top_movers_failed", error=resp.get("retMsg"))
+                return []
+
+            result_list = resp.get("result", {}).get("list", [])
+
+            # Filter USDT perps only, sort by turnover (volume * price)
+            movers = []
+            for data in result_list:
+                symbol = data.get("symbol", "")
+                if not symbol.endswith("USDT"):
+                    continue
+                turnover = _safe_float(data.get("turnover24h", 0))
+                if turnover < min_volume_usd:
+                    continue
+                movers.append({
+                    "symbol": symbol,
+                    "volume_usd": turnover,
+                    "change_pct": _safe_float(data.get("price24hPcnt", 0)) * 100,
+                    "price": _safe_float(data.get("lastPrice", 0)),
+                    "funding_rate": _safe_float(data.get("fundingRate", 0)),
+                })
+
+            movers.sort(key=lambda x: x["volume_usd"], reverse=True)
+            result = movers[:top_n]
+            self._cache[cache_key] = (result, time.time())
+            return result
+
+        except Exception as e:
+            logger.error("bybit_top_movers_failed", error=str(e))
+            return []
 
     async def get_ticker(self, symbol: str) -> dict:
         """Get real-time ticker for a Bybit perpetual symbol (e.g. BTCUSDT)."""
