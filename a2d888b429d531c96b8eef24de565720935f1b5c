@@ -1,0 +1,23 @@
+src/metrics/crypto_metrics.py
+  96bbbc0944884e0b 247-249
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "a2d888b429d531c96b8eef24de565720935f1b5c",
+  "prompts": {
+    "96bbbc0944884e0b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "859fc45f-3971-40a9-ba27-d08f19cc9c10",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 3,
+      "total_deletions": 0,
+      "accepted_lines": 3,
+      "overriden_lines": 0
+    }
+  }
+}
