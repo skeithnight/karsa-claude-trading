@@ -1,0 +1,59 @@
+pyproject.toml
+  568d974cc91bb675 22
+db/migrations/add_universe_history.sql
+  568d974cc91bb675 1-16
+src/bot/crypto_main.py
+  568d974cc91bb675 17,43-46,58-65
+src/agents/crypto_analyst.py
+  568d974cc91bb675 53-78,82,87,199,204,211-215,223
+src/risk/profile_manager.py
+  568d974cc91bb675 1-248
+src/advisory/universe_scorer.py
+  568d974cc91bb675 1-80
+src/main.py
+  568d974cc91bb675 26-28,63-72,84,86-90,136-149,254-260,381-389
+src/agents/orchestrator.py
+  568d974cc91bb675 105-108,262-273,275-288,331-335,341-347
+src/bot/crypto_handlers.py
+  568d974cc91bb675 355-464,471,478,485-518
+db/migrations/add_risk_profile.sql
+  568d974cc91bb675 1-25
+src/risk/crypto_risk_manager.py
+  568d974cc91bb675 262,272,290-303,308-309,319-320,394,412,417,442-443
+src/api/routes.py
+  568d974cc91bb675 1-106
+src/data/bybit_client.py
+  568d974cc91bb675 299-348
+src/advisory/crypto_universe.py
+  568d974cc91bb675 96-233
+src/config.py
+  568d974cc91bb675 59-62
+monitoring/grafana/dashboards/karsa-crypto-universe.json
+  568d974cc91bb675 1-45
+src/metrics/crypto_metrics.py
+  568d974cc91bb675 1-122
+monitoring/grafana/dashboards/karsa-risk-profile.json
+  568d974cc91bb675 1-52
+monitoring/prometheus/alerts/risk_profile_alerts.yml
+  568d974cc91bb675 1-71
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "466b9e8690e14ace6aa7c95aaab3396f68037f6c",
+  "prompts": {
+    "568d974cc91bb675": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0d70009-5efb-4aa8-8677-1a3449d15940",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 1272,
+      "total_deletions": 20,
+      "accepted_lines": 1271,
+      "overriden_lines": 0
+    }
+  }
+}
