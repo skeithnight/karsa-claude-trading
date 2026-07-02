@@ -21,13 +21,12 @@ logger = get_logger("position_manager")
 
 # Partial exit targets (in R-multiples)
 PARTIAL_EXIT_TARGETS = [
-    {"r_multiple": 1.0, "exit_pct": 33, "reason": "partial_1r"},
-    {"r_multiple": 2.0, "exit_pct": 33, "reason": "partial_2r"},
-    # Leave 34% with trailing stop
+    {"r_multiple": 1.0, "exit_pct": 50, "reason": "partial_1r"},
+    # Leave 50% with trailing stop
 ]
 
-# Time-based exit: close positions open > 72h with < 1% gain
-TIME_EXIT_MAX_HOURS = 72
+# Time-based exit: close positions open > 48h with < 1% gain
+TIME_EXIT_MAX_HOURS = 48
 TIME_EXIT_MIN_GAIN_PCT = Decimal("1.0")
 
 

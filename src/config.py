@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     # Trading Safety Gate
     TRADING_MODE: str = "paper"  # "paper" | "live"
 
+    # Crypto Separation
+    CRYPTO_ONLY_MODE: bool = False  # True = skip IDX/US/ETF jobs
+
     # Trading Parameters
     MAX_PORTFOLIO_RISK_PCT: float = 2.0
     MAX_POSITION_SIZE_PCT: float = 15.0

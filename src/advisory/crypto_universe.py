@@ -118,6 +118,28 @@ class UniverseEngine:
         self._bybit = bybit_client
         self._redis = redis_client
         self._profile_mgr = profile_manager
+        self._pubsub = None
+
+    async def listen_profile_changes(self) -> None:
+        """Subscribe to profile change events and regenerate universe immediately."""
+        self._pubsub = self._redis.pubsub()
+        await self._pubsub.subscribe("karsa:events:profile_changed")
+        logger.info("universe_profile_listener_started")
+        try:
+            async for message in self._pubsub.listen():
+                if message["type"] != "message":
+                    continue
+                import json
+                event = json.loads(message["data"])
+                logger.info("universe_profile_refresh", old=event.get("old"), new=event.get("new"))
+                try:
+                    await self.generate()
+                except Exception as e:
+                    logger.error("universe_profile_refresh_failed", error=str(e))
+        except Exception as e:
+            logger.error("universe_profile_listener_stopped", error=str(e))
+        finally:
+            await self._pubsub.unsubscribe()
 
     async def get_current(self) -> list[str]:
         """Read current universe from Redis. Falls back to static list."""
@@ -141,17 +163,19 @@ class UniverseEngine:
 
         start = time.monotonic()
 
-        # Determine universe size from profile
+        # Determine universe size and volume floor from profile
         top_n = MAX_UNIVERSE_SIZE
+        min_vol = 1_000_000  # absolute floor
         if self._profile_mgr:
             try:
-                profile_name = await self._profile_mgr.get_active_profile_name()
-                top_n = _UNIVERSE_SIZE_BY_PROFILE.get(profile_name, MAX_UNIVERSE_SIZE)
+                profile = await self._profile_mgr.get_active_profile()
+                top_n = _UNIVERSE_SIZE_BY_PROFILE.get(profile.name, MAX_UNIVERSE_SIZE)
+                min_vol = profile.min_volume_24h_usd
             except Exception:
                 pass
 
-        # Fetch all perps from Bybit
-        candidates = await self._bybit.get_all_perps(min_volume_usd=1_000_000)
+        # Fetch all perps from Bybit (profile-aware volume floor)
+        candidates = await self._bybit.get_all_perps(min_volume_usd=min_vol)
         if not candidates:
             logger.warning("universe_fetch_empty_fallback")
             try:
@@ -161,8 +185,11 @@ class UniverseEngine:
                 pass
             return list(CRYPTO_UNIVERSE)
 
-        # Filter by liquidity
-        liquid = filter_liquid(candidates, min_volume_usd=5_000_000)
+        # Filter by liquidity — use profile floor, fallback to $5M if too few
+        liquid = filter_liquid(candidates, min_volume_usd=min_vol)
+        if len(liquid) < 5:
+            logger.info("universe_volume_fallback", strict_count=len(liquid), fallback_usd=5_000_000)
+            liquid = filter_liquid(candidates, min_volume_usd=5_000_000)
 
         # Score and rank
         ranked = rank_candidates(
@@ -200,7 +227,7 @@ class UniverseEngine:
                     {
                         "data": json.dumps(universe),
                         "count": len(universe),
-                        "criteria": f"volume>=5M,score>=20,top{top_n}",
+                        "criteria": f"volume>=${min_vol/1_000_000:.0f}M,score>=20,top{top_n}",
                         "profile": profile_name,
                         "ms": elapsed_ms,
                     },
@@ -227,10 +254,20 @@ class UniverseEngine:
         """Get current universe with scoring details for display."""
         from src.advisory.universe_scorer import score_candidate, filter_liquid, rank_candidates
 
-        candidates = await self._bybit.get_all_perps(min_volume_usd=1_000_000)
+        min_vol = 1_000_000
+        if self._profile_mgr:
+            try:
+                profile = await self._profile_mgr.get_active_profile()
+                min_vol = profile.min_volume_24h_usd
+            except Exception:
+                pass
+
+        candidates = await self._bybit.get_all_perps(min_volume_usd=min_vol)
         if not candidates:
             return []
 
-        liquid = filter_liquid(candidates, min_volume_usd=5_000_000)
+        liquid = filter_liquid(candidates, min_volume_usd=min_vol)
+        if len(liquid) < 5:
+            liquid = filter_liquid(candidates, min_volume_usd=5_000_000)
         ranked = rank_candidates(liquid, top_n=MAX_UNIVERSE_SIZE, always_include=set(CORE_UNIVERSE))
         return ranked

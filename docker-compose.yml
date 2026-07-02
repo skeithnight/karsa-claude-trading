@@ -26,7 +26,7 @@ services:
       retries: 3
 
   postgres:
-    image: postgres:15-alpine
+    image: pgvector/pgvector:pg15
     container_name: karsa-postgres
     environment:
       POSTGRES_DB: trading
@@ -144,6 +144,60 @@ services:
     command: ["python", "-m", "src.bot.crypto_main"]
     restart: unless-stopped
 
+  # 8. CRYPTO-ONLY ORCHESTRATOR (dedicated crypto scheduler)
+  karsa-crypto-orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile.orchestrator
+    container_name: karsa-crypto-orchestrator
+    env_file: [.env]
+    ports:
+      - "127.0.0.1:8001:8001"
+    environment:
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+      - POSTGRES_URL=postgresql://trader:${DB_PASSWORD}@postgres:5432/trading
+      - TRADINGVIEW_MCP_URL=direct
+      - BYBIT_PROXY=socks5h://warp:1080
+      - CRYPTO_ONLY_MODE=true
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      warp:
+        condition: service_healthy
+    networks: [trading-net]
+    command: ["python", "-m", "src.main_crypto"]
+    restart: unless-stopped
+
+  # 9. MONITORING STACK
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: karsa-prometheus
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks: [trading-net]
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: karsa-grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/grafana-dashboard.json
+    volumes:
+      - ./monitoring/grafana:/var/lib/grafana/dashboards
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus
+    networks: [trading-net]
+    restart: unless-stopped
+
 networks:
   trading-net:
     driver: bridge
@@ -152,3 +206,5 @@ volumes:
   redis-data:
   postgres-data:
   9router-data:
+  prometheus-data:
+  grafana-data:

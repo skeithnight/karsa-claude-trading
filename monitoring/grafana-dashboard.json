@@ -1,102 +1,132 @@
 {
   "dashboard": {
-    "title": "Karsa Trading System",
+    "title": "Karsa Crypto Trading",
     "timezone": "browser",
+    "refresh": "30s",
+    "time": {"from": "now-6h", "to": "now"},
+    "tags": ["karsa", "crypto"],
     "panels": [
       {
-        "title": "System Health",
-        "type": "row",
-        "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0}
-      },
-      {
-        "title": "Service Status",
+        "title": "Risk Profile",
         "type": "stat",
-        "datasource": "Prometheus",
-        "targets": [{"expr": "up{job=~\"karsa.*\"}"}],
-        "gridPos": {"h": 4, "w": 6, "x": 0, "y": 1}
+        "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "targets": [{"expr": "karsa_active_risk_profile", "refId": "A"}],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              {"type": "value", "options": {"0": {"text": "Conservative", "color": "green"}, "1": {"text": "Semi-Aggressive", "color": "yellow"}, "2": {"text": "Aggressive", "color": "red"}}}
+            ],
+            "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 1, "color": "yellow"}, {"value": 2, "color": "red"}]}
+          }
+        }
       },
       {
-        "title": "9Router Fallbacks",
-        "type": "stat",
-        "datasource": "Prometheus",
-        "targets": [{"expr": "increase(fallback_triggered_total[1h])"}],
-        "gridPos": {"h": 4, "w": 6, "x": 6, "y": 1}
-      },
-      {
-        "title": "Redis Memory",
+        "title": "Universe Size",
         "type": "gauge",
-        "datasource": "Prometheus",
-        "targets": [{"expr": "redis_memory_used_bytes / redis_memory_max_bytes * 100"}],
-        "gridPos": {"h": 4, "w": 6, "x": 12, "y": 1}
+        "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "targets": [{"expr": "karsa_universe_size", "refId": "A"}],
+        "fieldConfig": {
+          "defaults": {
+            "min": 0, "max": 20,
+            "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "red"}, {"value": 5, "color": "yellow"}, {"value": 8, "color": "green"}]}
+          }
+        }
       },
       {
-        "title": "Postgres Connections",
+        "title": "Rejection Rate %",
         "type": "stat",
-        "datasource": "Prometheus",
-        "targets": [{"expr": "pg_stat_activity_count"}],
-        "gridPos": {"h": 4, "w": 6, "x": 18, "y": 1}
+        "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "targets": [{"expr": "rate(karsa_signal_rejections_total[1h]) / (rate(karsa_signals_executed_total[1h]) + rate(karsa_signal_rejections_total[1h])) * 100", "refId": "A"}],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 50, "color": "yellow"}, {"value": 80, "color": "red"}]}
+          }
+        }
       },
       {
-        "title": "Trading Performance",
-        "type": "row",
-        "gridPos": {"h": 1, "w": 24, "x": 0, "y": 5}
+        "title": "Signals Executed/hr",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 4, "x": 12, "y": 0},
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "targets": [{"expr": "rate(karsa_signals_executed_total[1h])", "refId": "A"}],
+        "fieldConfig": {
+          "defaults": {
+            "color": {"mode": "fixed", "fixedColor": "green"},
+            "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "red"}, {"value": 0.1, "color": "green"}]}
+          }
+        }
       },
       {
-        "title": "Equity Curve (USD)",
+        "title": "Universe Refresh",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 4, "x": 16, "y": 0},
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "targets": [{"expr": "rate(karsa_universe_refresh_total{status=\"success\"}[1h])", "legendFormat": "OK", "refId": "A"}],
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "red"}, {"value": 0.01, "color": "green"}]}
+          }
+        }
+      },
+      {
+        "title": "Signal Acceptance vs Rejection",
         "type": "timeseries",
-        "datasource": "PostgreSQL",
-        "targets": [{"rawSql": "SELECT created_at, SUM(filled_price * filled_quantity) as equity FROM trades WHERE status='FILLED' GROUP BY created_at ORDER BY created_at"}],
-        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6}
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "targets": [
+          {"expr": "rate(karsa_signals_executed_total[1h])", "legendFormat": "Executed", "refId": "A"},
+          {"expr": "rate(karsa_signal_rejections_total[1h])", "legendFormat": "Rejected", "refId": "B"}
+        ],
+        "fieldConfig": {
+          "defaults": {"custom": {"fillOpacity": 10, "lineWidth": 2}},
+          "overrides": [
+            {"matcher": {"id": "byName", "options": "Executed"}, "properties": [{"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}]},
+            {"matcher": {"id": "byName", "options": "Rejected"}, "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}]}
+          ]
+        }
       },
       {
-        "title": "Signals Today",
-        "type": "stat",
-        "datasource": "PostgreSQL",
-        "targets": [{"rawSql": "SELECT COUNT(*) FROM signals WHERE created_at::date = CURRENT_DATE"}],
-        "gridPos": {"h": 4, "w": 6, "x": 12, "y": 6}
-      },
-      {
-        "title": "Trades Today",
-        "type": "stat",
-        "datasource": "PostgreSQL",
-        "targets": [{"rawSql": "SELECT COUNT(*) FROM trades WHERE created_at::date = CURRENT_DATE AND status='FILLED'"}],
-        "gridPos": {"h": 4, "w": 6, "x": 18, "y": 6}
-      },
-      {
-        "title": "Win Rate by Market",
+        "title": "Rejection Reasons",
         "type": "piechart",
-        "datasource": "PostgreSQL",
-        "targets": [{"rawSql": "SELECT market, COUNT(*) FILTER (WHERE filled_price > 0) * 100.0 / NULLIF(COUNT(*), 0) as win_rate FROM trades WHERE status='FILLED' GROUP BY market"}],
-        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 10}
+        "gridPos": {"h": 8, "w": 6, "x": 12, "y": 4},
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "targets": [{"expr": "sum by (reason) (increase(karsa_signal_rejections_total[6h]))", "legendFormat": "{{reason}}", "refId": "A"}],
+        "options": {"legend": {"displayMode": "table", "placement": "right"}, "pieType": "donut"}
       },
       {
-        "title": "Cost Efficiency",
-        "type": "row",
-        "gridPos": {"h": 1, "w": 24, "x": 0, "y": 18}
+        "title": "Top Coin Scores",
+        "type": "table",
+        "gridPos": {"h": 8, "w": 6, "x": 18, "y": 4},
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "targets": [{"expr": "topk(10, karsa_universe_coin_score)", "legendFormat": "{{ticker}}", "refId": "A", "format": "table", "instant": true}],
+        "transformations": [{"id": "organize", "options": {"excludeByName": {"Time": true, "__name__": true, "instance": true, "job": true}, "renameByName": {"ticker": "Coin", "Value": "Score"}}}]
       },
       {
-        "title": "Tokens Saved by RTK",
-        "type": "stat",
-        "datasource": "Prometheus",
-        "targets": [{"expr": "tokens_saved_by_rtk_total"}],
-        "gridPos": {"h": 4, "w": 8, "x": 0, "y": 19}
+        "title": "Signal Confidence P50 / P95",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "targets": [
+          {"expr": "histogram_quantile(0.50, rate(karsa_signal_confidence_bucket[1h]))", "legendFormat": "P50", "refId": "A"},
+          {"expr": "histogram_quantile(0.95, rate(karsa_signal_confidence_bucket[1h]))", "legendFormat": "P95", "refId": "B"}
+        ],
+        "fieldConfig": {"defaults": {"min": 0, "max": 100, "unit": "percent", "custom": {"fillOpacity": 5, "lineWidth": 2}}}
       },
       {
-        "title": "API Cost (USD/month)",
-        "type": "stat",
-        "datasource": "Prometheus",
-        "targets": [{"expr": "api_cost_usd"}],
-        "gridPos": {"h": 4, "w": 8, "x": 8, "y": 19}
-      },
-      {
-        "title": "Cost per Trade Signal",
-        "type": "stat",
-        "datasource": "Prometheus",
-        "targets": [{"expr": "api_cost_usd / max(signals_total, 1)"}],
-        "gridPos": {"h": 4, "w": 8, "x": 16, "y": 19}
+        "title": "Position Size P50 / P95",
+        "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "targets": [
+          {"expr": "histogram_quantile(0.50, rate(karsa_position_size_pct_bucket[1h]))", "legendFormat": "P50", "refId": "A"},
+          {"expr": "histogram_quantile(0.95, rate(karsa_position_size_pct_bucket[1h]))", "legendFormat": "P95", "refId": "B"}
+        ],
+        "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "custom": {"fillOpacity": 5, "lineWidth": 2}}}
       }
-    ],
-    "refresh": "30s",
-    "time": {"from": "now-24h", "to": "now"}
+    ]
   }
 }

@@ -168,6 +168,16 @@ class RiskProfileManager:
         except Exception:
             pass
 
+        # Notify universe engine to refresh immediately
+        try:
+            await self._redis.publish("karsa:events:profile_changed", json.dumps({
+                "old": old_name,
+                "new": new_name,
+                "changed_by": changed_by,
+            }))
+        except Exception:
+            pass
+
         return True
 
     async def get_audit_log(self, limit: int = 50) -> list[dict]:

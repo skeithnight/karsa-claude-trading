@@ -644,6 +644,29 @@ class BybitClient:
             logger.error("bybit_order_failed", symbol=symbol, error=str(e))
             return {"error": str(e)}
 
+    async def get_open_orders(self, symbol: str | None = None, category: str = "linear") -> list[dict]:
+        """Get open (active) orders. If symbol is None, returns all open orders."""
+        try:
+            params = {"category": category, "settleCoin": "USDT"}
+            if symbol:
+                params["symbol"] = symbol
+
+            async with self._semaphore:
+                await self._throttle()
+                resp = await asyncio.to_thread(
+                    self._http_client.get_open_orders,
+                    **params,
+                )
+
+            if resp.get("retCode") != 0:
+                return []
+
+            return resp.get("result", {}).get("list", [])
+
+        except Exception as e:
+            logger.error("bybit_open_orders_failed", symbol=symbol, error=str(e))
+            return []
+
     async def cancel_order(self, symbol: str, order_id: str) -> dict:
         """Cancel an open order."""
         try:

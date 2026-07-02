@@ -140,7 +140,9 @@ print(f'Blackout tickers: {universe if universe else \"None\"}')
 
 **Three main containers** share the same Python package (`src/`):
 
-1. **karsa-orchestrator** (`src/main.py`) — APScheduler runs 23+ cron jobs (IDX pre-open/morning/afternoon/pre-close scans, US+ETF scans, 2 EOD reviews, pre-market battle plan, paper position updates, kill switch, cache flush, crypto scan 24/7, crypto position monitor, crypto funding sync, crypto PnL snapshot, crypto position reconciliation, trailing stop updates, partial/time-based exits, circuit breaker checks, funding limit enforcement, liquidity checks). Each scan job dispatches agents via `Orchestrator.scan_all_markets()` which runs IDX/US/ETF analysts in parallel (`asyncio.gather`). IDX scans are gated by composite score (≤-50 skips, ≤-20 reduces sizing). Signals ≥50 confidence get validated, persisted to DB, and risk-checked. Kill switch activates emergency stop via Redis at `CRYPTO_DAILY_LOSS_LIMIT_PCT`. Health check via FastAPI on port 8000 (`/health`, `/health/scheduler`).
+1. **karsa-orchestrator** (`src/main.py`) — APScheduler runs 23+ cron jobs (IDX pre-open/morning/afternoon/pre-close scans, US+ETF scans, 2 EOD reviews, pre-market battle plan, paper position updates, kill switch, cache flush, crypto scan 24/7, crypto position monitor, crypto funding sync, crypto PnL snapshot, crypto position reconciliation, trailing stop updates, partial/time-based exits, circuit breaker checks, funding limit enforcement, liquidity checks, OMS cleanup). Each scan job dispatches agents via `Orchestrator.scan_all_markets()` which runs IDX/US/ETF analysts in parallel (`asyncio.gather`). Crypto scans use batched prompting (5 coins/LLM call). Confidence calibration applied to all crypto signals before risk gate.
+
+2. **karsa-crypto-orchestrator** (`src/main_crypto.py`) — Dedicated crypto-only orchestrator. Runs only crypto-related APScheduler jobs (no IDX/US/ETF). Health endpoint on port 8001. Shares Redis, Postgres, and 9router with main orchestrator. `CRYPTO_ONLY_MODE=true` env var. IDX scans are gated by composite score (≤-50 skips, ≤-20 reduces sizing). Signals ≥50 confidence get validated, persisted to DB, and risk-checked. Kill switch activates emergency stop via Redis at `CRYPTO_DAILY_LOSS_LIMIT_PCT`. Health check via FastAPI on port 8000 (`/health`, `/health/scheduler`).
 
 2. **karsa-telegram-bot** (`src/bot/main.py`) — FastAPI webhook + python-telegram-bot polling (default). Commands: `/start`, `/status`, `/scan`, `/portfolio`, `/trades`, `/add`, `/remove`, `/edit`, `/analyze`, `/audit`, `/briefing`, `/regime`, `/pnl`, `/idx`, `/stop`, `/resume`. `/idx` shows IDX Intelligence dashboard (composite score, sector rotation, breadth, flow, earnings). The bot reuses the orchestrator's `idx_intel` instance for cached intelligence data. Inline keyboard buttons provide navigation between views. Auth enforced — all commands require `TELEGRAM_CHAT_ID` to be set.
 
@@ -154,7 +156,9 @@ print(f'Blackout tickers: {universe if universe else \"None\"}')
 
 **Advisory layer** (`src/advisory/`): `USRegimeFilter`/`IDXRegimeFilter` check VIX/SPY/200-SMA to classify BULL/BEAR/NEUTRAL. Regime hard veto: ETF mean reversion disabled in BEAR regime. `PositionSizer` calculates volatility-target sizing using ATR. **IDX Intelligence** (`idx_intelligence.py`): composite regime scoring (breadth 30% + sector rotation 25% + foreign flow 20% + price structure 25%), `FlowTracker` (volume-based proxy for foreign activity), `EarningsCalendar` with blackout windows. Composite gate: score ≤-50 skips IDX scan, ≤-20 reduces sizing.
 
-**Risk module** (`src/risk/`): `emergency.py` — Redis-backed kill switch (`activate()`/`deactivate()`/`is_active()`), global halt for crypto (`activate_global_halt()`). `idx_limits.py` — IDX tick sizes (Fraksi Harga), ARA/ARB validation (dynamic per-ticker), `validate_order()` with ADV liquidity gate (`max_lots_by_adv`), T+2 settlement, IHSG circuit breaker (±5%→30min halt, ±10%→halted), forced sell triggers (3x lower limit, 10x ADV volume, T+2 failure, IDX suspension). `crypto_risk_manager.py` — 8 risk gates for crypto, correlation tiers, liquidation proximity, tier-based leverage. `sor.py` — Smart Order Router for Bybit (limit → reprice → market fallback). `funding_tracker.py` — per-position funding cost tracking. `circuit_breaker.py` — automated circuit breakers (daily DD, volatility spike 5%/15min, correlation cascade), Redis-backed with 30min TTL. `liquidity.py` — pre-trade orderbook depth/spread checks, slippage estimation, used by SOR before market orders. `position_manager.py` — post-entry lifecycle: partial exits at +1R/+2R targets (33% each), time-based exits for stale positions (72h, <1% gain). `position_sync.py` — bidirectional reconciliation between Bybit and local DB (phantom/missing/size drift for positions, orphaned/unknown for orders, balance drift), runs every 5min. `trailing_stop.py` — ATR-based trailing stop adjustments with regime-aware multipliers (TREND_BULL/BEAR=2.0x, MEAN_REVERSION=1.5x, CHOP=disabled).
+**Risk module** (`src/risk/`): `emergency.py` — Redis-backed kill switch (`activate()`/`deactivate()`/`is_active()`), global halt for crypto (`activate_global_halt()`). `idx_limits.py` — IDX tick sizes (Fraksi Harga), ARA/ARB validation (dynamic per-ticker), `validate_order()` with ADV liquidity gate (`max_lots_by_adv`), T+2 settlement, IHSG circuit breaker (±5%→30min halt, ±10%→halted), forced sell triggers (3x lower limit, 10x ADV volume, T+2 failure, IDX suspension). `crypto_risk_manager.py` — 8 risk gates for crypto, correlation tiers, liquidation proximity, tier-based leverage. `sor.py` — Smart Order Router for Bybit (limit → reprice → market fallback). `funding_tracker.py` — per-position funding cost tracking. `circuit_breaker.py` — `CircuitBreakerManager`: automated circuit breakers (daily DD, volatility spike 5%/15min, correlation cascade), Redis-backed with 30min TTL. `liquidity.py` — pre-trade orderbook depth/spread checks, slippage estimation, used by SOR before market orders. `position_manager.py` — post-entry lifecycle: partial exit at +1R target (50%), time-based exits for stale positions (48h, <1% gain). `position_sync.py` — bidirectional reconciliation between Bybit and local DB (phantom/missing/size drift for positions, orphaned/unknown for orders, balance drift), runs every 60s. `trailing_stop.py` — `TrailingStopManager`: ATR-based trailing with regime-aware multipliers (TREND_BULL/BEAR=2.0x, MEAN_REVERSION=1.5x, CHOP=disabled). `profile_manager.py` — `RiskProfileManager`: 3-tier risk profiles (conservative/semi_aggressive/aggressive), Redis-backed, 5min cooldown, publishes to `karsa:events:profile_changed` on switch. `calibration_engine.py` — `ConfidenceCalibrator`: tracks LLM confidence vs actual win rate, applies multiplier [0.5, 1.5] to future signals. `portfolio_allocator.py` — `PortfolioAllocator`: cross-market capital limits (Crypto 30%, US 40%, ETF 20%, IDX 10%), global 5% drawdown kill switch.
+
+**Execution engine** (`src/execution/`): `websocket_manager.py` — `WebSocketManager`: persistent Bybit WS connection for open positions, updates `karsa:realtime:price:{ticker}` in Redis, auto-subscribe/unsubscribe. `sl_engine.py` — `StopLossEngine`: WS-driven stop-loss trigger, fires market close via SOR when price breaches SL, sub-second reaction bypassing LLM loop. `oms.py` — `OrderManagementSystem`: order lifecycle tracking (NEW→SUBMITTED→PARTIAL→FILLED/CANCELLED/REJECTED), stuck order cleanup (>15min unfilled), Redis-backed state machine.
 
 **HITL flow**: `/scan` → agent generates signal → saved to `signals` table (PENDING) → if confidence >= 60, Telegram alert with APPROVE/REJECT buttons → APPROVE creates `PaperPosition`, REJECT marks rejected. Implementation in `src/bot/_approval.py`.
 
@@ -166,6 +170,7 @@ print(f'Blackout tickers: {universe if universe else \"None\"}')
 - **Redis**: Authenticated via `REDIS_PASSWORD`. Emergency stop key: `karsa:emergency_stop`.
 - **Trading safety**: `TRADING_MODE` must be `paper` or `live`. `DB_PASSWORD` validated at startup (≥12 chars, no placeholders).
 - **Trading params**: `MAX_PORTFOLIO_RISK_PCT` (2%), `MAX_POSITION_SIZE_PCT` (15%), `DAILY_LOSS_LIMIT_PCT` (5%).
+- **Crypto Separation**: `CRYPTO_ONLY_MODE=true` skips IDX/US/ETF jobs in main orchestrator. Use `karsa-crypto-orchestrator` Docker service for dedicated crypto trading.
 - **Bybit (Crypto)**: `BYBIT_API_KEY`, `BYBIT_API_SECRET`, `BYBIT_TESTNET` (default True). `CRYPTO_TELEGRAM_TOKEN` for separate crypto bot. Risk params: `CRYPTO_MAX_RISK_PER_TRADE_PCT` (1%), `CRYPTO_MAX_POSITION_PCT` (10%), `CRYPTO_MAX_CONCURRENT_POSITIONS` (5), `CRYPTO_DAILY_LOSS_LIMIT_PCT` (3%), `CRYPTO_MAX_LEVERAGE` (10). Liquidation thresholds: `CRYPTO_LIQUIDATION_WARN_PCT` (20%), `CRYPTO_LIQUIDATION_ALERT_PCT` (10%), `CRYPTO_LIQUIDATION_FORCE_CLOSE_PCT` (5%). Funding: `CRYPTO_FUNDING_ALERT_THRESHOLD` (0.05%).
 
 ## File Map (non-obvious)
@@ -194,6 +199,15 @@ print(f'Blackout tickers: {universe if universe else \"None\"}')
 - `src/agents/crypto_analyst.py` — Crypto Trend+Sentiment agent. Tools: deterministic TA (RSI, BB, MACD, ATR) via `crypto_technicals.py`. 10 Bybit perpetual pairs.
 - `src/agents/crypto_auditor.py` — Performance review agent. Pre-filter rejects extreme RSI/crowded funding before LLM call.
 - `src/bot/crypto_handlers.py` — 15 crypto Telegram commands, inline keyboards, `_get_bybit()`/`_get_redis()` shared connection helpers, activity/audit/guide/regime/funding/trades views.
+- `src/main_crypto.py` — Crypto-only orchestrator entry point. Runs only crypto APScheduler jobs (no IDX/US/ETF). Health on port 8001. Separate Docker service `karsa-crypto-orchestrator`.
+- `src/execution/__init__.py` — Execution engine package.
+- `src/execution/websocket_manager.py` — `WebSocketManager`: persistent Bybit WS for open positions, Redis price cache.
+- `src/execution/sl_engine.py` — `StopLossEngine`: WS-driven stop-loss, sub-second reaction.
+- `src/execution/oms.py` — `OrderManagementSystem`: order lifecycle state machine, stuck order cleanup.
+- `src/risk/calibration_engine.py` — `ConfidenceCalibrator`: LLM confidence vs win rate tracking, multiplier adjustment.
+- `src/risk/portfolio_allocator.py` — `PortfolioAllocator`: cross-market capital limits, global drawdown guard.
+- `src/agents/memory_retriever.py` — RAG memory retriever using pgvector. `get_relevant_trade_memory()` queries nearest past trades. `store_trade_memory()` saves outcomes. Gracefully degrades without `sentence-transformers`.
+- `src/backtest/perp_simulator.py` — `PerpSimulator`: event-driven perpetual backtester with funding fee simulation (8h), maker/taker fees, slippage model, liquidation check.
 - `src/bot/crypto_main.py` — Separate FastAPI app + polling for crypto bot. Wires orchestrator + shared Redis into `bot_data`.
 - `src/data/bybit_client.py` — Bybit REST API client (pybit). Data + execution methods. Exponential backoff retry. Semaphore(5) + 100ms throttle. Proxy support via `BYBIT_PROXY`.
 - `src/advisory/crypto_regime.py` — Hurst Exponent + ADX regime classifier on BTC. BTC dominance via CoinGecko. 5-min cache.
@@ -217,8 +231,13 @@ print(f'Blackout tickers: {universe if universe else \"None\"}')
 - `docs/AUDIT_KARSA_3.md` — Initial crypto audit (June 30, 2026).
 - `docs/AUDIT_KARSA_CRYPTO_BOT.md` — Post-implementation audit (July 1, 2026). 18 findings, 5 critical.
 - `docs/KARSA_CRYPTO_DESIGN_TEXT.md` — Crypto bot UI design system.
-- `monitoring/` — Prometheus + Grafana configs
+- `monitoring/` — Prometheus + Grafana configs. `prometheus.yml` scrapes `/metrics` on orchestrator (8000) and crypto-orchestrator (8001). `grafana-dashboard.json` — Karsa trading metrics dashboard.
 - `docs/` — Design docs, audit results, feature roadmap
+- `docs/AUDIT_REVIEW_QWEN_2JUL.md` — REVIEW_QWEN implementation audit (10 steps, 3 bugs fixed)
+- `docs/AUDIT_REVIEW_GROK_2JUL.md` — REVIEW_GROK implementation audit (6 steps, 1 bug fixed)
+- `db/migrations/add_pgvector_memory.sql` — pgvector extension + trade_memory table for RAG
+- `db/migrations/add_risk_profile.sql` — risk_profile_audit table + signal columns
+- `db/migrations/add_universe_history.sql` — universe_history table
 - `graphify-out/` — committed knowledge graph; query before reading source files
 
 ## Gotchas
@@ -233,3 +252,10 @@ print(f'Blackout tickers: {universe if universe else \"None\"}')
 - Kill switch threshold uses `CRYPTO_DAILY_LOSS_LIMIT_PCT` (default 3%) for crypto, checked against unrealized PnL from positions. Also checks Redis emergency stop (survives restarts). `/kill` sets both `karsa:global_halt` and `karsa:emergency_stop` Redis keys.
 - APScheduler uses `MemoryJobStore` — jobs are stateless and don't survive container restarts.
 - `_VALID_DIRECTIONS` in orchestrator is `{"LONG", "SHORT", "CLOSE"}` — matches DB CHECK constraint. Agents returning BUY/SELL/HOLD/WATCH are rejected by validation.
+- Postgres uses `pgvector/pgvector:pg15` image (not `postgres:15-alpine`). Required for `trade_memory` table with vector embeddings. `CREATE EXTENSION IF NOT EXISTS vector` in init.sql.
+- `src/metrics/crypto_metrics.py` must be imported at startup for Prometheus metrics to register. Both `main.py` and `main_crypto.py` import it in `startup()`.
+- `CircuitBreakerManager` (not `CircuitBreaker`) is the correct class name in `src/risk/circuit_breaker.py`.
+- `FundingTracker.__init__` takes `(bybit_client)` — not `(bybit, redis)`. Methods: `get_current_rates()`, `get_cumulative_costs()`. No `check_limits()` or `sync_all()`.
+- `TrailingStopManager.update_trailing_stops(positions)` requires a `list[CryptoPosition]` argument.
+- `BaseAgent.run()` returns `dict` — if LLM returns JSON array, it's parsed as single object. Batch prompt in orchestrator handles this with fallback `batch_result.get("signals", [batch_result])`.
+- `sentence-transformers` not in Dockerfile — RAG memory gracefully degrades (returns empty string). Add `pip install sentence-transformers` to Dockerfile for full RAG support.
