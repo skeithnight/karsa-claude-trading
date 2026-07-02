@@ -1,0 +1,27 @@
+src/advisory/crypto_universe.py
+  568d974cc91bb675 9-11
+docs/WALKTHROUGH_RISK_PROFILE_UNIVERSE.md
+  568d974cc91bb675 1-275
+src/bot/crypto_handlers.py
+  568d974cc91bb675 58-59,111-128,133-134,292-294,301,306-330,333-336,338,340-345,435-445,451,483,507,525,531-627,666,678,683-698
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "a44318f06c3ae504b48731e47c27f0ad4dea2640",
+  "prompts": {
+    "568d974cc91bb675": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0d70009-5efb-4aa8-8677-1a3449d15940",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 490,
+      "total_deletions": 33,
+      "accepted_lines": 470,
+      "overriden_lines": 0
+    }
+  }
+}
