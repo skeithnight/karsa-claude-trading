@@ -15,6 +15,7 @@ import asyncio
 import json
 import time
 
+from src.metrics.crypto_metrics import record_sl_breach, record_sl_execution
 from src.utils.logging import get_logger
 
 logger = get_logger("sl_engine")
@@ -88,6 +89,7 @@ class StopLossEngine:
         if breached:
             logger.warning("sl_breached", ticker=ticker, price=price,
                           stop_loss=stop_loss, side=side, size=size)
+            record_sl_breach(ticker)
             await self._execute_close(ticker, side, size, price, stop_loss)
 
     async def _sync_positions(self) -> None:
@@ -149,6 +151,7 @@ class StopLossEngine:
 
             if result and result.get("orderId"):
                 logger.info("sl_executed", ticker=ticker, order_id=result["orderId"])
+                record_sl_execution(ticker, True)
                 await self._redis.publish("karsa:events:sl_triggered", json.dumps({
                     "ticker": ticker, "trigger_price": price,
                     "stop_loss": stop_loss, "side": side,
@@ -157,5 +160,7 @@ class StopLossEngine:
                 self._position_cache.pop(ticker, None)
             else:
                 logger.error("sl_execute_failed", ticker=ticker, result=result)
+                record_sl_execution(ticker, False)
         except Exception as e:
             logger.error("sl_execute_error", ticker=ticker, error=str(e))
+            record_sl_execution(ticker, False)

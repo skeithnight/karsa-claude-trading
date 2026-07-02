@@ -15,6 +15,7 @@ from pybit.unified_trading import HTTP, WebSocket
 
 from src.config import settings
 from src.data.cache import CacheManager
+from src.metrics.crypto_metrics import record_bybit_call
 from src.utils.logging import get_logger
 
 logger = get_logger("bybit_client")
@@ -123,6 +124,7 @@ class BybitClient:
         Raises: Exception on fatal errors or after max retries.
         """
         last_error = None
+        _t0 = time.time()
         for attempt in range(_MAX_RETRIES):
             try:
                 async with self._semaphore:
@@ -133,6 +135,7 @@ class BybitClient:
 
                 if ret_code == 0:
                     self._record_success("bybit")
+                    record_bybit_call(func.__name__, time.time() - _t0)
                     return resp
 
                 if ret_code in _FATAL_CODES:
@@ -151,6 +154,7 @@ class BybitClient:
 
             except Exception as e:
                 if "Bybit" in str(e) and ("fatal" in str(e).lower() or "API error" in str(e)):
+                    record_bybit_call(func.__name__, time.time() - _t0, error="fatal")
                     raise
                 last_error = str(e)
                 if attempt < _MAX_RETRIES - 1:
@@ -159,6 +163,7 @@ class BybitClient:
                     await asyncio.sleep(delay)
 
         self._record_failure("bybit")
+        record_bybit_call(func.__name__, time.time() - _t0, error="retry_exhausted")
         raise Exception(f"Bybit max retries exceeded: {last_error}")
 
     # --- WebSocket Methods ---

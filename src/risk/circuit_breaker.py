@@ -16,6 +16,7 @@ import json
 from datetime import datetime, timezone
 
 from src.risk import emergency
+from src.metrics.crypto_metrics import update_circuit_breaker, VOLATILITY_SPIKE_PCT as VOL_SPIKE_METRIC
 from src.models.database import async_session
 from src.models.tables import CryptoCircuitBreakerEvent, ClosedPaperTrade
 from src.risk.crypto_risk_manager import CORRELATION_TIERS
@@ -130,6 +131,9 @@ class CircuitBreakerManager:
 
             move_pct = ((max_high - min_low) / min_low) * 100
 
+            # Always report current volatility to Prometheus
+            VOL_SPIKE_METRIC.labels(ticker=ticker).set(round(move_pct, 2))
+
             if move_pct >= VOL_SPIKE_PCT:
                 await self._activate_breaker(f"VOLATILITY:{ticker}", "WARNING", {
                     "ticker": ticker,
@@ -211,6 +215,9 @@ class CircuitBreakerManager:
 
     async def _activate_breaker(self, breaker_type: str, severity: str, details: dict) -> None:
         """Activate a circuit breaker — set Redis key with TTL and log to DB."""
+        # Update Prometheus gauge (strip ticker suffix for label)
+        update_circuit_breaker(breaker_type.split(":")[0], True)
+
         # Set Redis key with TTL
         if self._redis:
             try:

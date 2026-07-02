@@ -15,6 +15,7 @@ import json
 import time
 
 from src.config import settings
+from src.metrics.crypto_metrics import update_ws_health_tick, update_ws_reconnect
 from src.utils.logging import get_logger
 
 logger = get_logger("websocket_manager")
@@ -103,6 +104,7 @@ class WebSocketManager:
                     testnet=settings.BYBIT_TESTNET,
                     channel_type="linear",
                 )
+                update_ws_reconnect()
 
             def on_tick(message):
                 # ponytail: pybit callback runs in WS thread, schedule back to event loop
@@ -165,6 +167,7 @@ class WebSocketManager:
 
             # Publish for SL engine and other subscribers
             await self._redis.publish(REDIS_TICK_CHANNEL, json.dumps(price_data))
+            update_ws_health_tick()
 
         except Exception as e:
             logger.warning("ws_tick_handle_failed", ticker=ticker, error=str(e))

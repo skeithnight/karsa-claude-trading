@@ -176,9 +176,20 @@ services:
     container_name: karsa-prometheus
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./monitoring/prometheus/alerts:/etc/prometheus/alerts
       - prometheus-data:/prometheus
     ports:
       - "127.0.0.1:9090:9090"
+    networks: [trading-net]
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: karsa-alertmanager
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+    ports:
+      - "127.0.0.1:9093:9093"
     networks: [trading-net]
     restart: unless-stopped
 

@@ -14,6 +14,7 @@ Health endpoint on port 8001 (main orchestrator uses 8000).
 import asyncio
 import signal
 import sys
+import time
 
 import redis.asyncio as redis
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -28,6 +29,7 @@ from src.data.mcp_client import MCPClient
 from src.agents.orchestrator import Orchestrator
 from src.utils.logging import setup_logging, get_logger
 from src.utils.rate_limit import RateLimiter
+from src.metrics.crypto_metrics import JOB_LAST_RUN, JOB_DURATION, JOB_ERRORS, DAILY_LOSS_PCT
 
 logger = get_logger("main_crypto")
 
@@ -185,31 +187,44 @@ class CryptoKarsaApp:
     # --- Job implementations ---
 
     async def _job_scan_crypto(self):
+        start = time.time()
         try:
             signals = await self.orchestrator.scan_all_markets("CRYPTO")
+            JOB_LAST_RUN.labels(job_id="scan_crypto").set(time.time())
+            JOB_DURATION.labels(job_id="scan_crypto").observe(time.time() - start)
             logger.info("crypto_scan_done", signals=len(signals))
         except Exception as e:
+            JOB_ERRORS.labels(job_id="scan_crypto").inc()
             logger.error("crypto_scan_failed", error=str(e))
 
     async def _job_refresh_universe(self):
+        start = time.time()
         try:
             if self.universe_engine:
                 universe = await self.universe_engine.generate()
+                JOB_LAST_RUN.labels(job_id="refresh_universe").set(time.time())
+                JOB_DURATION.labels(job_id="refresh_universe").observe(time.time() - start)
                 logger.info("universe_refreshed", count=len(universe))
         except Exception as e:
+            JOB_ERRORS.labels(job_id="refresh_universe").inc()
             logger.error("universe_refresh_failed", error=str(e))
 
     async def _job_monitor_crypto_positions(self):
+        start = time.time()
         try:
             bybit = self.mcp._get_bybit()
             positions = await bybit.get_positions()
             if positions:
                 for pos in positions:
                     logger.info("crypto_position", ticker=pos.get("symbol"), pnl=pos.get("unrealisedPnl"), size=pos.get("size"))
+            JOB_LAST_RUN.labels(job_id="crypto_monitor").set(time.time())
+            JOB_DURATION.labels(job_id="crypto_monitor").observe(time.time() - start)
         except Exception as e:
+            JOB_ERRORS.labels(job_id="crypto_monitor").inc()
             logger.error("crypto_monitor_failed", error=str(e))
 
     async def _job_sync_crypto_funding(self):
+        start = time.time()
         try:
             from src.risk.funding_tracker import FundingTracker
             bybit = self.mcp._get_bybit()
@@ -218,28 +233,40 @@ class CryptoKarsaApp:
             alerts = [r for r in rates if r.get("alert")]
             if alerts:
                 logger.warning("funding_alerts", alerts=alerts)
+            JOB_LAST_RUN.labels(job_id="crypto_funding").set(time.time())
+            JOB_DURATION.labels(job_id="crypto_funding").observe(time.time() - start)
             logger.info("crypto_funding_synced", rates=len(rates))
         except Exception as e:
+            JOB_ERRORS.labels(job_id="crypto_funding").inc()
             logger.error("crypto_funding_sync_failed", error=str(e))
 
     async def _job_crypto_pnl_snapshot(self):
+        start = time.time()
         try:
             from src.advisory.performance_tracker import PerformanceTracker
             tracker = PerformanceTracker(self.redis_client)
             await tracker.snapshot()
+            JOB_LAST_RUN.labels(job_id="crypto_pnl_snapshot").set(time.time())
+            JOB_DURATION.labels(job_id="crypto_pnl_snapshot").observe(time.time() - start)
             logger.info("crypto_pnl_snapshot_done")
         except Exception as e:
+            JOB_ERRORS.labels(job_id="crypto_pnl_snapshot").inc()
             logger.error("crypto_pnl_snapshot_failed", error=str(e))
 
     async def _job_sync_crypto_positions(self):
+        start = time.time()
         try:
             bybit = self.mcp._get_bybit()
             positions = await bybit.get_positions()
+            JOB_LAST_RUN.labels(job_id="crypto_position_sync").set(time.time())
+            JOB_DURATION.labels(job_id="crypto_position_sync").observe(time.time() - start)
             logger.info("crypto_position_sync_done", count=len(positions) if positions else 0)
         except Exception as e:
+            JOB_ERRORS.labels(job_id="crypto_position_sync").inc()
             logger.error("crypto_position_sync_failed", error=str(e))
 
     async def _job_update_trailing_stops(self):
+        start = time.time()
         try:
             from src.risk.trailing_stop import TrailingStopManager
             from src.models.tables import CryptoPosition
@@ -247,6 +274,7 @@ class CryptoKarsaApp:
             manager = TrailingStopManager(bybit, self.redis_client)
             positions_data = await bybit.get_positions()
             if not positions_data:
+                JOB_LAST_RUN.labels(job_id="crypto_trailing_stops").set(time.time())
                 return
             positions = []
             for p in positions_data:
@@ -261,81 +289,107 @@ class CryptoKarsaApp:
                     ))
             if positions:
                 await manager.update_trailing_stops(positions)
+            JOB_LAST_RUN.labels(job_id="crypto_trailing_stops").set(time.time())
+            JOB_DURATION.labels(job_id="crypto_trailing_stops").observe(time.time() - start)
             logger.info("trailing_stops_updated", count=len(positions))
         except Exception as e:
+            JOB_ERRORS.labels(job_id="crypto_trailing_stops").inc()
             logger.error("trailing_stop_job_failed", error=str(e))
 
     async def _job_check_partial_exits(self):
+        start = time.time()
         try:
             from src.risk.position_manager import PositionManager
             bybit = self.mcp._get_bybit()
             pm = PositionManager(bybit, self.redis_client)
             positions = await bybit.get_positions()
             if not positions:
+                JOB_LAST_RUN.labels(job_id="crypto_partial_exits").set(time.time())
                 return
             from src.models.tables import CryptoPosition
             crypto_positions = [CryptoPosition(**p) for p in positions if float(p.get("size", 0) or 0) > 0]
             actions = await pm.check_partial_exits(crypto_positions)
             for action in actions:
                 await pm.execute_partial_exit(action)
+            JOB_LAST_RUN.labels(job_id="crypto_partial_exits").set(time.time())
+            JOB_DURATION.labels(job_id="crypto_partial_exits").observe(time.time() - start)
             if actions:
                 logger.info("partial_exits_executed", count=len(actions))
         except Exception as e:
+            JOB_ERRORS.labels(job_id="crypto_partial_exits").inc()
             logger.error("partial_exit_job_failed", error=str(e))
 
     async def _job_check_time_exits(self):
+        start = time.time()
         try:
             from src.risk.position_manager import PositionManager
             bybit = self.mcp._get_bybit()
             pm = PositionManager(bybit, self.redis_client)
             positions = await bybit.get_positions()
             if not positions:
+                JOB_LAST_RUN.labels(job_id="crypto_time_exits").set(time.time())
                 return
             from src.models.tables import CryptoPosition
             crypto_positions = [CryptoPosition(**p) for p in positions if float(p.get("size", 0) or 0) > 0]
             actions = await pm.check_time_exits(crypto_positions)
             for action in actions:
                 await pm.execute_partial_exit(action)
+            JOB_LAST_RUN.labels(job_id="crypto_time_exits").set(time.time())
+            JOB_DURATION.labels(job_id="crypto_time_exits").observe(time.time() - start)
             if actions:
                 logger.info("time_exits_executed", count=len(actions))
         except Exception as e:
+            JOB_ERRORS.labels(job_id="crypto_time_exits").inc()
             logger.error("time_exit_job_failed", error=str(e))
 
     async def _job_check_circuit_breakers(self):
+        start = time.time()
         try:
             from src.risk.circuit_breaker import CircuitBreakerManager
             bybit = self.mcp._get_bybit()
             cb = CircuitBreakerManager(self.redis_client, bybit)
             triggered = await cb.check_all()
+            JOB_LAST_RUN.labels(job_id="crypto_circuit_breakers").set(time.time())
+            JOB_DURATION.labels(job_id="crypto_circuit_breakers").observe(time.time() - start)
             if triggered:
                 logger.warning("circuit_breaker_triggered", details=triggered)
         except Exception as e:
+            JOB_ERRORS.labels(job_id="crypto_circuit_breakers").inc()
             logger.error("circuit_breaker_job_failed", error=str(e))
 
     async def _job_enforce_funding_limit(self):
+        start = time.time()
         try:
             from src.risk.funding_tracker import FundingTracker
             bybit = self.mcp._get_bybit()
             tracker = FundingTracker(bybit)
             rates = await tracker.get_current_rates()
             breached = [r for r in rates if r.get("alert")]
+            JOB_LAST_RUN.labels(job_id="funding_limit").set(time.time())
+            JOB_DURATION.labels(job_id="funding_limit").observe(time.time() - start)
             if breached:
                 logger.warning("funding_limit_breached", details=breached)
         except Exception as e:
+            JOB_ERRORS.labels(job_id="funding_limit").inc()
             logger.error("funding_limit_job_failed", error=str(e))
 
     async def _job_reconcile_positions(self):
+        start = time.time()
         try:
             from src.risk.position_sync import PositionReconciler
             bybit = self.mcp._get_bybit()
             reconciler = PositionReconciler(bybit)
             result = await reconciler.reconcile()
+            JOB_LAST_RUN.labels(job_id="reconciliation").set(time.time())
+            JOB_DURATION.labels(job_id="reconciliation").observe(time.time() - start)
             if result:
                 logger.info("reconciliation_done", drifts=result)
         except Exception as e:
+            JOB_ERRORS.labels(job_id="reconciliation").inc()
             logger.error("reconciliation_job_failed", error=str(e))
 
     async def _job_liquidity_check(self):
+        start = time.time()
         try:
             bybit = self.mcp._get_bybit()
             from src.risk.liquidity import LiquidityMonitor
@@ -344,39 +398,53 @@ class CryptoKarsaApp:
                 liq = await monitor.check_liquidity(ticker, "BUY")
                 if not liq["can_trade"]:
                     logger.warning("liquidity_alert", ticker=ticker, reason=liq["reason"])
+            JOB_LAST_RUN.labels(job_id="liquidity_check").set(time.time())
+            JOB_DURATION.labels(job_id="liquidity_check").observe(time.time() - start)
             logger.info("liquidity_check_done")
         except Exception as e:
+            JOB_ERRORS.labels(job_id="liquidity_check").inc()
             logger.error("liquidity_check_job_failed", error=str(e))
 
     async def _job_oms_cleanup(self):
+        start = time.time()
         try:
             if self.oms:
                 stuck = await self.oms.cleanup_stuck_orders()
                 await self.oms.sync_from_exchange()
+                JOB_LAST_RUN.labels(job_id="oms_cleanup").set(time.time())
+                JOB_DURATION.labels(job_id="oms_cleanup").observe(time.time() - start)
                 logger.info("oms_cleanup_done", stuck_cancelled=len(stuck))
         except Exception as e:
+            JOB_ERRORS.labels(job_id="oms_cleanup").inc()
             logger.error("oms_cleanup_failed", error=str(e))
 
     async def _job_kill_switch(self):
+        start = time.time()
         try:
             from src.risk import emergency
             if await emergency.is_active():
+                JOB_LAST_RUN.labels(job_id="kill_switch").set(time.time())
                 return
             bybit = self.mcp._get_bybit()
             positions = await bybit.get_positions()
             if not positions:
+                JOB_LAST_RUN.labels(job_id="kill_switch").set(time.time())
                 return
             total_pnl = sum(float(p.get("unrealisedPnl", 0) or 0) for p in positions)
             total_equity = float(await bybit.get_wallet_balance("USDT") or 0)
             if total_equity > 0 and total_pnl < 0:
                 loss_pct = abs(total_pnl) / total_equity * 100
+                DAILY_LOSS_PCT.set(loss_pct)
                 if loss_pct >= settings.CRYPTO_DAILY_LOSS_LIMIT_PCT:
                     await emergency.activate(
                         reason=f"Crypto daily loss {loss_pct:.1f}% exceeds limit {settings.CRYPTO_DAILY_LOSS_LIMIT_PCT}%",
                         operator="kill_switch_job",
                     )
                     logger.warning("kill_switch_activated", loss_pct=loss_pct)
+            JOB_LAST_RUN.labels(job_id="kill_switch").set(time.time())
+            JOB_DURATION.labels(job_id="kill_switch").observe(time.time() - start)
         except Exception as e:
+            JOB_ERRORS.labels(job_id="kill_switch").inc()
             logger.error("kill_switch_failed", error=str(e))
 
     async def shutdown(self):
