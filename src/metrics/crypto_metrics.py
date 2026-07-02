@@ -244,6 +244,9 @@ WARP_CONNECTED = Gauge(
 WS_LAST_MESSAGE_TIMESTAMP = Gauge(
     "karsa_ws_last_message_timestamp_seconds",
     "Last message received from Bybit WS")
+# ponytail: init to now so `time() - metric` shows uptime, not 56 years
+import time as _time
+WS_LAST_MESSAGE_TIMESTAMP.set(_time.time())
 
 WS_RECONNECT_TOTAL = Counter(
     "karsa_ws_reconnect_total", "WS reconnection count")
