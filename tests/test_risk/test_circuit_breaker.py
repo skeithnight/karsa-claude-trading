@@ -1,7 +1,7 @@
 """Tests for CircuitBreakerManager — daily DD, volatility spike, correlation cascade."""
 
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime, timezone
 
 from src.risk.circuit_breaker import (
@@ -17,7 +17,7 @@ from src.risk.circuit_breaker import (
 @pytest.fixture
 def bybit():
     client = AsyncMock()
-    client._http_client = AsyncMock()
+    client._http_client = MagicMock()
     return client
 
 
@@ -228,3 +228,227 @@ class TestGetActiveBreakers:
         assert len(result) == 2
         assert all("type" in b for b in result)
         assert all("ttl" in b for b in result)
+
+
+# ── Daily DD Edge Cases ─────────────────────────────────────────────────────
+
+class TestDailyDrawdownEdgeCases:
+    @pytest.mark.asyncio
+    async def test_exactly_at_limit_triggers(self, cb_mgr, redis_client):
+        """When daily_pnl_pct is exactly at -limit, should trigger."""
+        redis_client.get.return_value = None  # breaker not already active
+
+        with patch('src.risk.circuit_breaker.async_session') as mock_session_cls:
+            mock_session = AsyncMock()
+            mock_session_cls.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            mock_result = MagicMock()
+            mock_result.scalar.return_value = -3.0
+            mock_session.execute = AsyncMock(return_value=mock_result)
+
+            with patch('src.config.settings') as mock_settings:
+                mock_settings.CRYPTO_DAILY_LOSS_LIMIT_PCT = 3.0
+                with patch.object(cb_mgr, '_activate_breaker', new_callable=AsyncMock) as mock_activate:
+                    result = await cb_mgr.check_daily_drawdown()
+
+        assert result is not None
+        assert result["breaker"] == "DAILY_DD"
+
+    @pytest.mark.asyncio
+    async def test_already_active_returns_none(self, cb_mgr, redis_client):
+        """When breaker is already active, should return None (skip re-activation)."""
+        redis_client.get.return_value = b'{"active": true}'  # already active
+
+        with patch('src.risk.circuit_breaker.async_session') as mock_session_cls:
+            mock_session = AsyncMock()
+            mock_session_cls.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            mock_result = MagicMock()
+            mock_result.scalar.return_value = -5.0
+            mock_session.execute = AsyncMock(return_value=mock_result)
+
+            with patch('src.config.settings') as mock_settings:
+                mock_settings.CRYPTO_DAILY_LOSS_LIMIT_PCT = 3.0
+                result = await cb_mgr.check_daily_drawdown()
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_db_exception_returns_none(self, cb_mgr, redis_client):
+        """When async_session raises, should return None gracefully."""
+        redis_client.get.return_value = None
+
+        with patch('src.risk.circuit_breaker.async_session', side_effect=Exception("DB down")):
+            result = await cb_mgr.check_daily_drawdown()
+
+        assert result is None
+
+
+# ── Volatility Spike Edge Cases ─────────────────────────────────────────────
+
+class TestVolatilitySpikeEdgeCases:
+    @pytest.mark.asyncio
+    async def test_insufficient_klines_returns_none(self, cb_mgr, redis_client):
+        """When kline list has < 2 entries, returns None."""
+        redis_client.get.return_value = None
+        cb_mgr.bybit._http_client.get_kline = MagicMock(return_value={
+            "retCode": 0,
+            "result": {"list": [["1000", "50000", "50100", "49900", "50050", "100"]]},
+        })
+        result = await cb_mgr.check_volatility_spike("BTCUSDT")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_empty_klines_returns_none(self, cb_mgr, redis_client):
+        """When kline list is empty, returns None."""
+        redis_client.get.return_value = None
+        cb_mgr.bybit._http_client.get_kline = MagicMock(return_value={
+            "retCode": 0,
+            "result": {"list": []},
+        })
+        result = await cb_mgr.check_volatility_spike("BTCUSDT")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_min_low_zero_skips(self, cb_mgr, redis_client):
+        """When klines have min_low of 0, should skip to avoid division by zero."""
+        redis_client.get.return_value = None
+        cb_mgr.bybit._http_client.get_kline = MagicMock(return_value={
+            "retCode": 0,
+            "result": {"list": [
+                ["1000", "50000", "50100", "0", "50050", "100"],
+                ["1001", "50000", "50100", "0", "50050", "100"],
+            ]},
+        })
+        result = await cb_mgr.check_volatility_spike("BTCUSDT")
+        assert result is None
+
+
+# ── Correlation Cascade Edge Cases ──────────────────────────────────────────
+
+class TestCorrelationCascadeEdgeCases:
+    @pytest.mark.asyncio
+    async def test_already_active_returns_none(self, cb_mgr, redis_client):
+        """When CORRELATION breaker already active, returns None."""
+        redis_client.get.return_value = b'{"active": true}'
+        result = await cb_mgr.check_correlation_cascade()
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_api_error_returns_none(self, cb_mgr, redis_client):
+        """When get_positions returns error, returns None."""
+        redis_client.get.return_value = None
+        cb_mgr.bybit._http_client.get_positions = MagicMock(return_value={
+            "retCode": 10001, "result": {"list": []},
+        })
+        result = await cb_mgr.check_correlation_cascade()
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_tier2_cascade(self, cb_mgr, redis_client):
+        """Test cascade with tier2 positions (>60% losing)."""
+        redis_client.get.return_value = None
+        cb_mgr.bybit._http_client.get_positions = MagicMock(return_value={
+            "retCode": 0,
+            "result": {"list": [
+                {"symbol": "SOLUSDT", "size": "10", "unrealisedPnl": "-100"},
+                {"symbol": "AVAXUSDT", "size": "50", "unrealisedPnl": "-50"},
+                {"symbol": "LINKUSDT", "size": "20", "unrealisedPnl": "10"},
+            ]},
+        })
+
+        with patch.object(cb_mgr, '_activate_breaker', new_callable=AsyncMock):
+            result = await cb_mgr.check_correlation_cascade()
+
+        assert result is not None
+        assert result["breaker"] == "CORRELATION"
+        assert result["tier"] == "tier2"
+        assert result["loss_ratio"] >= CORRELATION_CASCADE_PCT
+
+
+# ── check_all ───────────────────────────────────────────────────────────────
+
+class TestCheckAll:
+    @pytest.mark.asyncio
+    async def test_combines_all_events(self, cb_mgr):
+        """check_all returns combined list from all breakers."""
+        dd_event = {"breaker": "DAILY_DD", "severity": "HALT"}
+        vol_event = {"breaker": "VOLATILITY", "severity": "WARNING", "ticker": "BTCUSDT"}
+        corr_event = {"breaker": "CORRELATION", "severity": "WARNING", "tier": "tier1"}
+
+        with patch.object(cb_mgr, 'check_daily_drawdown', new_callable=AsyncMock, return_value=dd_event), \
+             patch.object(cb_mgr, 'check_volatility_spike', new_callable=AsyncMock, return_value=vol_event), \
+             patch.object(cb_mgr, 'check_correlation_cascade', new_callable=AsyncMock, return_value=corr_event):
+            events = await cb_mgr.check_all()
+
+        # 1 DD + 3 vol (BTC, ETH, SOL) + 1 corr = 5
+        assert len(events) == 5
+        assert events[0] == dd_event
+
+    @pytest.mark.asyncio
+    async def test_no_events_returns_empty(self, cb_mgr):
+        """When nothing triggers, returns empty list."""
+        with patch.object(cb_mgr, 'check_daily_drawdown', new_callable=AsyncMock, return_value=None), \
+             patch.object(cb_mgr, 'check_volatility_spike', new_callable=AsyncMock, return_value=None), \
+             patch.object(cb_mgr, 'check_correlation_cascade', new_callable=AsyncMock, return_value=None):
+            events = await cb_mgr.check_all()
+
+        assert events == []
+
+
+# ── _is_breaker_active Edge Cases ───────────────────────────────────────────
+
+class TestBreakerActiveEdge:
+    @pytest.mark.asyncio
+    async def test_redis_exception_returns_false(self, cb_mgr, redis_client):
+        """When Redis.get raises, returns False (fail-open)."""
+        redis_client.get.side_effect = Exception("Redis down")
+        result = await cb_mgr._is_breaker_active("DAILY_DD")
+        assert result is False
+
+
+# ── _activate_breaker Edge Cases ────────────────────────────────────────────
+
+class TestActivateBreakerEdge:
+    @pytest.mark.asyncio
+    async def test_db_exception_does_not_propagate(self, cb_mgr, redis_client):
+        """When DB insert raises, should not propagate exception."""
+        redis_client.setex = AsyncMock()
+
+        with patch('src.risk.circuit_breaker.async_session') as mock_session_cls:
+            mock_session = AsyncMock()
+            mock_session_cls.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            mock_session.add = MagicMock(side_effect=Exception("DB write failed"))
+            mock_session.commit = AsyncMock(side_effect=Exception("DB write failed"))
+
+            # Should not raise
+            await cb_mgr._activate_breaker("DAILY_DD", "HALT", {"test": True})
+
+    @pytest.mark.asyncio
+    async def test_redis_exception_does_not_propagate(self, cb_mgr, redis_client):
+        """When Redis setex raises, should not propagate."""
+        redis_client.setex = AsyncMock(side_effect=Exception("Redis down"))
+
+        with patch('src.risk.circuit_breaker.async_session') as mock_session_cls:
+            mock_session = AsyncMock()
+            mock_session_cls.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            # Should not raise
+            await cb_mgr._activate_breaker("DAILY_DD", "HALT", {"test": True})
+
+
+# ── get_active_breakers Edge Cases ──────────────────────────────────────────
+
+class TestGetActiveBreakersEdge:
+    @pytest.mark.asyncio
+    async def test_scan_exception_returns_empty(self, cb_mgr, redis_client):
+        """When scan_iter raises, returns empty list."""
+        async def failing_scan(match):
+            raise Exception("Redis scan failed")
+            yield  # make it an async generator
+
+        redis_client.scan_iter = failing_scan
+        result = await cb_mgr.get_active_breakers()
+        assert result == []
