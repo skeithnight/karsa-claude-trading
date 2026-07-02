@@ -1,0 +1,69 @@
+src/risk/profile_manager.py
+  3a396a86fa3414ba 171-180
+src/main_crypto.py
+  3a396a86fa3414ba 1-428
+docs/AUDIT_REVIEW_GROK_2JUL.md
+  3a396a86fa3414ba 1-85
+src/backtest/perp_simulator.py
+  3a396a86fa3414ba 1-241
+monitoring/grafana-dashboard.json
+  3a396a86fa3414ba 3,5-7,10,12-22,25,27-35,38,40-48,51,53-61,64,66-73,76-90,93-98,101-106,109-117,120-128,130
+src/config.py
+  3a396a86fa3414ba 52-54
+CLAUDE.md
+  3a396a86fa3414ba 143-145,159-161,173,202-210,234,236-240,255-261
+src/risk/portfolio_allocator.py
+  3a396a86fa3414ba 1-186
+src/data/bybit_client.py
+  3a396a86fa3414ba 647-669
+docs/AUDIT_REVIEW_QWEN_2JUL.md
+  3a396a86fa3414ba 1-78
+docker-compose.yml
+  3a396a86fa3414ba 29,147-200,209-210
+src/agents/orchestrator.py
+  3a396a86fa3414ba 108,238-304,340-346,446-448,450,452
+src/agents/memory_retriever.py
+  3a396a86fa3414ba 1-104
+src/risk/position_manager.py
+  3a396a86fa3414ba 24-25,28-29
+src/agents/crypto_analyst.py
+  3a396a86fa3414ba 216-231
+monitoring/prometheus.yml
+  3a396a86fa3414ba 9,11,13-14
+src/main.py
+  3a396a86fa3414ba 73-91,162,346,349,351,360-366,925-934,938-941,966-975
+db/init.sql
+  3a396a86fa3414ba 346-393
+src/execution/websocket_manager.py
+  3a396a86fa3414ba 1-181
+db/migrations/add_pgvector_memory.sql
+  3a396a86fa3414ba 1-21
+src/execution/sl_engine.py
+  3a396a86fa3414ba 1-161
+src/execution/oms.py
+  3a396a86fa3414ba 1-184
+src/advisory/crypto_universe.py
+  3a396a86fa3414ba 121-142,166,168,171-173,177-178,188-192,230,257-265,269-271
+src/risk/calibration_engine.py
+  3a396a86fa3414ba 1-96
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "bfac2c483964fbc331110c1ea882850f67be0d25",
+  "prompts": {
+    "3a396a86fa3414ba": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2a7ad5c5-13cb-4387-99ff-b91311b0e867",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 2258,
+      "total_deletions": 125,
+      "accepted_lines": 2241,
+      "overriden_lines": 0
+    }
+  }
+}
