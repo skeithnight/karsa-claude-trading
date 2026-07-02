@@ -49,28 +49,56 @@ def calculate_rsi(ohlcv: list[dict], period: int = 14) -> dict:
             "oversold": oversold, "signal": signal}
 
 
-def calculate_bollinger(ohlcv: list[dict], period: int = 20, std_dev: float = 2.0) -> dict:
-    """Calculate Bollinger Bands. Returns: {upper, middle, lower, bandwidth, pct_b, signal}"""
+def calculate_bollinger(ohlcv: list[dict], period: int = 20, std_dev: float = 2.0, bbw_lookback: int = 0) -> dict:
+    """Calculate Bollinger Bands. Returns: {upper, middle, lower, bandwidth, pct_b, signal, bbw_percentile}"""
     if not _validate_ohlcv(ohlcv, period):
         return {"error": "insufficient_data"}
 
-    closes = [c["close"] for c in ohlcv[-period:]]
-    current_price = ohlcv[-1]["close"]
+    needed_len = max(1, bbw_lookback) + period - 1
+    recent_ohlcv = ohlcv[-needed_len:] if len(ohlcv) >= needed_len else ohlcv
+    closes = [c["close"] for c in recent_ohlcv]
 
-    mean = sum(closes) / len(closes)
-    std = math.sqrt(sum((c - mean) ** 2 for c in closes) / len(closes))
+    if len(closes) < period:
+        return {"error": "insufficient_data"}
 
-    upper = mean + (std_dev * std)
-    lower = mean - (std_dev * std)
-    bandwidth = (upper - lower) / mean * 100 if mean > 0 else 0
-    pct_b = (current_price - lower) / (upper - lower) if (upper - lower) > 0 else 0.5
+    bandwidths = []
+    current_upper = current_middle = current_lower = 0.0
+
+    for i in range(period, len(closes) + 1):
+        window = closes[i - period:i]
+        mean = sum(window) / period
+        std = math.sqrt(sum((c - mean) ** 2 for c in window) / period)
+        upper = mean + (std_dev * std)
+        lower = mean - (std_dev * std)
+        bw = (upper - lower) / mean * 100 if mean > 0 else 0
+        bandwidths.append(bw)
+        
+        if i == len(closes):
+            current_upper = upper
+            current_middle = mean
+            current_lower = lower
+
+    current_price = closes[-1]
+    current_bandwidth = bandwidths[-1] if bandwidths else 0
+    pct_b = (current_price - current_lower) / (current_upper - current_lower) if (current_upper - current_lower) > 0 else 0.5
 
     signal = ("above_upper" if pct_b > 1.0 else "below_lower" if pct_b < 0.0
               else "near_upper" if pct_b > 0.8 else "near_lower" if pct_b < 0.2
               else "within_bands")
 
-    return {"upper": round(upper, 4), "middle": round(mean, 4), "lower": round(lower, 4),
-            "bandwidth": round(bandwidth, 2), "pct_b": round(pct_b, 4), "signal": signal, "period": period}
+    result = {
+        "upper": round(current_upper, 4), "middle": round(current_middle, 4), "lower": round(current_lower, 4),
+        "bandwidth": round(current_bandwidth, 2), "pct_b": round(pct_b, 4), "signal": signal, "period": period
+    }
+
+    if bbw_lookback > 0 and len(bandwidths) >= 2:
+        less_than = sum(1 for bw in bandwidths if bw < current_bandwidth)
+        percentile = (less_than / len(bandwidths)) * 100
+        result["bbw_percentile"] = round(percentile, 2)
+    else:
+        result["bbw_percentile"] = None
+
+    return result
 
 
 def calculate_ema(ohlcv: list[dict], period: int = 20) -> dict:

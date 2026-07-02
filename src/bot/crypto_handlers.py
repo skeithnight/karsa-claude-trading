@@ -149,15 +149,35 @@ async def activity_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         async with async_session() as session:
             sig_result = await session.execute(
                 select(Signal).where(Signal.market == "CRYPTO")
-                .order_by(desc(Signal.created_at)).limit(5)
+                .order_by(desc(Signal.created_at)).limit(30)
             )
-            signals = sig_result.scalars().all()
+            all_signals = sig_result.scalars().all()
+            
+            # Deduplicate signals by ticker to show diverse activity
+            seen_tickers = set()
+            signals = []
+            for s in all_signals:
+                if s.ticker not in seen_tickers:
+                    seen_tickers.add(s.ticker)
+                    signals.append(s)
+                if len(signals) >= 5:
+                    break
 
             trade_result = await session.execute(
                 select(ClosedPaperTrade).where(ClosedPaperTrade.market == "CRYPTO")
-                .order_by(desc(ClosedPaperTrade.exit_date)).limit(3)
+                .order_by(desc(ClosedPaperTrade.exit_date)).limit(10)
             )
-            trades = trade_result.scalars().all()
+            all_trades = trade_result.scalars().all()
+            
+            # Deduplicate trades by ticker
+            seen_trade_tickers = set()
+            trades = []
+            for t in all_trades:
+                if t.ticker not in seen_trade_tickers:
+                    seen_trade_tickers.add(t.ticker)
+                    trades.append(t)
+                if len(trades) >= 3:
+                    break
             
         lines = [bold("📋 LIVE ACTIVITY FEED"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"]
         
@@ -325,7 +345,7 @@ async def control_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if orch and orch.universe_engine:
             universe = await orch.universe_engine.get_current()
-            universe_block = f"{len(universe)} coins: {', '.join(universe[:8])}{'...' if len(universe) > 8 else ''}"
+            universe_block = f"{len(universe)} coins: {', '.join(universe)}"
     except Exception: pass
 
     text = fmt(

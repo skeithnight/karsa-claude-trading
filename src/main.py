@@ -271,11 +271,11 @@ class KarsaApp:
                 id="scan_crypto", name="Crypto Market Scan (24/7)",
                 replace_existing=True, misfire_grace_time=600,
             )
-            # Refresh dynamic universe every 4 hours
+            # Refresh dynamic universe every 15 minutes
             s.add_job(
                 self._job_refresh_universe,
-                "cron", hour="*/4", minute=5,
-                id="refresh_universe", name="Crypto Universe Refresh (every 4h)",
+                "cron", minute="*/15",
+                id="refresh_universe", name="Crypto Universe Refresh (every 15m)",
                 replace_existing=True, misfire_grace_time=600,
             )
             # Monitor open positions every 15 minutes

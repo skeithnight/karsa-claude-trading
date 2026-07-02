@@ -26,7 +26,7 @@ CRYPTO_UNIVERSE = [
 UNIVERSE_BLACKLIST = set()
 
 # Max total tokens per scan (core + dynamic)
-MAX_UNIVERSE_SIZE = 20
+MAX_UNIVERSE_SIZE = 40
 
 PAIR_CONFIG = {
     "BTCUSDT":  {"min_order_usd": 10, "tick_size": 0.1, "category": "tier1"},
@@ -45,6 +45,50 @@ PAIR_CONFIG = {
     "PEPEUSDT": {"min_order_usd": 5, "tick_size": 0.0000001, "category": "tier3"},
 }
 
+SECTOR_MAPPING = {
+    "BTCUSDT": "Layer1",
+    "ETHUSDT": "Layer1",
+    "SOLUSDT": "Layer1",
+    "AVAXUSDT": "Layer1",
+    "ADAUSDT": "Layer1",
+    "DOTUSDT": "Layer1",
+    "NEARUSDT": "Layer1",
+    "SUIUSDT": "Layer1",
+    "APTUSDT": "Layer1",
+    "INJUSDT": "Layer1",
+    "TIAUSDT": "Layer1",
+    "SEIUSDT": "Layer1",
+    "BNBUSDT": "Exchange",
+    "XRPUSDT": "Payments",
+    "DOGEUSDT": "Meme",
+    "PEPEUSDT": "Meme",
+    "WIFUSDT": "Meme",
+    "BONKUSDT": "Meme",
+    "SHIBUSDT": "Meme",
+    "FLOKIUSDT": "Meme",
+    "BOMEUSDT": "Meme",
+    "LINKUSDT": "Oracle",
+    "PYTHUSDT": "Oracle",
+    "MATICUSDT": "Layer2",
+    "OPUSDT": "Layer2",
+    "ARBUSDT": "Layer2",
+    "STRKUSDT": "Layer2",
+    "MANTLEUSDT": "Layer2",
+    "FETUSDT": "AI",
+    "AGIXUSDT": "AI",
+    "WLDUSDT": "AI",
+    "RNDRUSDT": "AI",
+    "TAOUSDT": "AI",
+    "OCEANUSDT": "AI",
+    "UNIUSDT": "DeFi",
+    "AAVEUSDT": "DeFi",
+    "MKRUSDT": "DeFi",
+    "CRVUSDT": "DeFi",
+    "RUNEUSDT": "DeFi",
+    "PENDLEUSDT": "DeFi",
+    "ONDOUSDT": "RWA",
+}
+
 
 async def get_dynamic_universe(bybit_client) -> list[str]:
     """Build scan universe: core tokens + top Bybit movers by volume.
@@ -59,7 +103,7 @@ async def get_dynamic_universe(bybit_client) -> list[str]:
     try:
         movers = await bybit_client.get_top_movers(
             top_n=30,
-            min_volume_usd=5_000_000,
+            min_volume_usd=250_000,  # ponytail: matches UniverseEngine.generate() floor
         )
         for m in movers:
             sym = m["symbol"]
@@ -101,13 +145,13 @@ def get_pair_config(symbol: str) -> dict:
 # --- Dynamic Universe Engine ---
 
 REDIS_UNIVERSE_KEY = "karsa:state:crypto_universe"
-UNIVERSE_TTL = 4 * 3600  # 4 hours
+UNIVERSE_TTL = 30 * 60  # 30 minutes
 
 # Profile-aware universe sizes
 _UNIVERSE_SIZE_BY_PROFILE = {
     "conservative": 8,
     "semi_aggressive": 12,
-    "aggressive": 15,
+    "aggressive": 30,
 }
 
 
@@ -169,7 +213,7 @@ class UniverseEngine:
 
         # Determine universe size and volume floor from profile
         top_n = MAX_UNIVERSE_SIZE
-        min_vol = 1_000_000  # absolute floor
+        min_vol = 250_000  # absolute floor
         if self._profile_mgr:
             try:
                 profile = await self._profile_mgr.get_active_profile()
@@ -189,11 +233,11 @@ class UniverseEngine:
                 pass
             return list(CRYPTO_UNIVERSE)
 
-        # Filter by liquidity — use profile floor, fallback to $5M if too few
+        # Filter by liquidity — use profile floor, fallback to $1M if too few
         liquid = filter_liquid(candidates, min_volume_usd=min_vol)
         if len(liquid) < 5:
-            logger.info("universe_volume_fallback", strict_count=len(liquid), fallback_usd=5_000_000)
-            liquid = filter_liquid(candidates, min_volume_usd=5_000_000)
+            logger.info("universe_volume_fallback", strict_count=len(liquid), fallback_usd=1_000_000)
+            liquid = filter_liquid(candidates, min_volume_usd=1_000_000)
 
         # Score and rank
         ranked = rank_candidates(
@@ -201,6 +245,7 @@ class UniverseEngine:
             top_n=top_n,
             min_score=20.0,
             always_include=set(CORE_UNIVERSE),
+            sector_mapping=SECTOR_MAPPING,
         )
 
         universe = [c["symbol"] for c in ranked]
@@ -258,7 +303,7 @@ class UniverseEngine:
         """Get current universe with scoring details for display."""
         from src.advisory.universe_scorer import score_candidate, filter_liquid, rank_candidates
 
-        min_vol = 1_000_000
+        min_vol = 250_000
         if self._profile_mgr:
             try:
                 profile = await self._profile_mgr.get_active_profile()
@@ -272,6 +317,6 @@ class UniverseEngine:
 
         liquid = filter_liquid(candidates, min_volume_usd=min_vol)
         if len(liquid) < 5:
-            liquid = filter_liquid(candidates, min_volume_usd=5_000_000)
-        ranked = rank_candidates(liquid, top_n=MAX_UNIVERSE_SIZE, always_include=set(CORE_UNIVERSE))
+            liquid = filter_liquid(candidates, min_volume_usd=1_000_000)
+        ranked = rank_candidates(liquid, top_n=MAX_UNIVERSE_SIZE, always_include=set(CORE_UNIVERSE), sector_mapping=SECTOR_MAPPING)
         return ranked

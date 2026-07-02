@@ -80,6 +80,75 @@ STRATEGY_CONFIGS: dict[str, dict[str, Any]] = {
         "preferred_pairs": ["BTCUSDT", "ETHUSDT"],
         "data_focus": ["adx", "volume", "range"],
     },
+    "SQUEEZE_ALERT": {
+        "primary_strategy": "Breakout Squeeze Play",
+        "prompt_modifier": (
+            "REGIME: SQUEEZE ALERT (BBW Percentile < 10% + 4H ADX > 20)\n"
+            "- Price is coiling tightly while the macro trend is strong.\n"
+            "- DO NOT anticipate the breakout. Prepare exact trigger levels at upper/lower bands.\n"
+            "- Trade the breakout IMMEDIATELY when price crosses the band with high volume.\n"
+            "- High confidence (+15) for breakouts in the direction of the macro trend.\n"
+        ),
+        "confidence_boost": 15,
+        "max_positions": 3,
+        "size_multiplier": 1.0,
+        "preferred_pairs": [],
+        "data_focus": ["bollinger", "volume", "adx"],
+    },
+    "MICRO_CHOP_IN_MACRO_TREND": {
+        "primary_strategy": "Dip Buying / Accumulation",
+        "prompt_modifier": (
+            "REGIME: MICRO CHOP IN MACRO TREND (15m ADX < 20, 4H/1D ADX > 25)\n"
+            "- The micro timeframe is chopping, but the macro trend is fiercely strong.\n"
+            "- This is an accumulation zone. Look for mean-reverting dips to 15m lower bands.\n"
+            "- DO NOT short the top of the 15m range; the macro trend could explode upwards anytime.\n"
+        ),
+        "confidence_boost": 5,
+        "max_positions": 5,
+        "size_multiplier": 0.8,
+        "preferred_pairs": [],
+        "data_focus": ["rsi", "bollinger", "ema_50"],
+    },
+    "FULL_ALIGNMENT": {
+        "primary_strategy": "Aggressive Trend Continuation",
+        "prompt_modifier": (
+            "REGIME: FULL ALIGNMENT (15m, 4H, 1D ADX all > 25)\n"
+            "- Absolute trend perfection across all timeframes.\n"
+            "- Ride the momentum. Use slightly wider trailing stops.\n"
+            "- Highest confidence (+20). Maximize sizing.\n"
+        ),
+        "confidence_boost": 20,
+        "max_positions": 8,
+        "size_multiplier": 1.5,
+        "preferred_pairs": [],
+        "data_focus": ["adx", "volume"],
+    },
+    "MICRO_BREAKOUT": {
+        "primary_strategy": "Scalp Breakout",
+        "prompt_modifier": (
+            "REGIME: MICRO BREAKOUT (15m ADX > 25, 4H/1D ADX < 20)\n"
+            "- The 15m is trending, but macro is dead chop.\n"
+            "- Treat this as a quick scalp. Do not expect massive follow-through.\n"
+            "- Take profits early (1R-1.5R) and use tight stops.\n"
+        ),
+        "confidence_boost": -5,
+        "max_positions": 3,
+        "size_multiplier": 0.6,
+        "preferred_pairs": [],
+        "data_focus": ["rsi", "volume"],
+    },
+    "DEAD_CHOP": {
+        "primary_strategy": "Halt",
+        "prompt_modifier": (
+            "REGIME: DEAD CHOP (All timeframes < 20 ADX)\n"
+            "- Absolute flatline. Return confidence 0. Do not trade.\n"
+        ),
+        "confidence_boost": -100,
+        "max_positions": 0,
+        "size_multiplier": 0.0,
+        "preferred_pairs": [],
+        "data_focus": [],
+    }
 }
 
 
