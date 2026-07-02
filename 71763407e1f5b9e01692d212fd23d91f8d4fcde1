@@ -1,0 +1,83 @@
+src/advisory/crypto_technicals.py
+  60ada9bd556976ef 153-155,163-168
+docs/architecture.html
+  3c7c4138b5ac085d 1-263
+src/advisory/crypto_universe.py
+  60ada9bd556976ef 4,10-15,19,22-26,46-75,86
+src/agents/crypto_analyst.py
+  60ada9bd556976ef 161,236-243
+AGENTS.md
+  fe2c8ccdd76cdd23 58-72,97-105
+src/agents/orchestrator.py
+  60ada9bd556976ef 67,213-214,229-231,290,300-331,334-336,410-435,450-451,577-602
+  82edbcee9e86878c 670-674
+src/risk/sor.py
+  60ada9bd556976ef 168-184
+CLAUDE.md
+  fe2c8ccdd76cdd23 143,157,206-215
+README.md
+  fe2c8ccdd76cdd23 3,10,12,14,16-18,35,37-39,46,50-51,66-88,106-107
+src/data/bybit_client.py
+  60ada9bd556976ef 14,53-55,65-69,164-245,248-298
+src/backtest/engine.py
+  60ada9bd556976ef 416-552
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "71763407e1f5b9e01692d212fd23d91f8d4fcde1",
+  "prompts": {
+    "3c7c4138b5ac085d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2b69c28d-ea2f-4f74-977e-f03af0339abb",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 263,
+      "total_deletions": 0,
+      "accepted_lines": 263,
+      "overriden_lines": 0
+    },
+    "60ada9bd556976ef": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8b5a18dd-3704-4068-99a1-e1574cb129ae",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 520,
+      "total_deletions": 59,
+      "accepted_lines": 458,
+      "overriden_lines": 1
+    },
+    "82edbcee9e86878c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bb79aedb-7ea8-4ee5-9796-eb4106d2fbb8",
+        "model": "<synthetic>"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 5,
+      "total_deletions": 0,
+      "accepted_lines": 5,
+      "overriden_lines": 0
+    },
+    "fe2c8ccdd76cdd23": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0c318b1f-c51c-4e57-9428-fbf1870d6027",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 75,
+      "total_deletions": 10,
+      "accepted_lines": 75,
+      "overriden_lines": 0
+    }
+  }
+}
