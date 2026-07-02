@@ -110,7 +110,7 @@ class Orchestrator:
     def _get_crypto_risk_manager(self):
         if self._crypto_risk_manager is None:
             from src.risk.crypto_risk_manager import CryptoRiskManager
-            self._crypto_risk_manager = CryptoRiskManager(self.mcp)
+            self._crypto_risk_manager = CryptoRiskManager(self.mcp, redis_client=self.cache.redis)
         return self._crypto_risk_manager
 
     def _get_crypto_sor(self):
@@ -548,6 +548,15 @@ class Orchestrator:
                                            error=close_result.get("error"))
                     except Exception as e:
                         logger.error("crypto_counter_trade_error", ticker=ticker, error=str(e))
+
+            # Liquidity gate check
+            from src.risk.liquidity import LiquidityMonitor
+            if not LiquidityMonitor.check_liquidity(ticker, direction):
+                logger.info("crypto_signal_rejected_liquidity", ticker=ticker)
+                signal["status"] = "REJECTED"
+                signal["rejection_reason"] = "Failed liquidity/spread check"
+                executed.append(signal)
+                continue
 
             # Risk evaluation (with daily P&L)
             risk_result = await risk_mgr.evaluate(

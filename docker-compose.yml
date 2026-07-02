@@ -159,6 +159,12 @@ services:
       - TRADINGVIEW_MCP_URL=direct
       - BYBIT_PROXY=socks5h://warp:1080
       - CRYPTO_ONLY_MODE=true
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8001/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     depends_on:
       redis:
         condition: service_healthy
@@ -201,6 +207,7 @@ services:
       - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/grafana-dashboard.json
     volumes:
       - ./monitoring/grafana:/var/lib/grafana/dashboards
+      - ./monitoring/grafana-dashboard.json:/var/lib/grafana/dashboards/grafana-dashboard.json
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
       - grafana-data:/var/lib/grafana
     ports:

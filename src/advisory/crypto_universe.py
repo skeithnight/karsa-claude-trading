@@ -148,8 +148,12 @@ class UniverseEngine:
             if raw:
                 import json
                 return json.loads(raw)
-        except Exception:
-            pass
+            else:
+                universe = await self.generate()
+                if universe:
+                    return universe
+        except Exception as e:
+            logger.warning("universe_read_failed", error=str(e))
         return list(CRYPTO_UNIVERSE)
 
     async def generate(self) -> list[str]:

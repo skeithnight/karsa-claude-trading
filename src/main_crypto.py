@@ -12,9 +12,11 @@ Health endpoint on port 8001 (main orchestrator uses 8000).
 """
 
 import asyncio
+import os
 import signal
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 
 import redis.asyncio as redis
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -102,6 +104,15 @@ class CryptoKarsaApp:
         self.scheduler.start()
         logger.info("scheduler_started")
 
+        # Schedule an immediate scan run on startup (run 5 seconds from now)
+        self.scheduler.add_job(
+            self._job_scan_crypto,
+            trigger="date",
+            run_date=datetime.now(timezone.utc) + timedelta(seconds=5),
+            id="scan_crypto_startup",
+            name="Crypto Market Scan (Startup)"
+        )
+
         self._register_health_routes()
         global karsa_app
         karsa_app = self
@@ -181,6 +192,8 @@ class CryptoKarsaApp:
                   id="oms_cleanup", name="OMS Stuck Order Cleanup", replace_existing=True, misfire_grace_time=60)
         s.add_job(self._job_kill_switch, "cron", minute="*/5",
                   id="kill_switch", name="Crypto Kill Switch", replace_existing=True, misfire_grace_time=60)
+        s.add_job(self._job_metrics_sync, "interval", seconds=60,
+                  id="crypto_metrics_sync", name="Crypto Metrics Sync", replace_existing=True, misfire_grace_time=30)
 
         logger.info("crypto_jobs_registered", count=len(self.scheduler.get_jobs()))
 
@@ -196,6 +209,41 @@ class CryptoKarsaApp:
         except Exception as e:
             JOB_ERRORS.labels(job_id="scan_crypto").inc()
             logger.error("crypto_scan_failed", error=str(e))
+
+    async def _job_metrics_sync(self):
+        """Polls health checks and balances to update Grafana metrics."""
+        start = time.time()
+        try:
+            from src.metrics.crypto_metrics import (
+                PORTFOLIO_EQUITY_USD, REDIS_CONNECTED, WARP_CONNECTED, 
+                OPEN_POSITIONS, UNREALIZED_PNL_USD
+            )
+            # Update Redis Health
+            redis_ok = await self.cache.ping() if self.cache else False
+            REDIS_CONNECTED.set(1 if redis_ok else 0)
+
+            bybit = self.mcp._get_bybit()
+            # We assume WARP is OK if we can hit Bybit successfully
+            wallet = await bybit.get_wallet_balance()
+            if not wallet.get("error"):
+                WARP_CONNECTED.set(1)
+                equity = wallet.get("equity", wallet.get("balance", 0))
+                PORTFOLIO_EQUITY_USD.set(float(equity))
+            else:
+                if "SOCKS" in wallet.get("error", "") or "unreachable" in wallet.get("error", ""):
+                    WARP_CONNECTED.set(0)
+
+            positions = await bybit.get_positions()
+            if not isinstance(positions, dict) or not positions.get("error"):
+                OPEN_POSITIONS.set(len(positions))
+                unrealized = sum(float(p.get("unrealized_pnl", 0)) for p in positions)
+                UNREALIZED_PNL_USD.set(unrealized)
+
+            JOB_LAST_RUN.labels(job_id="metrics_sync").set(time.time())
+            JOB_DURATION.labels(job_id="metrics_sync").observe(time.time() - start)
+        except Exception as e:
+            JOB_ERRORS.labels(job_id="metrics_sync").inc()
+            logger.error("metrics_sync_failed", error=str(e))
 
     async def _job_refresh_universe(self):
         start = time.time()
@@ -307,7 +355,21 @@ class CryptoKarsaApp:
                 JOB_LAST_RUN.labels(job_id="crypto_partial_exits").set(time.time())
                 return
             from src.models.tables import CryptoPosition
-            crypto_positions = [CryptoPosition(**p) for p in positions if float(p.get("size", 0) or 0) > 0]
+            crypto_positions = []
+            for p in positions:
+                if float(p.get("size", 0) or 0) > 0:
+                    crypto_positions.append(CryptoPosition(
+                        ticker=p.get("ticker"),
+                        side=p.get("side"),
+                        size=p.get("size"),
+                        entry_price=p.get("entry_price"),
+                        current_price=p.get("current_price"),
+                        leverage=int(p.get("leverage", 1)),
+                        liquidation_price=p.get("liquidation_price"),
+                        unrealized_pnl=p.get("unrealized_pnl"),
+                        stop_loss=p.get("stop_loss"),
+                        take_profit=p.get("take_profit"),
+                    ))
             actions = await pm.check_partial_exits(crypto_positions)
             for action in actions:
                 await pm.execute_partial_exit(action)

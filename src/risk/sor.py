@@ -11,6 +11,7 @@ Flow:
 import asyncio
 import time
 
+from src.config import settings
 from src.data.bybit_client import BybitClient
 from src.metrics.crypto_metrics import (
     record_order_fill, record_slippage, record_fill_latency,
@@ -41,6 +42,20 @@ class SmartOrderRouter:
 
         if qty <= 0:
             return {"success": False, "error": "Zero quantity"}
+            
+        if settings.TRADING_MODE == "paper":
+            logger.info("sor_paper_trade_mock", ticker=ticker, direction=direction, qty=qty)
+            # Mock fill at current price
+            ticker_data = await self.bybit.get_ticker(ticker)
+            fill_price = ticker_data.get("price") if ticker_data else signal.get("entry_price", 0)
+            return {
+                "success": True, 
+                "order_id": f"paper_{int(time.time()*1000)}",
+                "fill_price": fill_price,
+                "qty": qty,
+                "stop_loss_id": "paper_sl",
+                "take_profit_id": "paper_tp"
+            }
 
         _start_time = time.time()
 

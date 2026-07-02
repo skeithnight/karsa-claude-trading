@@ -219,7 +219,7 @@ print(f'Blackout tickers: {universe if universe else \"None\"}')
 - `src/risk/funding_tracker.py` — Funding rate tracking, annualized cost, alert thresholds.
 - `src/risk/circuit_breaker.py` — Automated circuit breakers: daily DD, volatility spike (5%/15min→30min halt), correlation cascade (>60% correlated positions losing). Redis-backed with 30min TTL.
 - `src/risk/liquidity.py` — `LiquidityMonitor` checks orderbook depth/spread, `SlippageEstimator` simulates fills through orderbook levels. Used by SOR before market orders.
-- `src/risk/position_manager.py` — Post-entry lifecycle: partial exits at +1R/+2R (33% each), time-based exits for stale positions (72h, <1% gain).
+- `src/risk/position_manager.py` — Post-entry lifecycle: partial exit at +1R target (50%), time-based exits for stale positions (48h, <1% gain).
 - `src/risk/position_sync.py` — Bidirectional reconciliation: position drift (phantom/missing/size), order drift (orphaned/unknown), balance drift. Runs every 5min.
 - `src/risk/trailing_stop.py` — `TrailingStopManager`: ATR-based trailing with regime-aware multipliers (TREND_BULL/BEAR=2.0x, MEAN_REVERSION=1.5x, CHOP=disabled).
 - `src/advisory/crypto_market_watch.py` — `CryptoMarketWatchEngine`: top movers, full scan summary, funding alerts across universe.
@@ -231,7 +231,12 @@ print(f'Blackout tickers: {universe if universe else \"None\"}')
 - `docs/AUDIT_KARSA_3.md` — Initial crypto audit (June 30, 2026).
 - `docs/AUDIT_KARSA_CRYPTO_BOT.md` — Post-implementation audit (July 1, 2026). 18 findings, 5 critical.
 - `docs/KARSA_CRYPTO_DESIGN_TEXT.md` — Crypto bot UI design system.
-- `monitoring/` — Prometheus + Grafana configs. `prometheus.yml` scrapes `/metrics` on orchestrator (8000) and crypto-orchestrator (8001). `grafana-dashboard.json` — Karsa trading metrics dashboard.
+- `src/metrics/crypto_metrics.py` — Prometheus metrics definitions (counters, gauges, histograms) for all 6 domains: P&L, risk safety, positions, execution, infrastructure, WS health. Must be imported at startup.
+- `src/api/routes.py` — FastAPI API routes for external access.
+- `src/advisory/universe_scorer.py` — Universe coin scoring for dynamic crypto universe.
+- `monitoring/` — Prometheus + Grafana configs. `prometheus.yml` scrapes `/metrics` on orchestrator (8000) and crypto-orchestrator (8001). `grafana-dashboard.json` — Karsa trading metrics dashboard. `alertmanager.yml` — alert routing. `grafana/provisioning/datasources/` — auto-provisions Prometheus datasource.
+- `db/migrations/add_adaptive_research_tables.sql` — adaptive research agent tables
+- `db/migrations/add_crypto_lifecycle_tables.sql` — crypto position lifecycle tables
 - `docs/` — Design docs, audit results, feature roadmap
 - `docs/AUDIT_REVIEW_QWEN_2JUL.md` — REVIEW_QWEN implementation audit (10 steps, 3 bugs fixed)
 - `docs/AUDIT_REVIEW_GROK_2JUL.md` — REVIEW_GROK implementation audit (6 steps, 1 bug fixed)
