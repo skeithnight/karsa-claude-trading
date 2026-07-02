@@ -638,7 +638,7 @@ class KarsaApp:
         """Adjust trailing stops for winning positions."""
         try:
             bybit = self.mcp._get_bybit()
-            redis = self.mcp._redis
+            redis = self.redis_client
             from src.risk.trailing_stop import TrailingStopManager
             from src.models.tables import CryptoPosition
             from sqlalchemy import select
@@ -660,7 +660,7 @@ class KarsaApp:
         """Check and execute partial exits at profit targets."""
         try:
             bybit = self.mcp._get_bybit()
-            redis = self.mcp._redis
+            redis = self.redis_client
             from src.risk.position_manager import PositionManager
             from src.models.tables import CryptoPosition
             from sqlalchemy import select
@@ -688,7 +688,7 @@ class KarsaApp:
         """Close stale positions open >72h with <1% gain."""
         try:
             bybit = self.mcp._get_bybit()
-            redis = self.mcp._redis
+            redis = self.redis_client
             from src.risk.position_manager import PositionManager
             from src.models.tables import CryptoPosition
             from sqlalchemy import select
@@ -717,7 +717,7 @@ class KarsaApp:
         """Run circuit breaker checks (vol spike, correlation cascade)."""
         try:
             bybit = self.mcp._get_bybit()
-            redis = self.mcp._redis
+            redis = self.redis_client
             from src.risk.circuit_breaker import CircuitBreakerManager
 
             manager = CircuitBreakerManager(redis, bybit)

@@ -413,6 +413,143 @@ class SignalReplayEngine:
         }
 
 
+class RealisticCryptoBacktester:
+    """Historical walk-forward backtester for Crypto signals.
+
+    Applies Bybit realistic transaction costs:
+    - Slippage: 0.05%
+    - Taker fee: 0.055%
+    - Maker fee: 0.02% (if limit fill)
+    - Accrued funding: ~0.01% per 8h
+    Calculates reality-adjusted Sharpe Ratio and Max Drawdown.
+    """
+
+    def __init__(self, slippage_pct: float = 0.05, taker_fee_pct: float = 0.055):
+        self.slippage = slippage_pct / 100.0
+        self.taker_fee = taker_fee_pct / 100.0
+        # Average funding cost assuming 8h collection
+        self.funding_cost_per_bar_4h = 0.01 / 100.0 / 2.0
+
+    async def run(
+        self, session: AsyncSession, ticker: str, market: str = "CRYPTO",
+        days: int = 30, timeframe: str = "4h",
+    ) -> BacktestResult:
+        from datetime import timedelta, timezone
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+        result = BacktestResult("Realistic Replay", ticker, market)
+
+        sig_result = await session.execute(
+            select(Signal).where(
+                Signal.ticker == ticker,
+                Signal.market == market,
+                Signal.created_at >= cutoff,
+            ).order_by(Signal.created_at.asc())
+        )
+        signals = sig_result.scalars().all()
+
+        if not signals:
+            result.failures.append(f"No signals found for {ticker} in last {days} days")
+            return result
+
+        candles = await load_ohlcv(session, ticker, market, timeframe)
+        if not candles:
+            candles = await load_ohlcv(session, ticker, market, "1D")
+            if not candles:
+                result.failures.append(f"No OHLCV data for {ticker}")
+                return result
+
+        gross_profit = 0.0
+        gross_loss = 0.0
+        equity_curve = [100.0]  # Start with 100% equity
+        current_equity = 100.0
+        peak_equity = 100.0
+        max_drawdown = 0.0
+        returns = []
+
+        for sig in signals:
+            if not sig.entry_price or not sig.stop_loss_price:
+                continue
+
+            direction = sig.direction
+            # Simulate market entry with slippage + fees
+            base_entry = float(sig.entry_price)
+            real_entry = base_entry * (1 + self.slippage) if direction == "LONG" else base_entry * (1 - self.slippage)
+            real_entry = real_entry * (1 + self.taker_fee) if direction == "LONG" else real_entry * (1 - self.taker_fee)
+
+            sl = float(sig.stop_loss_price)
+            tp = float(sig.target_price) if sig.target_price else None
+
+            sig_time = sig.created_at
+            future_candles = [c for c in candles if c["timestamp"] >= sig_time]
+            if not future_candles:
+                continue
+
+            trade_pnl_pct = 0.0
+            bars_held = 0
+
+            for j, fc in enumerate(future_candles[:50]):
+                bars_held = j + 1
+                exit_price = None
+
+                if direction == "LONG":
+                    if fc["low"] <= sl:
+                        exit_price = sl * (1 - self.slippage)
+                    elif tp and fc["high"] >= tp:
+                        exit_price = tp * (1 - self.slippage) # assumed stop-limit exit slip
+                else:
+                    if fc["high"] >= sl:
+                        exit_price = sl * (1 + self.slippage)
+                    elif tp and fc["low"] <= tp:
+                        exit_price = tp * (1 + self.slippage)
+
+                if exit_price is not None:
+                    # Apply exit fees and funding
+                    exit_price = exit_price * (1 - self.taker_fee) if direction == "LONG" else exit_price * (1 + self.taker_fee)
+                    funding_paid = self.funding_cost_per_bar_4h * bars_held
+
+                    if direction == "LONG":
+                        trade_pnl_pct = ((exit_price - real_entry) / real_entry) - funding_paid
+                    else:
+                        trade_pnl_pct = ((real_entry - exit_price) / real_entry) - funding_paid
+
+                    break
+
+            if trade_pnl_pct != 0:
+                result.total_trades += 1
+                if trade_pnl_pct > 0:
+                    result.winning_trades += 1
+                    gross_profit += trade_pnl_pct
+                else:
+                    result.losing_trades += 1
+                    gross_loss += abs(trade_pnl_pct)
+
+                returns.append(trade_pnl_pct)
+                current_equity *= (1 + trade_pnl_pct)
+                equity_curve.append(current_equity)
+
+                if current_equity > peak_equity:
+                    peak_equity = current_equity
+
+                dd = (peak_equity - current_equity) / peak_equity * 100
+                if dd > max_drawdown:
+                    max_drawdown = dd
+
+        # Calculate KPIs
+        result.total_return_pct = (current_equity - 100.0)
+        result.max_drawdown_pct = max_drawdown
+        result.win_rate = (result.winning_trades / result.total_trades * 100) if result.total_trades > 0 else 0
+        result.profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else float('inf')
+
+        if len(returns) > 1:
+            mean_return = statistics.mean(returns)
+            stdev_return = statistics.stdev(returns)
+            # Annualize assuming 6 trades per day roughly
+            result.sharpe_ratio = (mean_return / stdev_return) * (252 * 6)**0.5 if stdev_return > 0 else 0
+
+        result.evaluate()
+        return result
+
 class OHLCVCollector:
     """Background collector to fill ohlcv_cache from Bybit.
 

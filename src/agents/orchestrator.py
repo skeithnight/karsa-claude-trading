@@ -64,7 +64,7 @@ ETF_UNIVERSE = [
     "EEM",
 ]
 
-from src.advisory.crypto_universe import CRYPTO_UNIVERSE
+from src.advisory.crypto_universe import CRYPTO_UNIVERSE, get_dynamic_universe
 
 # Signal deduplication cache: ticker+direction → last signal timestamp
 _signal_cache: dict[str, float] = {}
@@ -210,7 +210,8 @@ class Orchestrator:
         logger.info("scan_complete", total=len(all_signals))
         return all_signals
 
-    async def _scan_market(self, market: str, agent: BaseAgent, universe: list[str], composite: dict | None = None) -> list[dict]:
+    async def _scan_market(self, market: str, agent: BaseAgent, universe: list[str],
+                           composite: dict | None = None, position_context: str = "") -> list[dict]:
         signals = []
 
         # Build context hint from composite score (if available)
@@ -224,6 +225,10 @@ class Orchestrator:
                 + (f"Key triggers: {'; '.join(triggers[:3])}. " if triggers else "")
                 + "Factor this into your confidence scoring."
             )
+
+        # ponytail: position_context only injected for CRYPTO scans
+        if market == "CRYPTO" and position_context:
+            context_hint += position_context
 
         for ticker in universe:
             # Per-ticker emergency check — allows partial completion if stop activates mid-scan
@@ -282,6 +287,7 @@ class Orchestrator:
 
         Each pair runs independently. Results are merged and deduplicated.
         Dedup: skip if same ticker+direction signal exists within 4 hours.
+        Uses dynamic universe: core tokens + top Bybit movers by volume.
         """
         global _signal_cache
         now = time.time()
@@ -291,10 +297,43 @@ class Orchestrator:
         for k in expired:
             del _signal_cache[k]
 
+        # Build dynamic universe from Bybit top movers
+        try:
+            bybit = self.mcp._get_bybit()
+            universe = await get_dynamic_universe(bybit)
+            logger.info("crypto_dynamic_universe", count=len(universe), symbols=universe[:5])
+        except Exception as e:
+            logger.warning("crypto_dynamic_universe_failed", error=str(e))
+            universe = CRYPTO_UNIVERSE
+
+        # Fetch open positions for position-aware scanning
+        position_context = ""
+        try:
+            bybit = self.mcp._get_bybit()
+            open_positions = await bybit.get_positions()
+            if open_positions:
+                pos_lines = []
+                for p in open_positions:
+                    sym = p.get("symbol", "")
+                    side = p.get("side", "?")
+                    entry = p.get("entry_price", 0)
+                    pnl = p.get("unrealized_pnl", 0)
+                    size = p.get("size", 0)
+                    pos_lines.append(f"  {sym}: {side} size={size} entry={entry} unrealPnL={pnl}")
+                position_context = (
+                    "\n\nCURRENT OPEN POSITIONS (consider these for CLOSE signals or avoid duplicate entries):\n"
+                    + "\n".join(pos_lines)
+                    + "\n\nIf a position is losing >3%, consider a CLOSE signal. "
+                    "Do NOT propose LONG if already LONG same ticker (or SHORT if already SHORT)."
+                )
+        except Exception:
+            pass  # proceed without position context
+
         # Scan each pair concurrently
         tasks = [
-            self._scan_market("CRYPTO", self.crypto_agent, [symbol], composite=regime)
-            for symbol in CRYPTO_UNIVERSE
+            self._scan_market("CRYPTO", self.crypto_agent, [symbol],
+                              composite=regime, position_context=position_context)
+            for symbol in universe
         ]
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -368,6 +407,32 @@ class Orchestrator:
                 executed.append(signal)
                 break
 
+            # Counter-trade: if opposing position exists, close it first
+            direction = signal.get("direction", "")
+            existing_pos = next(
+                (p for p in open_positions
+                 if p.get("symbol") == ticker and p.get("size", 0) > 0),
+                None
+            )
+            if existing_pos and direction in ("LONG", "SHORT"):
+                existing_side = existing_pos.get("side", "")
+                # LONG signal + existing Sell = counter-trade; SHORT signal + existing Buy = counter-trade
+                is_counter = (direction == "LONG" and existing_side == "Sell") or \
+                             (direction == "SHORT" and existing_side == "Buy")
+                if is_counter:
+                    logger.info("crypto_counter_trade", ticker=ticker,
+                                closing_side=existing_side, new_direction=direction)
+                    try:
+                        close_result = await sor.close_position(ticker, existing_pos)
+                        if close_result.get("success"):
+                            open_positions = [p for p in open_positions if p.get("symbol") != ticker]
+                            logger.info("crypto_counter_trade_closed", ticker=ticker)
+                        else:
+                            logger.warning("crypto_counter_trade_close_failed", ticker=ticker,
+                                           error=close_result.get("error"))
+                    except Exception as e:
+                        logger.error("crypto_counter_trade_error", ticker=ticker, error=str(e))
+
             # Risk evaluation (with daily P&L)
             risk_result = await risk_mgr.evaluate(
                 signal=signal,
@@ -382,6 +447,8 @@ class Orchestrator:
                 signal["status"] = "REJECTED"
                 signal["rejection_reason"] = risk_result.get("reason")
                 executed.append(signal)
+                # Risk observability: notify Telegram on rejection
+                await self._notify_risk_rejection(signal, risk_result)
                 continue
 
             # Auto-execute via SOR
@@ -507,6 +574,32 @@ class Orchestrator:
         except Exception as e:
             logger.error("crypto_notify_failed", error=str(e))
 
+    async def _notify_risk_rejection(self, signal: dict, risk_result: dict):
+        """Send Telegram notification when a signal is rejected by risk gates."""
+        try:
+            import httpx
+            ticker = signal.get("ticker", "?")
+            direction = signal.get("direction", "?")
+            confidence = signal.get("confidence_score", 0)
+            reason = risk_result.get("reason", "Unknown")
+
+            msg = (
+                f"⛔ <b>RISK GATE REJECTED</b>\n"
+                f"<b>{ticker}</b> {direction} (confidence: {confidence})\n"
+                f"Reason: <code>{reason}</code>"
+            )
+
+            token = settings.CRYPTO_TELEGRAM_TOKEN or settings.TELEGRAM_TOKEN
+            chat_id = settings.CRYPTO_TELEGRAM_CHAT_ID or settings.TELEGRAM_CHAT_ID
+            if token and chat_id:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    await client.post(
+                        f"https://api.telegram.org/bot{token}/sendMessage",
+                        json={"chat_id": chat_id, "text": msg, "parse_mode": "HTML"},
+                    )
+        except Exception as e:
+            logger.debug("risk_rejection_notify_failed", error=str(e))
+
     def _validate_signal(self, signal: dict, market: str) -> list[str]:
         """Validate agent output structure. Returns list of issues (empty = valid)."""
         issues = []
@@ -573,6 +666,11 @@ class Orchestrator:
         # Sanitize ticker for LLM prompt — strip any control chars or injection attempts
         safe_ticker = ''.join(c for c in ticker if c.isalnum() or c in '.-')[:20]
         result = await agent.run(f"Analyze {safe_ticker} for trading opportunities right now.")
+
+        # Save reasoning trace if captured
+        trace_data = result.pop("_trace", None)
+        if trace_data and market == "CRYPTO":
+            await self._save_trace(trace_data, result)
 
         # Validate signal before persisting
         if not result.get("error"):

@@ -158,7 +158,7 @@ class CryptoAnalyst(BaseAgent):
         },
         {
             "name": "get_crypto_full_analysis",
-            "description": "Get all indicators at once: RSI, Bollinger, EMA20, EMA50, MACD, ATR. Use for comprehensive analysis.",
+            "description": "Get all indicators at once (RSI, Bollinger, EMA, MACD, ATR) plus real-time Orderbook Imbalance (bid/ask volume pressure).",
             "input_schema": {
                 "type": "object",
                 "properties": {"ticker": {"type": "string"}},
@@ -233,7 +233,14 @@ class CryptoAnalyst(BaseAgent):
             elif tool_name == "get_crypto_atr":
                 return calculate_atr(ohlcv)
             elif tool_name == "get_crypto_full_analysis":
-                return full_analysis(ohlcv)
+                # Inject websocket orderbook imbalance metric (Phase 1)
+                ob_imbalance = 0.0
+                try:
+                    bybit = self.mcp._get_bybit()
+                    ob_imbalance = await bybit.get_orderbook_imbalance(ticker)
+                except Exception:
+                    pass
+                return full_analysis(ohlcv, ob_imbalance)
 
         return {"error": f"Unknown tool: {tool_name}"}
 
