@@ -6,6 +6,9 @@ Core list + dynamic top movers from Bybit (merged each scan cycle).
 
 from src.config import settings
 from src.risk.crypto_risk_manager import CORRELATION_TIERS, MAX_LEVERAGE_BY_TIER, _get_tier
+from src.utils.logging import get_logger
+
+logger = get_logger("crypto_universe")
 
 # Core universe: always scanned regardless of volume
 CORE_UNIVERSE = [

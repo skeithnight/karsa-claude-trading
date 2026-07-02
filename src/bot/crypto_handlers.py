@@ -55,7 +55,8 @@ def build_main_keyboard():
          InlineKeyboardButton("📋 Activity", callback_data="cmd_activity")],
         [InlineKeyboardButton("💼 Portfolio", callback_data="cmd_portfolio"),
          InlineKeyboardButton("📈 Performance", callback_data="cmd_performance")],
-        [InlineKeyboardButton("🎛️ Control", callback_data="cmd_control")]
+        [InlineKeyboardButton("📡 Universe Detail", callback_data="universe_detail"),
+         InlineKeyboardButton("🎛️ Control", callback_data="cmd_control")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -107,10 +108,30 @@ async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"({(wallet.get('used_margin', 0)/max(wallet.get('balance', 1), 1)*100):.1f}%)\n"
     )
 
+    # Risk profile
+    profile_line = ""
+    try:
+        orch = context.bot_data.get("orchestrator")
+        if orch and orch.profile_manager:
+            p = await orch.profile_manager.get_active_profile()
+            profile_line = f"{p.emoji} {p.name.upper().replace('_', ' ')}"
+    except Exception: pass
+
+    # Universe
+    universe_line = ""
+    try:
+        orch = context.bot_data.get("orchestrator")
+        if orch and orch.universe_engine:
+            universe = await orch.universe_engine.get_current()
+            universe_line = f"📡 {len(universe)} coins: {', '.join(universe[:6])}{'...' if len(universe) > 6 else ''}"
+    except Exception: pass
+
     text = fmt(
         bold("🖥️ KARSA DESK DASHBOARD"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n",
         bold("System Vitals:"), "\n", pre(sys_status), "\n",
         bold("Market State:"), "\n", pre(regime_display), "\n",
+        bold("Risk Profile:"), "\n", profile_line, "\n",
+        bold("Universe:"), "\n", universe_line, "\n",
         bold("Capital:"), "\n", pre(wallet_block), "\n",
         f"Halt Switch: {'🚨 ACTIVE' if halt_active else '🟢 Standard Operations'}"
     )
@@ -268,26 +289,60 @@ async def performance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def control_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update): return
-    
+
+    orch = context.bot_data.get("orchestrator")
+
     try:
         r = _get_redis(context)
         halt_active = bool(await r.get("karsa:global_halt"))
         cooldown = await r.get("karsa:crypto_cooldown")
     except Exception:
         halt_active, cooldown = False, None
-    
+
     state_block = (
         f"Global Halt: {'🚨 ACTIVE' if halt_active else '🟢 INACTIVE'}\n"
         f"Cooldown: {'⏳ ACTIVE' if cooldown else '🟢 INACTIVE'}"
     )
-    
+
+    # Risk profile block
+    profile_block = "Not initialized"
+    profile_name = "unknown"
+    try:
+        if orch and orch.profile_manager:
+            p = await orch.profile_manager.get_active_profile()
+            profile_name = p.name
+            profile_block = (
+                f"{p.emoji} {p.name.upper().replace('_', ' ')}\n"
+                f"Min Conf: {p.min_confidence}% | Max Pos: {p.max_position_size_pct:.2%}\n"
+                f"SL: {p.stop_loss_atr_mult}x ATR | TP: {p.take_profit_atr_mult}x ATR\n"
+                f"Max Open: {p.max_open_positions} | Max Daily: {p.max_daily_trades}\n"
+                f"Min Vol: ${p.min_volume_24h_usd:,.0f}"
+            )
+    except Exception: pass
+
+    # Universe block
+    universe_block = "Not initialized"
+    try:
+        if orch and orch.universe_engine:
+            universe = await orch.universe_engine.get_current()
+            universe_block = f"{len(universe)} coins: {', '.join(universe[:8])}{'...' if len(universe) > 8 else ''}"
+    except Exception: pass
+
     text = fmt(
         bold("🎛️ DESK CONTROL PANEL"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n",
-        bold("States:"), "\n", pre(state_block), "\n\n",
-        italic("Select an operation below. Warning: Kill options are immediate.")
+        bold("System State:"), "\n", pre(state_block), "\n",
+        bold("Risk Profile:"), "\n", pre(profile_block), "\n",
+        bold("Universe:"), "\n", pre(universe_block), "\n\n",
+        italic("Select an operation below.")
     )
-    
+
     keyboard = [
+        [
+            InlineKeyboardButton("🛡️ Conservative", callback_data="mode_conservative"),
+            InlineKeyboardButton("⚖️ Semi-Agg", callback_data="mode_semi_aggressive"),
+            InlineKeyboardButton("🔥 Aggressive", callback_data="mode_aggressive"),
+        ],
+        [InlineKeyboardButton("🔄 Refresh Universe", callback_data="universe_refresh")],
         [InlineKeyboardButton("🚨 EXECUTE KILL (Close All)", callback_data="crypto_kill")],
         [InlineKeyboardButton("🧹 Sell All (15m break)", callback_data="crypto_sellall")],
         [InlineKeyboardButton("▶️ Resume Operations", callback_data="crypto_resume")],
@@ -377,12 +432,23 @@ async def mode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"├ Max Daily Trades: {p.max_daily_trades}",
         f"└ Min 24h Volume: ${p.min_volume_24h_usd:,.0f}",
     ]
+
+    # Universe info
+    try:
+        if orch.universe_engine:
+            universe = await orch.universe_engine.get_current()
+            lines.append("")
+            lines.append(bold("📡 Universe"))
+            lines.append(f"  {len(universe)} coins: {', '.join(universe[:8])}{'...' if len(universe) > 8 else ''}")
+    except Exception:
+        pass
+
     keyboard = [[
         InlineKeyboardButton("🛡️ Conservative", callback_data="mode_conservative"),
         InlineKeyboardButton("⚖️ Semi-Agg", callback_data="mode_semi_aggressive"),
         InlineKeyboardButton("🔥 Aggressive", callback_data="mode_aggressive"),
     ]]
-    await _reply(update, fmt(*lines, separator="\n"),
+    await _reply(update, fmt(*lines, sep="\n"),
                  reply_markup=InlineKeyboardMarkup(keyboard))
 
 
@@ -414,7 +480,7 @@ async def setmode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     p = await orch.profile_manager.get_active_profile()
-    await _reply(update, fmt(bold(f"✅ Switched to {p.emoji} {p.name.upper()}"), separator="\n"),
+    await _reply(update, fmt(bold(f"✅ Switched to {p.emoji} {p.name.upper()}"), sep="\n"),
                  reply_markup=build_main_keyboard())
 
 
@@ -438,7 +504,7 @@ async def universe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append(italic("Refreshes every 4 hours. Use /refresh_universe to force."))
 
     keyboard = [[InlineKeyboardButton("🔄 Refresh Now", callback_data="universe_refresh")]]
-    await _reply(update, fmt(*lines, separator="\n"),
+    await _reply(update, fmt(*lines, sep="\n"),
                  reply_markup=InlineKeyboardMarkup(keyboard))
 
 
@@ -456,10 +522,107 @@ async def refresh_universe_cmd(update: Update, context: ContextTypes.DEFAULT_TYP
         await msg.edit_text(str(fmt(
             bold("✅ Universe Updated"),
             f"Now scanning {len(universe)} coins: {', '.join(universe[:8])}{'...' if len(universe) > 8 else ''}",
-            separator="\n"
+            sep="\n"
         )), parse_mode="HTML", reply_markup=build_main_keyboard())
     except Exception as e:
         await msg.edit_text(f"❌ Universe refresh failed: {e}")
+
+
+async def _show_universe_detail(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 0):
+    """Show paginated universe detail with per-coin signal status. 5 coins per page."""
+    orch = context.bot_data.get("orchestrator")
+    if not orch or not orch.universe_engine:
+        await _reply(update, "⚠️ Universe engine not initialized.")
+        return
+
+    try:
+        universe = await orch.universe_engine.get_current()
+        scores = await orch.universe_engine.get_universe_with_scores()
+        score_map = {c["symbol"]: c for c in scores}
+    except Exception:
+        universe, score_map = [], {}
+
+    # Query recent signals per ticker (only for visible page)
+    signal_map = {}
+    per_page = 5
+    total = len(universe)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = max(0, min(page, total_pages - 1))
+    start = page * per_page
+    end = min(start + per_page, total)
+    page_coins = universe[start:end]
+
+    try:
+        from src.models.database import async_session
+        from src.models.tables import Signal
+        from sqlalchemy import select, desc
+        async with async_session() as session:
+            for sym in page_coins:
+                result = await session.execute(
+                    select(Signal).where(
+                        Signal.ticker == sym,
+                        Signal.market == "CRYPTO",
+                    ).order_by(desc(Signal.created_at)).limit(1)
+                )
+                sig = result.scalar_one_or_none()
+                if sig:
+                    signal_map[sym] = {
+                        "direction": sig.direction,
+                        "confidence": sig.confidence_score,
+                        "status": sig.status,
+                        "created": sig.created_at.strftime("%m-%d %H:%M") if sig.created_at else "?",
+                    }
+    except Exception:
+        pass
+
+    # Build table
+    lines = [
+        bold("📡 UNIVERSE DETAIL"),
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"Total: {total} coins | Page {page + 1}/{total_pages}",
+        "",
+        bold("Coin        Score   Vol       24h     Signal"),
+        "─" * 50,
+    ]
+
+    for i, sym in enumerate(page_coins, start + 1):
+        sc = score_map.get(sym, {})
+        score = sc.get("score", "?")
+        vol = sc.get("volume_24h_usd", 0)
+        change = sc.get("price_change_pct", 0)
+
+        sig = signal_map.get(sym)
+        if sig:
+            sig_icon = "🟢" if sig["direction"] == "LONG" else "🔴" if sig["direction"] == "SHORT" else "⚪"
+            sig_text = f"{sig_icon}{sig['direction']}{sig['confidence']}%[{sig['status']}]"
+        else:
+            sig_text = "—"
+
+        change_str = f"{change:+.1f}%"
+        # Format as aligned table row
+        coin_col = f"{sym:<12}"
+        score_col = f"{score if isinstance(score, str) else f'{score:.0f}':>5}"
+        vol_col = f"${vol/1e6:.0f}M" if vol >= 1e6 else f"${vol/1e3:.0f}K"
+        lines.append(f"{i:>2}. {coin_col}{score_col}  {vol_col:>8}  {change_str:>7}  {sig_text}")
+
+    lines.append("")
+    lines.append(italic("Refresh to regenerate universe."))
+
+    # Pagination buttons
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"univ_page_{page - 1}"))
+    nav.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="noop"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"univ_page_{page + 1}"))
+
+    keyboard = [
+        nav,
+        [InlineKeyboardButton("🔄 Refresh Universe", callback_data="universe_refresh")],
+        [InlineKeyboardButton("🎛️ Control Panel", callback_data="cmd_control")],
+    ]
+    await _reply(update, fmt(*lines, sep="\n"),
+                 reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 # --- Global Callback Router ---
@@ -500,7 +663,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             p = await orch.profile_manager.get_active_profile()
             await query.edit_message_text(
-                str(fmt(bold(f"✅ Switched to {p.emoji} {p.name.upper()}"), separator="\n")),
+                str(fmt(bold(f"✅ Switched to {p.emoji} {p.name.upper()}"), sep="\n")),
                 parse_mode="HTML", reply_markup=build_main_keyboard())
 
     # Universe refresh
@@ -512,10 +675,26 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text(
                     str(fmt(bold("✅ Universe Updated"),
                            f"Scanning {len(universe)} coins: {', '.join(universe[:8])}",
-                           separator="\n")),
+                           sep="\n")),
                     parse_mode="HTML", reply_markup=build_main_keyboard())
             except Exception:
                 await query.edit_message_text("❌ Refresh failed")
+
+    # Universe detail
+    elif data == "universe_detail":
+        await _show_universe_detail(update, context, page=0)
+
+    # Universe pagination
+    elif data.startswith("univ_page_"):
+        try:
+            page_num = int(data.replace("univ_page_", ""))
+            await _show_universe_detail(update, context, page=page_num)
+        except (ValueError, IndexError):
+            pass
+
+    # Noop (page indicator button)
+    elif data == "noop":
+        pass
 
 # Add fallback routing for root commands matching the UI structure
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
