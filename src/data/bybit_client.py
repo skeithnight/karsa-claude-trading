@@ -413,7 +413,17 @@ class BybitClient:
         """Get OHLCV klines for a Bybit perpetual symbol."""
         cache_key = ("ohlcv", symbol, interval, limit)
         cached = self._cache.get(cache_key)
-        if cached and time.time() - cached[1] < 300:  # 5min cache
+        
+        # Tiered TTL based on interval
+        ttl = 300
+        if interval in ("15", "15m"):
+            ttl = 900  # 15 minutes
+        elif interval in ("240", "4h", "4H"):
+            ttl = 14400  # 4 hours
+        elif interval in ("D", "1D", "1d"):
+            ttl = 86400  # 24 hours
+
+        if cached and time.time() - cached[1] < ttl:
             return cached[0]
 
         try:

@@ -43,35 +43,75 @@ def rank_candidates(
     top_n: int = 12,
     min_score: float = 20.0,
     always_include: set[str] | None = None,
+    sector_mapping: dict[str, str] | None = None,
+    max_per_sector: int = 2,
+    sector_penalty: float = 20.0,
 ) -> list[dict]:
-    """Rank candidates by score, return top N.
+    """Rank candidates by score dynamically applying sector penalties.
 
     Args:
         candidates: list of dicts with at least 'symbol' + scoring keys
         top_n: max results
         min_score: minimum score to qualify (unless in always_include)
-        always_include: symbols that bypass min_score (e.g. BTCUSDT, ETHUSDT)
+        always_include: symbols that bypass min_score and penalties
+        sector_mapping: mapping of symbol to sector tag
+        max_per_sector: max coins allowed from one sector before penalty triggers
+        sector_penalty: score deduction when sector limit is reached
 
-    Returns: sorted list of dicts with 'score' key added.
+    Returns: greedy sorted list of dicts with 'score' key added.
     """
     always_include = always_include or set()
+    sector_mapping = sector_mapping or {}
 
+    # Initial scoring
     scored = []
     for c in candidates:
         sym = c.get("symbol", "")
         s = score_candidate(c)
-        c_with_score = {**c, "score": s}
-        if s >= min_score or sym in always_include:
-            scored.append(c_with_score)
+        c_with_score = {**c, "score": s, "base_score": s, "sector": sector_mapping.get(sym, "Unknown")}
+        scored.append(c_with_score)
 
-    # Sort descending by score
-    scored.sort(key=lambda x: x["score"], reverse=True)
+    result = []
+    sector_counts = {}
 
-    # Ensure always_include symbols are at the front
-    forced = [c for c in scored if c.get("symbol") in always_include]
-    rest = [c for c in scored if c.get("symbol") not in always_include]
+    # 1. Add always_include items first
+    remaining = []
+    for c in scored:
+        if c["symbol"] in always_include:
+            result.append(c)
+            sect = c["sector"]
+            if sect != "Unknown":
+                sector_counts[sect] = sector_counts.get(sect, 0) + 1
+        else:
+            remaining.append(c)
 
-    result = forced + rest
+    # 2. Greedily pick the best remaining candidate considering dynamic penalties
+    while len(result) < top_n and remaining:
+        best_idx = -1
+        best_eff_score = -float('inf')
+
+        for i, c in enumerate(remaining):
+            sect = c["sector"]
+            eff_score = c["base_score"]
+            if sect != "Unknown" and sector_counts.get(sect, 0) >= max_per_sector:
+                eff_score -= sector_penalty
+
+            if eff_score > best_eff_score:
+                best_eff_score = eff_score
+                best_idx = i
+
+        if best_idx == -1 or best_eff_score < min_score:
+            break  # No more candidates meet the min_score after penalty
+
+        # Pick the best
+        best_candidate = remaining.pop(best_idx)
+        best_candidate["score"] = best_eff_score  # Update to effective score
+        result.append(best_candidate)
+        
+        sect = best_candidate["sector"]
+        if sect != "Unknown":
+            sector_counts[sect] = sector_counts.get(sect, 0) + 1
+
     return result[:top_n]
 
 

@@ -160,10 +160,10 @@ class CryptoKarsaApp:
             return
 
         # Core crypto (24/7)
-        s.add_job(self._job_scan_crypto, "cron", hour="*", minute=15,
+        s.add_job(self._job_scan_crypto, "cron", minute="*/15",
                   id="scan_crypto", name="Crypto Market Scan (24/7)", replace_existing=True, misfire_grace_time=600)
-        s.add_job(self._job_refresh_universe, "cron", hour="*/4", minute=5,
-                  id="refresh_universe", name="Crypto Universe Refresh (every 4h)", replace_existing=True, misfire_grace_time=600)
+        s.add_job(self._job_refresh_universe, "cron", minute="*/15",
+                  id="refresh_universe", name="Crypto Universe Refresh (every 15m)", replace_existing=True, misfire_grace_time=600)
         s.add_job(self._job_monitor_crypto_positions, "cron", minute="*/15",
                   id="crypto_monitor", name="Crypto Position Monitor", replace_existing=True, misfire_grace_time=120)
         s.add_job(self._job_sync_crypto_funding, "cron", hour="0,8,16", minute=5,
@@ -456,7 +456,15 @@ class CryptoKarsaApp:
             bybit = self.mcp._get_bybit()
             from src.risk.liquidity import LiquidityMonitor
             monitor = LiquidityMonitor(bybit)
-            for ticker in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
+            
+            universe = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+            if self.universe_engine:
+                try:
+                    universe = await self.universe_engine.get_universe()
+                except Exception as e:
+                    logger.warning("liquidity_universe_fetch_failed", error=str(e))
+            
+            for ticker in universe:
                 liq = await monitor.check_liquidity(ticker, "BUY")
                 if not liq["can_trade"]:
                     logger.warning("liquidity_alert", ticker=ticker, reason=liq["reason"])

@@ -169,28 +169,17 @@ class Orchestrator:
         crypto_signals = []
         if market_filter in (None, "CRYPTO") and settings.BYBIT_API_KEY:
             try:
+                # Global crypto regime (BTC dom, season) still fetched for composite
                 from src.advisory.crypto_regime import CryptoRegimeFilter
                 crypto_regime_filter = CryptoRegimeFilter(self.mcp)
                 crypto_regime = await crypto_regime_filter.get_current_regime()
-                regime_state = crypto_regime.get("state", "UNKNOWN")
-                logger.info("crypto_regime", state=regime_state, hurst=crypto_regime.get("hurst"), adx=crypto_regime.get("adx"),
-                            btc_dom=crypto_regime.get("btc_dominance"), season=crypto_regime.get("market_season"))
+                logger.info("crypto_global_regime", btc_dom=crypto_regime.get("btc_dominance"), season=crypto_regime.get("market_season"))
 
-                # Phase 1: Update agent strategy based on current regime
-                strategy_config = self.crypto_agent.update_strategy(regime_state)
-                logger.info("crypto_strategy_applied",
-                            regime=regime_state,
-                            strategy=strategy_config.get("primary_strategy"),
-                            size_multiplier=strategy_config.get("size_multiplier"))
-
-                if regime_state == "CHOP":
-                    logger.info("crypto_scan_skipped_chop_regime")
-                else:
-                    # Parallel scanning: scan each pair concurrently (like IDX/US)
-                    scan_result = await self._scan_crypto_parallel(crypto_regime)
-                    # Auto-execute: risk check → SOR → save
-                    if scan_result:
-                        crypto_signals = await self._auto_execute_crypto(scan_result, crypto_regime)
+                # Parallel scanning: scan each pair concurrently using per-coin regimes
+                scan_result = await self._scan_crypto_parallel(crypto_regime)
+                # Auto-execute: risk check → SOR → save
+                if scan_result:
+                    crypto_signals = await self._auto_execute_crypto(scan_result, crypto_regime)
             except Exception as e:
                 logger.error("crypto_scan_failed", error=str(e))
 
@@ -252,7 +241,7 @@ class Orchestrator:
                 "If a ticker has no qualifying setup, include it with confidence_score < 50 and null prices."
             )
             batch_result = await agent.run(prompt)
-            if batch_result.get("error"):
+            if isinstance(batch_result, dict) and batch_result.get("error"):
                 logger.warning("batch_scan_error", market=market, error=batch_result["error"])
                 return signals
 
@@ -407,18 +396,42 @@ class Orchestrator:
             else:
                 bybit = self.mcp._get_bybit()
                 universe = await get_dynamic_universe(bybit)
-            logger.info("crypto_dynamic_universe", count=len(universe), symbols=universe[:5])
+            logger.info("crypto_dynamic_universe", count=len(universe), symbols=universe)
         except Exception as e:
             logger.warning("crypto_dynamic_universe_failed", error=str(e))
             universe = CRYPTO_UNIVERSE
 
-        # Update crypto agent's risk profile
-        if self.profile_manager:
-            try:
-                profile_name = await self.profile_manager.get_active_profile_name()
-                self.crypto_agent.set_profile(profile_name)
-            except Exception:
-                pass
+        # Evaluate CoinRegime for each coin
+        filtered_universe = []
+        regime_map = {}
+        try:
+            from src.advisory.coin_regime import CoinRegimeEngine
+            bybit_cache = self.universe_engine._bybit.cache if self.universe_engine else None
+            coin_engine = CoinRegimeEngine(self.mcp, bybit_cache)
+            
+            regime_tasks = [coin_engine.get_regime(sym) for sym in universe]
+            coin_regimes = await asyncio.gather(*regime_tasks, return_exceptions=True)
+            
+            for sym, reg in zip(universe, coin_regimes):
+                if isinstance(reg, Exception):
+                    logger.warning("coin_regime_fetch_failed", symbol=sym, error=str(reg))
+                    regime_map[sym] = "UNKNOWN"
+                    filtered_universe.append(sym)
+                    continue
+                
+                logger.info("coin_regime_evaluated", symbol=sym, state=reg.state, adx_4h=reg.adx_4h, bbw=reg.bbw_percentile_15m)
+                if reg.state == "DEAD_CHOP":
+                    logger.debug("skipping_dead_chop_coin", symbol=sym)
+                    continue
+                    
+                regime_map[sym] = reg.state
+                filtered_universe.append(sym)
+                
+            universe = filtered_universe
+        except Exception as e:
+            logger.error("coin_regime_filter_failed", error=str(e))
+            for sym in universe:
+                regime_map[sym] = "UNKNOWN"
 
         # Fetch open positions for position-aware scanning
         position_context = ""
@@ -443,14 +456,33 @@ class Orchestrator:
         except Exception:
             pass  # proceed without position context
 
-        # Scan in batches of 5 to reduce LLM API calls
+        # Group universe by regime to avoid agent system prompt race conditions
+        grouped_by_regime = {}
+        for sym in universe:
+            grouped_by_regime.setdefault(regime_map[sym], []).append(sym)
+            
+        tasks = []
         BATCH_SIZE = 5
-        batches = [universe[i:i+BATCH_SIZE] for i in range(0, len(universe), BATCH_SIZE)]
-        tasks = [
-            self._scan_market("CRYPTO", self.crypto_agent, batch,
-                              composite=regime, position_context=position_context)
-            for batch in batches
-        ]
+        
+        from src.agents.crypto_analyst import CryptoAnalyst
+        for state, symbols in grouped_by_regime.items():
+            # Create a dedicated agent instance for this regime group
+            group_agent = CryptoAnalyst(self.mcp, getattr(self, "rate_limiter", None))
+            if self.profile_manager:
+                try:
+                    profile_name = await self.profile_manager.get_active_profile_name()
+                    group_agent.set_profile(profile_name)
+                except Exception:
+                    pass
+            group_agent.update_strategy(state)
+            
+            # Batch symbols within this regime
+            batches = [symbols[i:i+BATCH_SIZE] for i in range(0, len(symbols), BATCH_SIZE)]
+            for batch in batches:
+                tasks.append(
+                    self._scan_market("CRYPTO", group_agent, batch,
+                                      composite=regime, position_context=position_context)
+                )
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -461,6 +493,7 @@ class Orchestrator:
                 continue
             if not result:
                 continue
+
 
             for signal in result:
                 ticker = signal.get("ticker", "")
