@@ -1,0 +1,53 @@
+src/risk/circuit_breaker.py
+  96c264610beec2a5 19,134-136,218-220
+monitoring/prometheus.yml
+  96c264610beec2a5 5-12
+monitoring/alertmanager.yml
+  96c264610beec2a5 1-28
+src/execution/sl_engine.py
+  96c264610beec2a5 18,92,154,163,166
+monitoring/prometheus/alerts/trading_alerts.yml
+  96c264610beec2a5 1-144
+src/bot/crypto_main.py
+  96c264610beec2a5 98-126
+src/risk/emergency.py
+  96c264610beec2a5 9,37-38,45,81,90
+src/data/bybit_client.py
+  96c264610beec2a5 18,127,138,157,166
+src/risk/sor.py
+  96c264610beec2a5 12,15-18,45-46,108-109,123,132,153
+src/main_crypto.py
+  96c264610beec2a5 17,32,190,193-194,197,201,205-206,209,213,220-221,223,227,236-237,240,244,249-250,253,257,261-262,265,269,277,292-293,296,300,307,314-315,319,323,330,337-338,342,346,352-353,357,361,368-369,373,377,383-384,388,392,401-402,405,409,414-415,418,422,426,431,437,444-445,447
+src/execution/websocket_manager.py
+  96c264610beec2a5 18,107,170
+src/risk/crypto_risk_manager.py
+  96c264610beec2a5 21,194,199,202-204,214
+monitoring/grafana-dashboard.json
+  96c264610beec2a5 235-321,323-338,345-346,348-357,360
+docker-compose.yml
+  96c264610beec2a5 179,186-192
+src/metrics/crypto_metrics.py
+  96c264610beec2a5 1,5-13,16-17,20-22,69,84-107,109-285,327-395
+src/risk/funding_tracker.py
+  96c264610beec2a5 13,56
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "51615d8547697980c59bdac86a9a4c5ce6289089",
+  "prompts": {
+    "96c264610beec2a5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07add558-e1d9-4b2f-a70f-426aadcc2ade",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 744,
+      "total_deletions": 18,
+      "accepted_lines": 743,
+      "overriden_lines": 0
+    }
+  }
+}
