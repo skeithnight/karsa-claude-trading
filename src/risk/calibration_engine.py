@@ -41,7 +41,7 @@ class ConfidenceCalibrator:
             async with async_session() as session:
                 result = await session.execute(
                     select(ClosedPaperTrade)
-                    .order_by(desc(ClosedPaperTrade.closed_at))
+                    .order_by(desc(ClosedPaperTrade.exit_date))
                     .limit(self.window_size)
                 )
                 trades = result.scalars().all()
