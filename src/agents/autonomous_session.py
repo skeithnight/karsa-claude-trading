@@ -85,12 +85,13 @@ class AutonomousSessionManager:
         # Spawn the loop
         asyncio.create_task(self._run_loop(chat_id))
 
-        return (
-            f"🤖 <b>AUTONOMOUS SESSION STARTED</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"💰 Equity: <code>${starting_equity:,.2f}</code>\n"
-            f"📊 Risk: <code>{risk_pct}%</code> | Max Positions: <code>{max_pos}</code>\n"
-            f"⏱️ Interval: <code>{interval}m</code> | Regime gate: ON"
+        from src.utils.format import fmt, bold, code
+        return fmt(
+            bold("🤖 AUTONOMOUS SESSION STARTED"),
+            "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "\n💰 Equity: ", code(f"${starting_equity:,.2f}"),
+            "\n📊 Risk: ", code(f"{risk_pct}%"), " | Max Positions: ", code(str(max_pos)),
+            "\n⏱️ Interval: ", code(f"{interval}m"),
         )
 
     async def stop(self) -> str:
@@ -173,38 +174,37 @@ class AutonomousSessionManager:
             sign = "+" if v >= 0 else "-"
             return f"{sign}${abs(v):,.2f}"
 
-        lines = [
-            "🤖 <b>AUTONOMOUS SESSION — ACTIVE</b>",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "",
-            f"💰 <b>Equity:</b> <code>${current_equity:,.2f}</code> (started ${start_equity:,.2f})",
-            f"💵 <b>Available Cash:</b> <code>${available_cash:,.2f}</code>",
-            "",
-            f"📈 <b>Realized PnL:</b> <code>{_pnl(realized_pnl)}</code>",
-            f"📊 <b>Unrealized PnL:</b> <code>{_pnl(unrealized_pnl)}</code>",
-            f"📊 <b>Total MTM:</b> <code>{_pnl(total_pnl)}</code>",
-            "",
-            f"🎯 Risk: <code>{config.get('risk_pct', DEFAULT_RISK_PCT)}%</code> | Max pos: <code>{config.get('max_pos', DEFAULT_MAX_POS)}</code>",
-            f"📡 Regime: <code>{regime_state}</code>",
-            f"⏱️ Running: <code>{hours}h {mins}m</code>",
+        from src.utils.format import fmt, bold, code
+
+        parts = [
+            bold("🤖 AUTONOMOUS SESSION — ACTIVE"),
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n",
+            bold("💰 Equity: "), code(f"${current_equity:,.2f}"), f" (started ${start_equity:,.2f})\n",
+            bold("💵 Available Cash: "), code(f"${available_cash:,.2f}"), "\n",
+            bold("📈 Realized PnL: "), code(_pnl(realized_pnl)), "\n",
+            bold("📊 Unrealized PnL: "), code(_pnl(unrealized_pnl)), "\n",
+            bold("📊 Total MTM: "), code(_pnl(total_pnl)), "\n",
+            bold("🎯 Risk: "), code(f"{config.get('risk_pct', DEFAULT_RISK_PCT)}%"), bold(" | Max pos: "), code(str(config.get('max_pos', DEFAULT_MAX_POS))), "\n",
+            bold("📡 Regime: "), code(regime_state), "\n",
+            bold("⏱️ Running: "), code(f"{hours}h {mins}m"),
         ]
 
         if pos_lines:
-            lines.append("")
-            lines.append(f"📋 <b>Open Positions ({open_count}):</b>")
-            lines.extend(pos_lines)
+            parts.append("\n")
+            parts.append(bold(f"📋 Open Positions ({open_count}):"))
+            parts.extend(pos_lines)
         else:
-            lines.append("")
-            lines.append("📭 No open positions.")
+            parts.append("\n📭 No open positions.")
 
-        return "\n".join(lines)
+        return fmt(*lines)
 
     def _format_inactive_status(self) -> str:
-        return (
-            "🤖 <b>AUTONOMOUS SESSION</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "📭 No active session.\n\n"
-            "Press <b>▶️ Start</b> to begin."
+        from src.utils.format import fmt, bold
+        return fmt(
+            bold("🤖 AUTONOMOUS SESSION"),
+            "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n",
+            "\n📭 No active session.\n",
+            "\nPress ", bold("▶️ Start"), " to begin.",
         )
 
     # ── The Loop ───────────────────────────────────────────────
@@ -236,7 +236,9 @@ class AutonomousSessionManager:
                     await asyncio.sleep(interval_sec)
                     continue
 
-                # 3. Scan for signals
+                # 3. Scan for signals (clear dedup cache so ASM can re-trade same coins)
+                from src.agents.orchestrator import _signal_cache
+                _signal_cache.clear()
                 signals = await self.orchestrator.scan_all_markets("CRYPTO")
 
                 # 4. Execute each signal through existing pipeline
@@ -355,24 +357,10 @@ class AutonomousSessionManager:
     # ── Regime Gate ────────────────────────────────────────────
 
     async def _check_regime(self) -> tuple[bool, str]:
-        """Returns (should_pause, alert_message)."""
-        try:
-            from src.advisory.crypto_regime import CryptoRegimeFilter
-            crf = CryptoRegimeFilter(self.orchestrator.mcp)
-            regime = await crf.get_current_regime()
-            state = regime.get("state", "UNKNOWN") if regime else "UNKNOWN"
-
-            if state in ("TREND_BEAR", "CHOP", "UNKNOWN"):
-                msg = (
-                    f"⚠️ <b>Auto-Session Paused</b>\n"
-                    f"Market regime: <code>{state}</code>. Waiting for trend."
-                )
-                return True, msg
-
-            return False, ""
-        except Exception as e:
-            logger.warning("asm_regime_check_failed", error=str(e))
-            return False, ""  # Fail open
+        """Returns (should_pause, alert_message).
+        Regime gate disabled for ASM — risk gates + SL handle protection.
+        """
+        return False, ""
 
     # ── MTM Report ─────────────────────────────────────────────
 
@@ -422,19 +410,21 @@ class AutonomousSessionManager:
             sign = "+" if v >= 0 else "-"
             return f"{sign}${abs(v):,.2f}"
 
-        report = (
-            "🏁 <b>AUTONOMOUS SESSION COMPLETED</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"💰 <b>Financial Summary</b>\n"
-            f"  • Starting Equity: <code>${start_equity:,.2f}</code>\n"
-            f"  • Realized PnL: <code>{_pnl(realized_pnl)}</code>\n"
-            f"  • Unrealized PnL: <code>{_pnl(unrealized_pnl)}</code>\n"
-            f"  • {pnl_emoji} Total MTM: <code>{_pnl(total_pnl)}</code>\n\n"
-            f"📊 <b>Performance</b>\n"
-            f"  • Trades: <code>{total_trades}</code> | Win Rate: <code>{win_rate:.1f}%</code> ({wins}W / {losses}L)\n"
-            f"  • Open Positions: <code>{open_count}</code>\n\n"
-            f"⏱️ <b>Duration:</b> <code>{hours}h {mins}m</code>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        from src.utils.format import fmt, bold, code
+
+        report = fmt(
+            bold("🏁 AUTONOMOUS SESSION COMPLETED"),
+            "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n",
+            "\n", bold("💰 Financial Summary"),
+            "\n  • Starting Equity: ", code(f"${start_equity:,.2f}"),
+            "\n  • Realized PnL: ", code(_pnl(realized_pnl)),
+            "\n  • Unrealized PnL: ", code(_pnl(unrealized_pnl)),
+            f"\n  • {pnl_emoji} Total MTM: ", code(_pnl(total_pnl)),
+            "\n\n", bold("📊 Performance"),
+            "\n  • Trades: ", code(str(total_trades)), " | Win Rate: ", code(f"{win_rate:.1f}%"), f" ({wins}W / {losses}L)",
+            "\n  • Open Positions: ", code(str(open_count)),
+            "\n\n", bold("⏱️ Duration: "), code(f"{hours}h {mins}m"),
+            "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         )
         return report
 

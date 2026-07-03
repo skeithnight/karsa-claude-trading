@@ -334,6 +334,7 @@ class CryptoRiskManager:
         # ASM override: allow full balance for position sizing
         if signal.get("_override_max_position_pct"):
             max_position_pct = signal["_override_max_position_pct"]
+            logger.info("asm_override_max_position", pct=max_position_pct, ticker=signal.get("ticker"))
         sl_mult = 1.5
         tp_mult = 3.0
         if profile_config:
@@ -393,7 +394,11 @@ class CryptoRiskManager:
 
         # Regime adjustment (Contextual Regime Engine)
         size_multiplier = 1.0
-        if regime:
+        # ASM override: bypass regime multiplier entirely
+        if signal.get("_override_max_position_pct"):
+            size_multiplier = 1.0
+            regime = None  # skip regime checks
+        elif regime:
             regime_state = regime.get("state", "UNKNOWN")
             
             # Apply contextual mapping if available
