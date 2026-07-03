@@ -626,21 +626,22 @@ async def test_end_to_end_pipeline_with_oms_tracking(fake_redis, mock_bybit, _pa
         quantity=risk_result["qty"],
         order_type="Market",
     )
-    assert tracked["order_id"]  # paper mode generates paper_* IDs
+    oid = tracked["order_id"]
+    assert oid  # paper mode generates paper_* IDs
     assert tracked["status"] == "SUBMITTED"
 
     # Update to filled
-    await oms.update_status("e2e_001", "FILLED",
+    await oms.update_status(oid, "FILLED",
                             filled_qty=risk_result["qty"],
                             avg_price=60000.0)
 
-    order = await oms.get_order("e2e_001")
+    order = await oms.get_order(oid)
     assert order["status"] == "FILLED"
 
     # Should be removed from active
     active = await oms.get_active_orders()
     active_ids = {o["order_id"] for o in active}
-    assert "e2e_001" not in active_ids
+    assert oid not in active_ids
 
 
 # ---------------------------------------------------------------------------
