@@ -395,6 +395,8 @@ class BybitClient:
                 "ask": _safe_float(data.get("ask1Price", 0)),
                 "funding_rate": _safe_float(data.get("fundingRate", 0)),
                 "open_interest": _safe_float(data.get("openInterest", 0)),
+                "index_price": _safe_float(data.get("indexPrice", 0)),
+                "mark_price": _safe_float(data.get("markPrice", 0)),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "source": "bybit",
             }

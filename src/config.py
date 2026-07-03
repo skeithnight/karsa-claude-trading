@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     CRYPTO_DAILY_LOSS_LIMIT_PCT: float = 3.0
     CRYPTO_MAX_LEVERAGE: int = 10
     CRYPTO_FUNDING_ALERT_THRESHOLD: float = 0.05
+    CRYPTO_FUNDING_HARD_REJECT_PCT: float = 0.05  # Gate 7: hard reject if funding > 0.05% per 8h
+    CRYPTO_FUNDING_DRAG_MAX_PCT: float = 30.0     # Gate 7: max funding cost as % of target move
     CRYPTO_LIQUIDATION_WARN_PCT: float = 20.0
     CRYPTO_LIQUIDATION_ALERT_PCT: float = 10.0
     CRYPTO_LIQUIDATION_FORCE_CLOSE_PCT: float = 5.0

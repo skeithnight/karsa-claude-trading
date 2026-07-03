@@ -23,7 +23,7 @@ Flow:
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
@@ -135,7 +135,7 @@ class PositionReconciler:
                 pos = await session.get(CryptoPosition, db_pos.id)
                 if pos:
                     pos.status = "CLOSED"
-                    pos.last_synced_at = datetime.now(timezone.utc)
+                    pos.last_synced_at = datetime.utcnow()
 
                     session.add(CryptoReconciliationLog(
                         position_id=db_pos.id,
@@ -183,8 +183,8 @@ class PositionReconciler:
                     liquidation_price=Decimal(str(exch_pos.get("liqPrice", 0))) if exch_pos.get("liqPrice") else None,
                     unrealized_pnl=Decimal(str(exch_pos.get("unrealisedPnl", 0))),
                     status="OPEN",
-                    opened_at=datetime.now(timezone.utc),
-                    last_synced_at=datetime.now(timezone.utc),
+                    opened_at=datetime.utcnow(),
+                    last_synced_at=datetime.utcnow(),
                 ))
 
                 session.add(CryptoReconciliationLog(
@@ -230,7 +230,7 @@ class PositionReconciler:
                     pos.size = exch_size
                     pos.current_price = Decimal(str(exch_pos.get("markPrice", 0)))
                     pos.unrealized_pnl = Decimal(str(exch_pos.get("unrealisedPnl", 0)))
-                    pos.last_synced_at = datetime.now(timezone.utc)
+                    pos.last_synced_at = datetime.utcnow()
 
                     session.add(CryptoReconciliationLog(
                         position_id=db_pos.id,

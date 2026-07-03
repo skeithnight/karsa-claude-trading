@@ -59,6 +59,20 @@ class SmartOrderRouter:
 
         _start_time = time.time()
 
+        # Round qty to valid lot size
+        qty = await self._round_qty(ticker, qty)
+        if qty <= 0:
+            return {"success": False, "error": "Qty rounds to zero"}
+
+        # Pre-check: order value must meet Bybit's $5 minimum
+        try:
+            ticker_data = await self.bybit.get_ticker(ticker)
+            price = float(ticker_data.get("price", 0))
+            if price > 0 and qty * price < 4.50:
+                return {"success": False, "error": f"Order value ${qty * price:.2f} below Bybit $5 minimum"}
+        except Exception:
+            pass
+
         # Set leverage (Bybit returns error 110043 if leverage unchanged — safe to ignore)
         try:
             await asyncio.to_thread(
@@ -191,6 +205,26 @@ class SmartOrderRouter:
             except Exception:
                 continue
         return {"filled": False}
+
+    async def _round_qty(self, ticker: str, qty: float) -> float:
+        """Round qty to valid Bybit lot size step."""
+        try:
+            info = await asyncio.to_thread(
+                self.bybit._http_client.get_instruments_info,
+                category="linear",
+                symbol=ticker,
+            )
+            lot = info["result"]["list"][0]["lotSizeFilter"]
+            step = float(lot["qtyStep"])
+            min_qty = float(lot["minOrderQty"])
+            rounded = int(qty / step) * step  # floor to step
+            # Format to step precision
+            precision = max(0, len(str(step).rstrip('0').split('.')[-1])) if '.' in str(step) else 0
+            rounded = round(rounded, precision)
+            return rounded if rounded >= min_qty else 0.0
+        except Exception as e:
+            logger.warning("round_qty_failed", ticker=ticker, error=str(e))
+            return qty  # fallback: pass through
 
     async def close_position(self, symbol: str, position: dict) -> dict:
         """Close a single position (used for counter-trade flips)."""

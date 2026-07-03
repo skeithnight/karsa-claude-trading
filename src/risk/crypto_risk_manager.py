@@ -492,18 +492,73 @@ class CryptoRiskManager:
 
         # --- Gate 6: Minimum order size ---
         min_order_value = 5.0  # $5 minimum
-        if position_value < min_order_value:
+        if position_value < min_order_value and not signal.get("_override_max_position_pct"):
             return self._reject(f"Position value ${position_value:.2f} below minimum ${min_order_value}")
+        elif position_value < min_order_value and signal.get("_override_max_position_pct"):
+            # ASM override: size up to $5 minimum using leverage
+            target_notional = min_order_value
+            leverage_for_margin = max(signal.get("_override_leverage", 1), 1)
+            margin_needed = target_notional / leverage_for_margin
+            if margin_needed <= wallet_balance * 0.95:
+                qty = target_notional / entry_price
+                position_value = target_notional
+                # Validate: if qty is too small for lot rounding, reject early
+                # (SOR._round_qty will floor it to zero, which is a wasted API call)
+                if qty * entry_price < 0.10:  # sanity: notional must be > $0.10 after sizing
+                    return self._reject(
+                        f"Qty {qty:.6f} too small for lot rounding "
+                        f"(notional ${qty * entry_price:.2f}, need higher leverage or skip coin)"
+                    )
+            # If margin doesn't fit, keep the original qty (will be rejected by Bybit)
 
         # --- Gate 7: Funding rate check (prevent entering crowded trades) ---
         if self.mcp:
             try:
                 funding = await self.mcp.get_funding_rate(ticker)
                 rate = funding.get("funding_rate", 0)
-                if direction == "LONG" and rate > 0.001:
-                    return self._reject(f"Funding rate {rate*100:.3f}% too high for LONG (crowded long)")
-                elif direction == "SHORT" and rate < -0.001:
-                    return self._reject(f"Funding rate {rate*100:.3f}% too negative for SHORT (crowded short)")
+                hard_pct = settings.CRYPTO_FUNDING_HARD_REJECT_PCT / 100  # config in %, compare as decimal
+
+                # Hard reject: extreme funding
+                if direction == "LONG" and rate > hard_pct:
+                    return self._reject(f"Funding rate {rate*100:.3f}% > {settings.CRYPTO_FUNDING_HARD_REJECT_PCT}% threshold (crowded long)")
+                elif direction == "SHORT" and rate < -hard_pct:
+                    return self._reject(f"Funding rate {rate*100:.3f}% > {settings.CRYPTO_FUNDING_HARD_REJECT_PCT}% threshold (crowded short)")
+
+                # Premium Index check: real-time proxy for next funding direction
+                # If perp trades at discount to index, next funding is guaranteed negative
+                ticker_data = await self.bybit.get_ticker(ticker) if self.bybit else {}
+                index_price = ticker_data.get("index_price", 0)
+                mark_price = ticker_data.get("mark_price", 0)
+                if index_price > 0 and mark_price > 0:
+                    premium_pct = (mark_price - index_price) / index_price * 100
+                    if direction == "LONG" and premium_pct < -0.1:
+                        logger.info("funding_premium_negative",
+                                    ticker=ticker, premium=f"{premium_pct:.3f}%",
+                                    hint="perp at discount to index, next funding likely negative for longs")
+                    elif direction == "SHORT" and premium_pct > 0.1:
+                        logger.info("funding_premium_positive",
+                                    ticker=ticker, premium=f"{premium_pct:.3f}%",
+                                    hint="perp at premium to index, next funding likely positive for shorts")
+
+                # Funding cost projection: daily cost vs ATR-based conservative target
+                daily_funding_cost_pct = abs(rate) * 3 * 100  # 3 settlements/day
+                # Use ATR-based target (conservative) instead of TP-based (optimistic)
+                conservative_target_pct = (atr / entry_price * 100) if atr else (stop_distance / entry_price * rr_ratio * 100)
+                max_drag = settings.CRYPTO_FUNDING_DRAG_MAX_PCT
+                drag_ratio = daily_funding_cost_pct / conservative_target_pct * 100 if conservative_target_pct > 0 else 0
+
+                logger.info("funding_analysis",
+                            ticker=ticker, rate=f"{rate*100:.4f}%",
+                            daily_cost=f"{daily_funding_cost_pct:.3f}%",
+                            atr_target=f"{conservative_target_pct:.2f}%",
+                            drag_ratio=f"{drag_ratio:.0f}%",
+                            threshold=f"{max_drag:.0f}%")
+
+                if conservative_target_pct > 0 and drag_ratio > max_drag:
+                    return self._reject(
+                        f"Funding drag {drag_ratio:.0f}% exceeds {max_drag}% of ATR target "
+                        f"(daily cost {daily_funding_cost_pct:.3f}% vs target {conservative_target_pct:.2f}%)"
+                    )
             except Exception:
                 pass  # non-fatal — proceed without funding check
 
@@ -515,15 +570,19 @@ class CryptoRiskManager:
             take_profit = entry_price - (stop_distance * rr_ratio)
 
         # --- Leverage: tier-based cap ---
-        tier = _get_tier(ticker)
-        max_lev = min(MAX_LEVERAGE_BY_TIER.get(tier, 3), settings.CRYPTO_MAX_LEVERAGE)
-        leverage = 1
-        for candidate in range(1, max_lev + 1):
-            required_margin = position_value / candidate
-            if required_margin <= wallet_balance * 0.5:
+        # ASM override: force leverage for small equity
+        if signal.get("_override_leverage"):
+            leverage = min(signal["_override_leverage"], settings.CRYPTO_MAX_LEVERAGE)
+        else:
+            tier = _get_tier(ticker)
+            max_lev = min(MAX_LEVERAGE_BY_TIER.get(tier, 3), settings.CRYPTO_MAX_LEVERAGE)
+            leverage = 1
+            for candidate in range(1, max_lev + 1):
+                required_margin = position_value / candidate
+                if required_margin <= wallet_balance * 0.5:
+                    leverage = candidate
+                    break
                 leverage = candidate
-                break
-            leverage = candidate
 
         return {
             "approved": True,
