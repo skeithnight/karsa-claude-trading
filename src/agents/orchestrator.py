@@ -602,16 +602,17 @@ class Orchestrator:
                     except Exception as e:
                         logger.error("crypto_counter_trade_error", ticker=ticker, error=str(e))
 
-            # Liquidity gate check
-            from src.risk.liquidity import LiquidityMonitor
-            liq_monitor = LiquidityMonitor(sor.bybit)
-            liq_result = await liq_monitor.check_liquidity(ticker, direction)
-            if not liq_result.get("can_trade", False):
-                logger.info("crypto_signal_rejected_liquidity", ticker=ticker)
-                signal["status"] = "REJECTED"
-                signal["rejection_reason"] = "Failed liquidity/spread check"
-                executed.append(signal)
-                continue
+            # Liquidity gate check (skip for ASM override)
+            if not signal.get("_override_max_position_pct"):
+                from src.risk.liquidity import LiquidityMonitor
+                liq_monitor = LiquidityMonitor(sor.bybit)
+                liq_result = await liq_monitor.check_liquidity(ticker, direction)
+                if not liq_result.get("can_trade", False):
+                    logger.info("crypto_signal_rejected_liquidity", ticker=ticker)
+                    signal["status"] = "REJECTED"
+                    signal["rejection_reason"] = "Failed liquidity/spread check"
+                    executed.append(signal)
+                    continue
 
             # Risk evaluation (with daily P&L and profile config)
             risk_result = await risk_mgr.evaluate(
@@ -697,6 +698,7 @@ class Orchestrator:
 
             entry_price = Decimal(str(fill_result.get("fill_price", signal.get("entry_price", 0))))
 
+            from src.models.database import async_session
             async with async_session() as session:
                 session.add(CryptoPosition(
                     ticker=signal.get("ticker", ""),
@@ -714,7 +716,7 @@ class Orchestrator:
                     regime_at_entry=regime_at_entry,
                     signal_source=signal.get("strategy", "crypto_analyst"),
                     partial_exits_taken=0,
-                    last_management_check=datetime.now(timezone.utc),
+                    last_management_check=datetime.utcnow(),
                 ))
                 await session.commit()
         except Exception as e:

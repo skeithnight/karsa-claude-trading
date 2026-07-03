@@ -69,13 +69,21 @@ class AutonomousSessionManager:
         }
 
         # Persist to Redis
-        pipe = self.redis.pipeline()
-        pipe.set(REDIS_ACTIVE, "1")
-        pipe.set(REDIS_CONFIG, json.dumps(session_config))
-        pipe.set(REDIS_START_TIME, str(time.time()))
-        pipe.set(REDIS_START_EQUITY, str(starting_equity))
-        pipe.delete(REDIS_PROGRESS_TS)
-        await pipe.execute()
+        try:
+            pipe = self.redis.pipeline()
+            pipe.set(REDIS_ACTIVE, "1")
+            pipe.set(REDIS_CONFIG, json.dumps(session_config))
+            pipe.set(REDIS_START_TIME, str(time.time()))
+            pipe.set(REDIS_START_EQUITY, str(starting_equity))
+            pipe.delete(REDIS_PROGRESS_TS)
+            results = await pipe.execute()
+            logger.info("asm_redis_written", keys=[REDIS_ACTIVE, REDIS_CONFIG], results=results)
+        except Exception as e:
+            logger.error("asm_redis_write_failed", error=str(e))
+            # Fallback: direct set
+            await self.redis.set(REDIS_ACTIVE, "1")
+            await self.redis.set(REDIS_CONFIG, json.dumps(session_config))
+            logger.info("asm_redis_fallback_written")
 
         # Persist session to DB
         await self._save_session_start(session_config, starting_equity)
@@ -175,9 +183,8 @@ class AutonomousSessionManager:
             return f"{sign}${abs(v):,.2f}"
 
         from src.utils.format import fmt, bold, code
-
         parts = [
-            bold("🤖 AUTONOMOUS SESSION — ACTIVE"),
+            fmt(bold("🤖 AUTONOMOUS SESSION — ACTIVE"),
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n",
             bold("💰 Equity: "), code(f"${current_equity:,.2f}"), f" (started ${start_equity:,.2f})\n",
             bold("💵 Available Cash: "), code(f"${available_cash:,.2f}"), "\n",
@@ -186,17 +193,17 @@ class AutonomousSessionManager:
             bold("📊 Total MTM: "), code(_pnl(total_pnl)), "\n",
             bold("🎯 Risk: "), code(f"{config.get('risk_pct', DEFAULT_RISK_PCT)}%"), bold(" | Max pos: "), code(str(config.get('max_pos', DEFAULT_MAX_POS))), "\n",
             bold("📡 Regime: "), code(regime_state), "\n",
-            bold("⏱️ Running: "), code(f"{hours}h {mins}m"),
+            bold("⏱️ Running: "), code(f"{hours}h {mins}m")),
         ]
 
         if pos_lines:
             parts.append("\n")
-            parts.append(bold(f"📋 Open Positions ({open_count}):"))
+            parts.append(fmt(bold(f"📋 Open Positions ({open_count}):")))
             parts.extend(pos_lines)
         else:
             parts.append("\n📭 No open positions.")
 
-        return fmt(*lines)
+        return fmt(*parts)
 
     def _format_inactive_status(self) -> str:
         from src.utils.format import fmt, bold
@@ -239,7 +246,12 @@ class AutonomousSessionManager:
                 # 3. Scan for signals (clear dedup cache so ASM can re-trade same coins)
                 from src.agents.orchestrator import _signal_cache
                 _signal_cache.clear()
-                signals = await self.orchestrator.scan_all_markets("CRYPTO")
+                # Use _scan_crypto_parallel directly — skip scan_all_markets which auto-executes with regime gate
+                from src.advisory.crypto_regime import CryptoRegimeFilter
+                crf = CryptoRegimeFilter(self.orchestrator.mcp)
+                crypto_regime = await crf.get_current_regime()
+                signals = await self.orchestrator._scan_crypto_parallel(crypto_regime)
+                logger.info("asm_scan_result", signal_count=len(signals), tickers=[s.get("ticker","?") for s in signals])
 
                 # 4. Execute each signal through existing pipeline
                 for signal in signals:
@@ -277,6 +289,14 @@ class AutonomousSessionManager:
 
         try:
             from src.metrics.crypto_metrics import AUTO_SESSION_TRADES_TOTAL
+
+            # Inject entry_price from Bybit if LLM didn't provide it
+            if not signal.get("entry_price") or signal["entry_price"] <= 0:
+                try:
+                    ticker_data = await self.bybit.get_ticker(ticker)
+                    signal["entry_price"] = float(ticker_data.get("price", 0))
+                except Exception:
+                    pass
 
             # Inject cash-based sizing into signal BEFORE risk gate
             signal = await self._apply_cash_sizing(signal)
@@ -320,6 +340,10 @@ class AutonomousSessionManager:
         if available_cash <= 0:
             return signal
 
+        # Always set override — even if sizing fails, ASM needs risk gate bypass
+        signal["_override_max_position_pct"] = 1.0
+        signal["_override_leverage"] = 5  # ASM uses 5x to meet Bybit $5 minimum
+
         # Risk amount in USD
         risk_amount = available_cash * risk_pct
 
@@ -341,8 +365,6 @@ class AutonomousSessionManager:
         signal["_cash_risk_amount"] = risk_amount
         signal["_cash_position_value"] = position_value
         signal["_cash_sized_qty"] = round(qty, 6)
-        # Override risk gate's max position cap — ASM uses full balance
-        signal["_override_max_position_pct"] = 1.0
 
         logger.debug(
             "asm_cash_sizing",
@@ -461,7 +483,7 @@ class AutonomousSessionManager:
                     select(func.coalesce(func.sum(ClosedPaperTrade.realized_pnl), 0))
                     .where(
                         ClosedPaperTrade.market == "CRYPTO",
-                        ClosedPaperTrade.exit_date >= datetime.fromtimestamp(start_time, tz=timezone.utc),
+                        ClosedPaperTrade.exit_date >= datetime.fromtimestamp(start_time),
                     )
                 )
                 return float(result.scalar() or 0.0)
@@ -486,7 +508,7 @@ class AutonomousSessionManager:
                     )
                     .where(
                         ClosedPaperTrade.market == "CRYPTO",
-                        ClosedPaperTrade.exit_date >= datetime.fromtimestamp(start_time, tz=timezone.utc),
+                        ClosedPaperTrade.exit_date >= datetime.fromtimestamp(start_time),
                     )
                 )
                 row = result.one()
@@ -495,7 +517,7 @@ class AutonomousSessionManager:
                     select(func.count(ClosedPaperTrade.id))
                     .where(
                         ClosedPaperTrade.market == "CRYPTO",
-                        ClosedPaperTrade.exit_date >= datetime.fromtimestamp(start_time, tz=timezone.utc),
+                        ClosedPaperTrade.exit_date >= datetime.fromtimestamp(start_time),
                         ClosedPaperTrade.realized_pnl > 0,
                     )
                 )
