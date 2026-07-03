@@ -1,0 +1,23 @@
+tests/test_integration/test_risk_pipeline.py
+  a6d7bac3072e70d5 629-630,634,638,644
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "94ceeba982bf7cd5198a5930fc3b041121fc14ce",
+  "prompts": {
+    "a6d7bac3072e70d5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f836d782-8883-4de7-956b-8f4bec6fa4d4",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 5,
+      "total_deletions": 4,
+      "accepted_lines": 5,
+      "overriden_lines": 0
+    }
+  }
+}
