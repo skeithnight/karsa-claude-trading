@@ -1,0 +1,41 @@
+src/main_crypto.py
+  3403004acbe9bbbe 102-113
+src/metrics/crypto_metrics.py
+  3403004acbe9bbbe 399-434
+src/agents/autonomous_session.py
+  3403004acbe9bbbe 1-591
+src/risk/distributed_lock.py
+  3403004acbe9bbbe 1-38
+db/migrations/add_autonomous_session.sql
+  3403004acbe9bbbe 1-24
+src/agents/orchestrator.py
+  3403004acbe9bbbe 726-728,764-766
+src/main.py
+  3403004acbe9bbbe 918-921
+src/risk/crypto_risk_manager.py
+  3403004acbe9bbbe 334-336
+src/bot/crypto_handlers.py
+  3403004acbe9bbbe 59-60,323-329,332-333,375-378,661-751,765-771
+src/models/tables.py
+  3403004acbe9bbbe 407-424,426
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "45be4a57395f71d00c7798083f51a30a8a87fe88",
+  "prompts": {
+    "3403004acbe9bbbe": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90232cab-389e-4a1d-b25f-da968d0a49ef",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 901,
+      "total_deletions": 59,
+      "accepted_lines": 848,
+      "overriden_lines": 0
+    }
+  }
+}
