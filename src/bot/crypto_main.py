@@ -6,6 +6,7 @@ Shares src/ package with main orchestrator.
 import asyncio
 from contextlib import asynccontextmanager
 import redis.asyncio as redis
+
 from fastapi import FastAPI
 from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler
@@ -59,6 +60,7 @@ async def lifespan(app: FastAPI):
     from src.risk.profile_manager import RiskProfileManager
     from src.advisory.crypto_universe import UniverseEngine
     profile_mgr = RiskProfileManager(redis_client)
+    await profile_mgr.ensure_default()
     orch.profile_manager = profile_mgr
     bybit = mcp._get_bybit()
     orch.universe_engine = UniverseEngine(bybit, redis_client, profile_mgr)

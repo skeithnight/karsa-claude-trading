@@ -12,7 +12,6 @@ import time
 from datetime import datetime, timezone
 
 from pybit.unified_trading import HTTP, WebSocket
-
 from src.config import settings
 from src.data.cache import CacheManager
 from src.metrics.crypto_metrics import record_bybit_call
@@ -72,8 +71,10 @@ class BybitClient:
         try:
             import os
             proxy = os.environ.get("BYBIT_PROXY")
-            if proxy and hasattr(self._http_client, 'client'):
-                self._http_client.client.proxies = {"https": proxy, "http": proxy}
+            if proxy:
+                if hasattr(self._http_client, 'client'):
+                    self._http_client.client.proxies = {"https": proxy, "http": proxy}
+                    self._http_client.client.verify = False
         except Exception:
             pass
 

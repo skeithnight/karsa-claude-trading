@@ -23,6 +23,7 @@ logger = get_logger("crypto_regime")
 
 _regime_cache: dict[str, dict] = {}
 _regime_cache_ttl = 300  # 5 minutes
+_adx_cache: dict[str, dict] = {}
 
 
 def _get_cached() -> dict | None:
@@ -147,11 +148,13 @@ def _adx(highs: list[float], lows: list[float], closes: list[float], period: int
 
 def _size_multiplier(regime: str) -> float:
     return {
-        "TREND_BULL": 1.2,
-        "TREND_BEAR": 0.5,
-        "MEAN_REVERSION": 0.8,
-        "CHOP": 0.5,
-    }.get(regime, 1.0)
+        "FULL_TREND_ALIGNMENT": 1.0,
+        "MACRO_BULL_MICRO_PULLBACK": 0.8,
+        "MACRO_BEAR_MICRO_PULLBACK": 0.8,
+        "MICRO_BREAKOUT_NO_MACRO": 0.5,
+        "PURE_DEAD_CHOP": 0.0,
+        "MEAN_REVERSION": 0.5,
+    }.get(regime, 0.5)
 
 
 async def _get_btc_dominance() -> dict:
@@ -199,6 +202,25 @@ class CryptoRegimeFilter:
     def __init__(self, mcp_client: Any):
         self.mcp = mcp_client
 
+    async def _get_cached_adx(self, symbol: str, timeframe: str, ttl: int) -> float:
+        cache_key = f"{symbol}_{timeframe}"
+        entry = _adx_cache.get(cache_key)
+        if entry and time.time() - entry.get("ts", 0) < ttl:
+            return entry["adx"]
+        
+        # Cache miss - fetch OHLCV and calculate ADX
+        ohlcv = await self.mcp.get_ohlcv(symbol, "CRYPTO", timeframe=timeframe, limit=200)
+        if not ohlcv or len(ohlcv) < 20:
+            return 0.0
+            
+        highs = [c["high"] for c in ohlcv]
+        lows = [c["low"] for c in ohlcv]
+        closes = [c["close"] for c in ohlcv]
+        
+        adx_val = _adx(highs, lows, closes)
+        _adx_cache[cache_key] = {"adx": adx_val, "ts": time.time()}
+        return adx_val
+
     async def get_current_regime(self) -> dict:
         cached = _get_cached()
         if cached:
@@ -206,37 +228,42 @@ class CryptoRegimeFilter:
 
         try:
             btc_ohlcv_4h = await self.mcp.get_ohlcv("BTCUSDT", "CRYPTO", timeframe="4h", limit=200)
-            btc_ohlcv_1d = await self.mcp.get_ohlcv("BTCUSDT", "CRYPTO", timeframe="1D", limit=200)
-
             if not btc_ohlcv_4h or len(btc_ohlcv_4h) < 60:
                 logger.warning("crypto_regime_insufficient_data", count=len(btc_ohlcv_4h) if btc_ohlcv_4h else 0)
                 return self._unknown(f"Insufficient BTC data ({len(btc_ohlcv_4h) if btc_ohlcv_4h else 0} candles, need 60+)")
 
             closes_4h = [c["close"] for c in btc_ohlcv_4h]
             hurst = _hurst_exponent(closes_4h)
-
-            adx_value = 0.0
-            if btc_ohlcv_1d and len(btc_ohlcv_1d) >= 20:
-                highs = [c["high"] for c in btc_ohlcv_1d]
-                lows = [c["low"] for c in btc_ohlcv_1d]
-                closes_1d = [c["close"] for c in btc_ohlcv_1d]
-                adx_value = _adx(highs, lows, closes_1d)
-
             btc_price = closes_4h[-1] if closes_4h else 0
             ema_200 = sum(closes_4h[-200:]) / min(200, len(closes_4h)) if closes_4h else btc_price
 
-            if adx_value < 20:
-                regime = "CHOP"
-                rec = "No clear trend. Reduce position sizes. Wait for breakout."
-            elif hurst < 0.45:
-                regime = "MEAN_REVERSION"
-                rec = "Mean-reverting conditions. Fade extremes. Smaller positions."
-            elif btc_price > ema_200:
-                regime = "TREND_BULL"
-                rec = "Bullish trend confirmed. Full position sizing. Long bias."
+            # MTF ADX Contextual Regime Engine
+            adx_15m = await self._get_cached_adx("BTCUSDT", "15", 1200)
+            adx_4h = await self._get_cached_adx("BTCUSDT", "4h", 18000)
+            adx_1d = await self._get_cached_adx("BTCUSDT", "1D", 90000)
+
+            macro_trending = (adx_4h > 25 and adx_1d > 25)
+            micro_trending = (adx_15m > 25)
+
+            if macro_trending and micro_trending:
+                regime = "FULL_TREND_ALIGNMENT"
+                rec = "Pure explosive trend. Max sizing. Buy breakouts."
+            elif macro_trending and not micro_trending and btc_price > ema_200:
+                regime = "MACRO_BULL_MICRO_PULLBACK"
+                rec = "Macro trend UP, micro resting. Buy the dip."
+            elif macro_trending and not micro_trending and btc_price <= ema_200:
+                regime = "MACRO_BEAR_MICRO_PULLBACK"
+                rec = "Macro trend DOWN, micro resting. Short the rally."
+            elif not macro_trending and micro_trending:
+                regime = "MICRO_BREAKOUT_NO_MACRO"
+                rec = "Micro breakout without macro support. High risk, half size."
             else:
-                regime = "TREND_BEAR"
-                rec = "Bearish trend confirmed. Reduce sizing. Short bias or stay flat."
+                if hurst < 0.45:
+                    regime = "MEAN_REVERSION"
+                    rec = "Mean-reverting conditions. Fade extremes. Smaller positions."
+                else:
+                    regime = "PURE_DEAD_CHOP"
+                    rec = "Dead chop across all timeframes. Do not trade."
 
             # Fetch BTC dominance
             btc_dom = await _get_btc_dominance()
@@ -246,7 +273,9 @@ class CryptoRegimeFilter:
                 "benchmark": "BTCUSDT",
                 "benchmark_price": round(btc_price, 2),
                 "hurst": round(hurst, 3),
-                "adx": round(adx_value, 1),
+                "adx_15m": round(adx_15m, 1),
+                "adx_4h": round(adx_4h, 1),
+                "adx_1d": round(adx_1d, 1),
                 "ema_200_proxy": round(ema_200, 2),
                 "recommendation": rec,
                 "size_multiplier": _size_multiplier(regime),

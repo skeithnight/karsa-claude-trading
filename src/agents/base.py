@@ -35,7 +35,7 @@ class BaseAgent:
         max_iterations: int = 10,
     ):
         self.name = name
-        self.combo_name = combo_name
+        self.combo_name = LLM_MODEL if LLM_MODEL else combo_name
         self.system_prompt = system_prompt
         self.tools = tools
         self.mcp = mcp
@@ -207,6 +207,9 @@ class BaseAgent:
         """Attach reasoning trace to result if capture is enabled."""
         if not self._capture_traces:
             return result
+
+        if isinstance(result, list):
+            result = {"signals": result}
 
         result["_trace"] = {
             "agent_name": self.name,

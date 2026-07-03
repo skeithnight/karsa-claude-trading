@@ -96,14 +96,13 @@ class RiskProfileManager:
 
     def __init__(self, redis_client):
         self._redis = redis_client
-        self._ensure_default()
+        # ponytail: defer to first async call — avoids coroutine-never-awaited warning
 
-    def _ensure_default(self):
-        """Set Conservative as default if no profile exists."""
-        # ponytail: synchronous get/set is fine for startup init
+    async def ensure_default(self):
+        """Set Conservative as default if no profile exists. Call once after init."""
         try:
-            if not self._redis.exists(REDIS_KEY):
-                self._redis.set(REDIS_KEY, RiskProfile.CONSERVATIVE.value)
+            if not await self._redis.exists(REDIS_KEY):
+                await self._redis.set(REDIS_KEY, RiskProfile.CONSERVATIVE.value)
         except Exception as e:
             logger.warning("profile_init_failed", error=str(e))
 

@@ -11,44 +11,78 @@ logger = get_logger("strategy_selector")
 
 # Per-regime strategy configurations
 STRATEGY_CONFIGS: dict[str, dict[str, Any]] = {
-    "TREND_BULL": {
-        "primary_strategy": "Trend Sentiment Convergence",
+    "FULL_TREND_ALIGNMENT": {
+        "primary_strategy": "Aggressive Trend Continuation",
         "prompt_modifier": (
-            "REGIME: BULLISH TRENDING MARKET (Hurst > 0.5, ADX > 25, BTC > 200 EMA)\n"
-            "- FAVOR trend-following entries: Price > 20 EMA > 50 EMA alignment.\n"
-            "- Negative funding = contrarian long opportunity (crowds are short in a bull).\n"
-            "- Higher confidence for LONG signals (+10 bonus if all 4 conditions align).\n"
-            "- SHORT signals require extra confirmation: bearish divergence + positive funding + rising OI.\n"
-            "- Allow slightly wider stops (2x ATR) to ride momentum.\n"
-            "- Volume spike confirmation is key — new money entering the move.\n"
+            "REGIME: FULL TREND ALIGNMENT (15m, 4H, 1D ADX all > 25)\n"
+            "- Absolute trend perfection across all timeframes.\n"
+            "- Ride the momentum. Use slightly wider trailing stops.\n"
+            "- Highest confidence (+20). Maximize sizing.\n"
+        ),
+        "confidence_boost": 20,
+        "max_positions": 8,
+        "size_multiplier": 1.0,
+        "preferred_pairs": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"],
+        "data_focus": ["adx", "volume"],
+    },
+    "MACRO_BULL_MICRO_PULLBACK": {
+        "primary_strategy": "Dip Buying / Accumulation",
+        "prompt_modifier": (
+            "REGIME: MACRO BULL, MICRO PULLBACK (4H/1D Trending, 15m Resting, Price > 200EMA)\n"
+            "- The micro timeframe is chopping/pulling back, but macro trend is fiercely UP.\n"
+            "- BUY THE DIP. Look for oversold RSI or lower Bollinger Band touches.\n"
+            "- DO NOT short. This is an accumulation zone.\n"
         ),
         "confidence_boost": 10,
-        "max_positions": 6,
-        "size_multiplier": 1.2,
-        "preferred_pairs": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"],
-        "data_focus": ["funding", "oi", "volume"],
+        "max_positions": 5,
+        "size_multiplier": 0.8,
+        "preferred_pairs": ["BTCUSDT", "ETHUSDT"],
+        "data_focus": ["rsi", "bollinger", "funding"],
     },
-    "TREND_BEAR": {
-        "primary_strategy": "Trend Sentiment Convergence",
+    "MACRO_BEAR_MICRO_PULLBACK": {
+        "primary_strategy": "Short the Rally",
         "prompt_modifier": (
-            "REGIME: BEARISH TRENDING MARKET (Hurst > 0.5, ADX > 25, BTC < 200 EMA)\n"
-            "- FAVOR short entries: Price < 20 EMA < 50 EMA alignment.\n"
-            "- Positive funding = contrarian short opportunity (crowds are long in a bear).\n"
-            "- Reduce overall confidence by 10 points — trends can reverse violently.\n"
-            "- Tighter stops (1x ATR) — bear market rallies are sharp and painful.\n"
-            "- Avoid counter-trend longs unless extreme oversold (RSI < 25 + volume capitulation).\n"
-            "- Watch for short squeeze risk if funding is extremely negative.\n"
+            "REGIME: MACRO BEAR, MICRO PULLBACK (4H/1D Trending, 15m Resting, Price < 200EMA)\n"
+            "- The micro timeframe is chopping/bouncing, but macro trend is fiercely DOWN.\n"
+            "- SHORT THE RALLY. Look for overbought RSI or upper Bollinger Band touches.\n"
+            "- DO NOT long. This is a distribution zone.\n"
         ),
-        "confidence_boost": -10,
+        "confidence_boost": 10,
+        "max_positions": 3,
+        "size_multiplier": 0.8,
+        "preferred_pairs": ["BTCUSDT", "ETHUSDT"],
+        "data_focus": ["rsi", "bollinger", "funding"],
+    },
+    "MICRO_BREAKOUT_NO_MACRO": {
+        "primary_strategy": "Scalp Breakout",
+        "prompt_modifier": (
+            "REGIME: MICRO BREAKOUT NO MACRO (15m ADX > 25, 4H/1D ADX < 20)\n"
+            "- The 15m is trending, but the macro is dead chop.\n"
+            "- Treat this as a quick scalp. Do not expect massive follow-through.\n"
+            "- Take profits early and use tight stops.\n"
+        ),
+        "confidence_boost": -5,
         "max_positions": 3,
         "size_multiplier": 0.5,
-        "preferred_pairs": ["BTCUSDT", "ETHUSDT"],
-        "data_focus": ["funding", "liquidation_levels"],
+        "preferred_pairs": [],
+        "data_focus": ["rsi", "volume"],
+    },
+    "PURE_DEAD_CHOP": {
+        "primary_strategy": "Halt",
+        "prompt_modifier": (
+            "REGIME: PURE DEAD CHOP (No macro or micro trend)\n"
+            "- Absolute flatline. Return confidence 0. Do not trade.\n"
+        ),
+        "confidence_boost": -100,
+        "max_positions": 0,
+        "size_multiplier": 0.0,
+        "preferred_pairs": [],
+        "data_focus": [],
     },
     "MEAN_REVERSION": {
         "primary_strategy": "Mean Reversion",
         "prompt_modifier": (
-            "REGIME: MEAN-REVERTING MARKET (Hurst < 0.5 — price tends to revert to mean)\n"
+            "REGIME: MEAN-REVERTING MARKET (Hurst < 0.45 — price tends to revert to mean)\n"
             "- Strategy: Fade extremes. Entry at Bollinger band edges.\n"
             "- BUY when: RSI < 30, close < lower BB, negative funding (oversold + short crowding).\n"
             "- SELL/SHORT when: RSI > 70, close > upper BB, positive funding (overbought + long crowding).\n"
@@ -62,23 +96,6 @@ STRATEGY_CONFIGS: dict[str, dict[str, Any]] = {
         "size_multiplier": 0.8,
         "preferred_pairs": ["ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"],
         "data_focus": ["bollinger", "rsi", "funding"],
-    },
-    "CHOP": {
-        "primary_strategy": "Wait for Breakout",
-        "prompt_modifier": (
-            "REGIME: CHOPPY / NO CLEAR TREND (ADX < 20 — no directional conviction)\n"
-            "- DEFAULT ACTION: Do NOT trade. Return confidence < 50.\n"
-            "- Only signal if there is a clear breakout setup: volume > 3x average + price breaks range.\n"
-            "- Reduce confidence by 20 points for any signal in this regime.\n"
-            "- If forced to trade: very small positions, tight stops (0.75x ATR).\n"
-            "- Watch for regime transition: if ADX starts rising above 20, trend may be forming.\n"
-            "- Funding extremes (|rate| > 0.1%) in chop = potential squeeze — note but don't trade.\n"
-        ),
-        "confidence_boost": -20,
-        "max_positions": 2,
-        "size_multiplier": 0.5,
-        "preferred_pairs": ["BTCUSDT", "ETHUSDT"],
-        "data_focus": ["adx", "volume", "range"],
     },
     "SQUEEZE_ALERT": {
         "primary_strategy": "Breakout Squeeze Play",
@@ -162,12 +179,12 @@ class StrategySelector:
         """Get strategy config for a regime.
 
         Args:
-            regime_state: One of TREND_BULL, TREND_BEAR, MEAN_REVERSION, CHOP, UNKNOWN
+            regime_state: One of FULL_TREND_ALIGNMENT, MACRO_BEAR_MICRO_PULLBACK, MEAN_REVERSION, PURE_DEAD_CHOP, UNKNOWN
 
         Returns:
-            Strategy configuration dict. Defaults to TREND_BULL for UNKNOWN.
+            Strategy configuration dict. Defaults to FULL_TREND_ALIGNMENT for UNKNOWN.
         """
-        config = STRATEGY_CONFIGS.get(regime_state, STRATEGY_CONFIGS["TREND_BULL"])
+        config = STRATEGY_CONFIGS.get(regime_state, STRATEGY_CONFIGS["FULL_TREND_ALIGNMENT"])
 
         self._history.append({
             "regime": regime_state,
@@ -189,7 +206,7 @@ class StrategySelector:
 
     def get_regime_performance(self, regime: str) -> dict:
         """Get human-readable strategy description for a regime."""
-        config = STRATEGY_CONFIGS.get(regime, STRATEGY_CONFIGS["TREND_BULL"])
+        config = STRATEGY_CONFIGS.get(regime, STRATEGY_CONFIGS["FULL_TREND_ALIGNMENT"])
         return {
             "regime": regime,
             "strategy": config["primary_strategy"],

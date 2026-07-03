@@ -409,7 +409,13 @@ class Orchestrator:
             bybit_cache = self.universe_engine._bybit.cache if self.universe_engine else None
             coin_engine = CoinRegimeEngine(self.mcp, bybit_cache)
             
-            regime_tasks = [coin_engine.get_regime(sym) for sym in universe]
+            # Throttle parallel API calls to Bybit for MTF ADX calculations
+            sem = asyncio.Semaphore(10)
+            async def get_regime_with_sem(sym):
+                async with sem:
+                    return await coin_engine.get_regime(sym)
+                    
+            regime_tasks = [get_regime_with_sem(sym) for sym in universe]
             coin_regimes = await asyncio.gather(*regime_tasks, return_exceptions=True)
             
             for sym, reg in zip(universe, coin_regimes):
@@ -455,6 +461,12 @@ class Orchestrator:
                 )
         except Exception:
             pass  # proceed without position context
+
+        # Slice for LLM scanning to prevent token explosion
+        max_llm_scan = 50
+        if len(universe) > max_llm_scan:
+            logger.info("crypto_universe_sliced_for_llm", original=len(universe), sliced=max_llm_scan)
+            universe = universe[:max_llm_scan]
 
         # Group universe by regime to avoid agent system prompt race conditions
         grouped_by_regime = {}
@@ -525,6 +537,14 @@ class Orchestrator:
             logger.warning("crypto_wallet_empty", available=wallet.get("available", 0))
             return signals
 
+        # Fetch active profile config for risk evaluation
+        profile_config = None
+        if self.profile_manager:
+            try:
+                profile_config = await self.profile_manager.get_active_profile()
+            except Exception as e:
+                logger.warning("failed_to_fetch_profile_for_risk", error=str(e))
+
         # Fix #3: Compute today's realized P&L for daily loss limit
         daily_pnl_pct = 0.0
         try:
@@ -584,20 +604,23 @@ class Orchestrator:
 
             # Liquidity gate check
             from src.risk.liquidity import LiquidityMonitor
-            if not LiquidityMonitor.check_liquidity(ticker, direction):
+            liq_monitor = LiquidityMonitor(sor.bybit)
+            liq_result = await liq_monitor.check_liquidity(ticker, direction)
+            if not liq_result.get("can_trade", False):
                 logger.info("crypto_signal_rejected_liquidity", ticker=ticker)
                 signal["status"] = "REJECTED"
                 signal["rejection_reason"] = "Failed liquidity/spread check"
                 executed.append(signal)
                 continue
 
-            # Risk evaluation (with daily P&L)
+            # Risk evaluation (with daily P&L and profile config)
             risk_result = await risk_mgr.evaluate(
                 signal=signal,
                 open_positions=open_positions,
                 wallet_balance=balance,
                 regime=regime,
                 daily_pnl_pct=daily_pnl_pct,
+                profile_config=profile_config,
             )
 
             if not risk_result.get("approved"):
@@ -873,8 +896,8 @@ class Orchestrator:
                     tool_results=trace_data.get("tool_results"),
                     llm_response=trace_data.get("llm_response"),
                     reasoning_extracted=trace_data.get("reasoning"),
-                    strategy_used=trace_data.get("strategy"),
-                    regime_at_time=getattr(self.crypto_agent, '_current_config', {}).get("primary_strategy"),
+                    strategy_used=str(trace_data.get("strategy", ""))[:100] if trace_data.get("strategy") else None,
+                    regime_at_time=str(getattr(self.crypto_agent, '_current_config', {}).get("primary_strategy", ""))[:20] if getattr(self.crypto_agent, '_current_config', {}).get("primary_strategy") else None,
                     confidence_score=trace_data.get("confidence"),
                     iterations=trace_data.get("iterations", 1),
                     model_used=trace_data.get("model"),
