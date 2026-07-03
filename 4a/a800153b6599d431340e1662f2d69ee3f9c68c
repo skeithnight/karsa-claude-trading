@@ -1,0 +1,25 @@
+src/risk/crypto_risk_manager.py
+  3403004acbe9bbbe 337,397-401
+src/agents/autonomous_session.py
+  3403004acbe9bbbe 88-94,177-189,193-195,197,199,202-207,239-241,360-363,413-427
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "4aa800153b6599d431340e1662f2d69ee3f9c68c",
+  "prompts": {
+    "3403004acbe9bbbe": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90232cab-389e-4a1d-b25f-da968d0a49ef",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 68,
+      "total_deletions": 73,
+      "accepted_lines": 59,
+      "overriden_lines": 0
+    }
+  }
+}
