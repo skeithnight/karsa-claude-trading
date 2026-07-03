@@ -723,6 +723,9 @@ class Orchestrator:
     async def _notify_crypto_trade(self, signal: dict, risk_result: dict):
         """Send Telegram notification for an executed crypto trade."""
         try:
+            alerts_on = await self.cache.redis.get("karsa:alerts_enabled")
+            if alerts_on in ("0", b"0"):
+                return
             import httpx
             from src.utils.trader_format import signal_card
             
@@ -758,6 +761,9 @@ class Orchestrator:
     async def _notify_risk_rejection(self, signal: dict, risk_result: dict):
         """Send Telegram notification when a signal is rejected by risk gates."""
         try:
+            alerts_on = await self.cache.redis.get("karsa:alerts_enabled")
+            if alerts_on in ("0", b"0"):
+                return
             import httpx
             ticker = signal.get("ticker", "?")
             direction = signal.get("direction", "?")

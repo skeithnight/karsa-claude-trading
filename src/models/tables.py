@@ -404,7 +404,24 @@ class StrategyRecommendation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     applied_at: Mapped[datetime | None] = mapped_column(DateTime)
 
+class CryptoAutoSession(Base):
+    """Autonomous campaign session audit trail."""
+    __tablename__ = "crypto_auto_sessions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    config: Mapped[dict | None] = mapped_column(JSON)
+    starting_equity: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    ending_equity: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    total_trades: Mapped[int] = mapped_column(Integer, default=0)
+    wins: Mapped[int] = mapped_column(Integer, default=0)
+    losses: Mapped[int] = mapped_column(Integer, default=0)
+    realized_pnl: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=0)
+    unrealized_pnl: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=0)
+    status: Mapped[str] = mapped_column(String(20), default="RUNNING")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
     __table_args__ = (
-        CheckConstraint("priority IN ('HIGH', 'MEDIUM', 'LOW')", name="ck_recommendation_priority"),
-        CheckConstraint("status IN ('PENDING', 'ACCEPTED', 'REJECTED', 'APPLIED')", name="ck_recommendation_status"),
+        CheckConstraint("status IN ('RUNNING', 'STOPPED', 'CRASHED')", name="ck_auto_session_status"),
     )
