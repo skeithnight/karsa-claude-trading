@@ -21,6 +21,8 @@ from src.utils.logging import get_logger
 logger = get_logger("sl_engine")
 
 REDIS_TICK_CHANNEL = "karsa:events:price_tick"
+WATCHDOG_INTERVAL_SEC = 3
+WS_DEAD_THRESHOLD_SEC = 10
 
 
 class StopLossEngine:
@@ -33,11 +35,16 @@ class StopLossEngine:
         self._running = False
         self._position_cache: dict[str, dict] = {}
         self._last_sync = 0
+        self._last_tick_time: dict[str, float] = {}
+        self._rest_fallback_active: set[str] = set()
 
     async def run(self) -> None:
-        """Main loop: listen for price ticks and check stop losses."""
+        """Main loop: listen for price ticks with watchdog REST fallback."""
         self._running = True
         logger.info("sl_engine_started")
+
+        # Start watchdog alongside pubsub listener
+        watchdog_task = asyncio.create_task(self._watchdog())
 
         pubsub = self._redis.pubsub()
         await pubsub.subscribe(REDIS_TICK_CHANNEL)
@@ -56,11 +63,42 @@ class StopLossEngine:
         except Exception as e:
             logger.error("sl_engine_error", error=str(e))
         finally:
+            watchdog_task.cancel()
             await pubsub.unsubscribe()
             logger.info("sl_engine_stopped")
 
     async def stop(self) -> None:
         self._running = False
+
+    async def _watchdog(self) -> None:
+        """Detect dead WS feeds and poll REST as fallback for SL checks."""
+        while self._running:
+            try:
+                await asyncio.sleep(WATCHDOG_INTERVAL_SEC)
+                if not self._position_cache:
+                    continue
+
+                now = time.time()
+                for ticker in list(self._position_cache):
+                    last = self._last_tick_time.get(ticker, 0)
+                    silence = now - last if last else float("inf")
+
+                    if silence > WS_DEAD_THRESHOLD_SEC:
+                        if ticker not in self._rest_fallback_active:
+                            self._rest_fallback_active.add(ticker)
+                            logger.warning("sl_ws_dead_rest_fallback", ticker=ticker,
+                                           silence=f"{silence:.0f}s")
+                        # ponytail: REST poll — bybit_client.get_ticker already exists
+                        ticker_data = await self._bybit.get_ticker(ticker)
+                        if ticker_data and ticker_data.get("price"):
+                            # Direct SL check — don't go through _check_tick
+                            # which would update _last_tick_time and confuse
+                            # the watchdog into thinking WS recovered
+                            await self._evaluate_sl(ticker, ticker_data["price"])
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning("sl_watchdog_error", error=str(e))
 
     async def _check_tick(self, tick: dict) -> None:
         """Check if a tick breaches any position's stop loss."""
@@ -69,6 +107,16 @@ class StopLossEngine:
         if not ticker or not price:
             return
 
+        # Track last tick time for watchdog; mark recovery from fallback
+        self._last_tick_time[ticker] = time.time()
+        if ticker in self._rest_fallback_active:
+            self._rest_fallback_active.discard(ticker)
+            logger.info("ws_feed_recovered", ticker=ticker)
+
+        await self._evaluate_sl(ticker, price)
+
+    async def _evaluate_sl(self, ticker: str, price: float) -> None:
+        """Evaluate stop-loss for a ticker at given price."""
         # Refresh position cache every 60s
         if time.time() - self._last_sync > 60:
             await self._sync_positions()

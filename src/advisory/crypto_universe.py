@@ -26,7 +26,7 @@ CRYPTO_UNIVERSE = [
 UNIVERSE_BLACKLIST = set()
 
 # Max total tokens per scan (core + dynamic)
-MAX_UNIVERSE_SIZE = 40
+MAX_UNIVERSE_SIZE = 50
 
 PAIR_CONFIG = {
     "BTCUSDT":  {"min_order_usd": 10, "tick_size": 0.1, "category": "tier1"},
@@ -145,13 +145,13 @@ def get_pair_config(symbol: str) -> dict:
 # --- Dynamic Universe Engine ---
 
 REDIS_UNIVERSE_KEY = "karsa:state:crypto_universe"
-UNIVERSE_TTL = 30 * 60  # 30 minutes
+UNIVERSE_TTL = 45 * 60  # 45 minutes
 
 # Profile-aware universe sizes
 _UNIVERSE_SIZE_BY_PROFILE = {
-    "conservative": 8,
-    "semi_aggressive": 12,
-    "aggressive": 30,
+    "conservative": 12,
+    "semi_aggressive": 20,
+    "aggressive": 50,
 }
 
 

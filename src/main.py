@@ -4,6 +4,8 @@ import asyncio
 import signal
 import sys
 
+import src.patch_websocket  # noqa: F401 - Must be imported first to apply patches
+
 import redis.asyncio as redis
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.memory import MemoryJobStore
@@ -65,6 +67,7 @@ class KarsaApp:
         from src.risk.profile_manager import RiskProfileManager
         from src.advisory.crypto_universe import UniverseEngine
         self.profile_manager = RiskProfileManager(self.redis_client)
+        await self.profile_manager.ensure_default()
         self.orchestrator.profile_manager = self.profile_manager
         bybit = self.mcp._get_bybit()
         self.universe_engine = UniverseEngine(bybit, self.redis_client, self.profile_manager)
@@ -364,6 +367,14 @@ class KarsaApp:
                 id="oms_cleanup", name="OMS Stuck Order Cleanup",
                 replace_existing=True, misfire_grace_time=60,
             )
+
+        # Metrics sync every 1 min (infra health gauges)
+        s.add_job(
+            self._job_metrics_sync,
+            "interval", minutes=1,
+            id="metrics_sync", name="Metrics Health Sync",
+            replace_existing=True, misfire_grace_time=30,
+        )
 
         logger.info("jobs_registered", count=len(self.scheduler.get_jobs()))
 
@@ -931,6 +942,53 @@ class KarsaApp:
                 logger.info("oms_cleanup_done", stuck_cancelled=len(stuck))
         except Exception as e:
             logger.error("oms_cleanup_failed", error=str(e))
+
+    async def _job_metrics_sync(self):
+        """Polls health checks and balances to update Grafana metrics."""
+        import time
+        start = time.time()
+        from src.metrics.crypto_metrics import (
+            PORTFOLIO_EQUITY_USD, REDIS_CONNECTED, WARP_CONNECTED,
+            OPEN_POSITIONS, UNREALIZED_PNL_USD
+        )
+
+        # ponytail: each section isolated — one failure shouldn't kill others
+
+        # Redis health
+        try:
+            redis_ok = await self.cache.ping() if self.cache else False
+            REDIS_CONNECTED.set(1 if redis_ok else 0)
+        except Exception as e:
+            REDIS_CONNECTED.set(0)
+            logger.warning("metrics_redis_check_failed", error=str(e))
+
+        # Bybit/WARP health + equity
+        bybit = self.mcp._get_bybit()
+        try:
+            wallet = await bybit.get_wallet_balance()
+            if not wallet.get("error"):
+                WARP_CONNECTED.set(1)
+                equity = wallet.get("equity", wallet.get("balance", 0))
+                PORTFOLIO_EQUITY_USD.set(float(equity))
+            else:
+                WARP_CONNECTED.set(0)
+        except Exception as e:
+            WARP_CONNECTED.set(0)
+            logger.warning("metrics_bybit_check_failed", error=str(e))
+
+        # Positions
+        try:
+            positions = await bybit.get_positions()
+            if not isinstance(positions, dict) or not positions.get("error"):
+                OPEN_POSITIONS.set(len(positions))
+                unrealized = sum(float(p.get("unrealized_pnl", 0)) for p in positions)
+                UNREALIZED_PNL_USD.set(unrealized)
+        except Exception as e:
+            logger.warning("metrics_positions_check_failed", error=str(e))
+
+        from src.metrics.crypto_metrics import JOB_LAST_RUN, JOB_DURATION
+        JOB_LAST_RUN.labels(job_id="metrics_sync").set(time.time())
+        JOB_DURATION.labels(job_id="metrics_sync").observe(time.time() - start)
 
     async def shutdown(self):
         """Graceful shutdown."""

@@ -32,6 +32,39 @@ CORRELATION_TIERS = {
 
 MAX_LEVERAGE_BY_TIER = {"tier1": 10, "tier2": 5, "tier3": 3}
 
+REGIME_RISK_MAPPING = {
+    "FULL_TREND_ALIGNMENT": {
+        "min_confidence": 50.0,
+        "size_multiplier": 1.0,
+        "stop_loss_atr_mult": 1.5
+    },
+    "MACRO_BULL_MICRO_PULLBACK": {
+        "min_confidence": 60.0,
+        "size_multiplier": 0.8,
+        "stop_loss_atr_mult": 2.0
+    },
+    "MACRO_BEAR_MICRO_PULLBACK": {
+        "min_confidence": 60.0,
+        "size_multiplier": 0.8,
+        "stop_loss_atr_mult": 2.0
+    },
+    "MICRO_BREAKOUT_NO_MACRO": {
+        "min_confidence": 75.0,
+        "size_multiplier": 0.5,
+        "stop_loss_atr_mult": 1.0
+    },
+    "PURE_DEAD_CHOP": {
+        "min_confidence": 90.0,
+        "size_multiplier": 0.0,
+        "stop_loss_atr_mult": 1.0
+    },
+    "MEAN_REVERSION": {
+        "min_confidence": 65.0,
+        "size_multiplier": 0.8,
+        "stop_loss_atr_mult": 1.5
+    }
+}
+
 
 def _get_tier(symbol: str) -> str:
     for tier_name, tier in CORRELATION_TIERS.items():
@@ -355,13 +388,34 @@ class CryptoRiskManager:
         if wallet_balance <= 0:
             return self._reject("Wallet balance is zero")
 
-        # Regime adjustment
+        # Regime adjustment (Contextual Regime Engine)
         size_multiplier = 1.0
         if regime:
-            size_multiplier = regime.get("size_multiplier", 1.0)
             regime_state = regime.get("state", "UNKNOWN")
-            if regime_state == "CHOP" and confidence < 75:
-                return self._reject(f"CHOP regime requires confidence >= 75 (got {confidence})")
+            
+            # Apply contextual mapping if available
+            mapping = REGIME_RISK_MAPPING.get(regime_state)
+            if mapping:
+                req_conf = mapping["min_confidence"]
+                if profile_config:
+                    # Adjust regime strictness offset relative to the profile's baseline (60 is default)
+                    req_conf = max(10, profile_config.min_confidence + (req_conf - 60.0))
+
+                if confidence < req_conf:
+                    return self._reject(f"Regime {regime_state} requires confidence >= {req_conf} (got {confidence})")
+                
+                size_multiplier = mapping["size_multiplier"]
+                # Override stop-loss multiplier if profile hasn't strictly set it
+                if not profile_config:
+                    sl_mult = mapping["stop_loss_atr_mult"]
+                
+                if size_multiplier <= 0:
+                    return self._reject(f"Regime {regime_state} enforces a 0x size multiplier (Do not trade)")
+            else:
+                # Fallback for unknown regimes
+                if regime_state == "CHOP" and confidence < 75:
+                    return self._reject(f"CHOP regime requires confidence >= 75 (got {confidence})")
+                size_multiplier = regime.get("size_multiplier", 1.0)
 
         # ATR-based stop distance
         stop_loss = signal.get("stop_loss_price")

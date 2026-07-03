@@ -18,6 +18,8 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 
+import src.patch_websocket  # noqa: F401 - Must be imported first to apply patches
+
 import redis.asyncio as redis
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.memory import MemoryJobStore
@@ -72,6 +74,7 @@ class CryptoKarsaApp:
         from src.risk.profile_manager import RiskProfileManager
         from src.advisory.crypto_universe import UniverseEngine
         self.profile_manager = RiskProfileManager(self.redis_client)
+        await self.profile_manager.ensure_default()
         self.orchestrator.profile_manager = self.profile_manager
         bybit = self.mcp._get_bybit()
         self.universe_engine = UniverseEngine(bybit, self.redis_client, self.profile_manager)
@@ -161,9 +164,9 @@ class CryptoKarsaApp:
 
         # Core crypto (24/7)
         s.add_job(self._job_scan_crypto, "cron", minute="*/15",
-                  id="scan_crypto", name="Crypto Market Scan (24/7)", replace_existing=True, misfire_grace_time=600)
+                  id="scan_crypto", name="Crypto Market Scan (24/7)", replace_existing=True, misfire_grace_time=600, max_instances=1, coalesce=True)
         s.add_job(self._job_refresh_universe, "cron", minute="*/15",
-                  id="refresh_universe", name="Crypto Universe Refresh (every 15m)", replace_existing=True, misfire_grace_time=600)
+                  id="refresh_universe", name="Crypto Universe Refresh (every 15m)", replace_existing=True, misfire_grace_time=600, max_instances=1, coalesce=True)
         s.add_job(self._job_monitor_crypto_positions, "cron", minute="*/15",
                   id="crypto_monitor", name="Crypto Position Monitor", replace_existing=True, misfire_grace_time=120)
         s.add_job(self._job_sync_crypto_funding, "cron", hour="0,8,16", minute=5,
@@ -213,37 +216,46 @@ class CryptoKarsaApp:
     async def _job_metrics_sync(self):
         """Polls health checks and balances to update Grafana metrics."""
         start = time.time()
+        from src.metrics.crypto_metrics import (
+            PORTFOLIO_EQUITY_USD, REDIS_CONNECTED, WARP_CONNECTED,
+            OPEN_POSITIONS, UNREALIZED_PNL_USD
+        )
+        # ponytail: each metric section isolated — one failure shouldn't kill others
+
+        # Redis health
         try:
-            from src.metrics.crypto_metrics import (
-                PORTFOLIO_EQUITY_USD, REDIS_CONNECTED, WARP_CONNECTED, 
-                OPEN_POSITIONS, UNREALIZED_PNL_USD
-            )
-            # Update Redis Health
             redis_ok = await self.cache.ping() if self.cache else False
             REDIS_CONNECTED.set(1 if redis_ok else 0)
+        except Exception as e:
+            REDIS_CONNECTED.set(0)
+            logger.warning("metrics_redis_check_failed", error=str(e))
 
-            bybit = self.mcp._get_bybit()
-            # We assume WARP is OK if we can hit Bybit successfully
+        # Bybit/WARP health + equity
+        bybit = self.mcp._get_bybit()
+        try:
             wallet = await bybit.get_wallet_balance()
             if not wallet.get("error"):
                 WARP_CONNECTED.set(1)
                 equity = wallet.get("equity", wallet.get("balance", 0))
                 PORTFOLIO_EQUITY_USD.set(float(equity))
             else:
-                if "SOCKS" in wallet.get("error", "") or "unreachable" in wallet.get("error", ""):
-                    WARP_CONNECTED.set(0)
+                WARP_CONNECTED.set(0)
+        except Exception as e:
+            WARP_CONNECTED.set(0)
+            logger.warning("metrics_bybit_check_failed", error=str(e))
 
+        # Positions
+        try:
             positions = await bybit.get_positions()
             if not isinstance(positions, dict) or not positions.get("error"):
                 OPEN_POSITIONS.set(len(positions))
                 unrealized = sum(float(p.get("unrealized_pnl", 0)) for p in positions)
                 UNREALIZED_PNL_USD.set(unrealized)
-
-            JOB_LAST_RUN.labels(job_id="metrics_sync").set(time.time())
-            JOB_DURATION.labels(job_id="metrics_sync").observe(time.time() - start)
         except Exception as e:
-            JOB_ERRORS.labels(job_id="metrics_sync").inc()
-            logger.error("metrics_sync_failed", error=str(e))
+            logger.warning("metrics_positions_check_failed", error=str(e))
+
+        JOB_LAST_RUN.labels(job_id="metrics_sync").set(time.time())
+        JOB_DURATION.labels(job_id="metrics_sync").observe(time.time() - start)
 
     async def _job_refresh_universe(self):
         start = time.time()
