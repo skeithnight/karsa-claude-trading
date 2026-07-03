@@ -99,6 +99,18 @@ class CryptoKarsaApp:
         # Register Prometheus metrics (must import at startup so prometheus_client sees them)
         import src.metrics.crypto_metrics  # noqa: F401
 
+        # Autonomous Session resurrection — check for interrupted session
+        try:
+            is_active = await self.redis_client.get("karsa:auto:state:active")
+            if is_active in ("1", b"1"):
+                logger.critical("resurrecting_autonomous_session")
+                from src.agents.autonomous_session import AutonomousSessionManager
+                asm = AutonomousSessionManager(self.orchestrator, self.redis_client, bybit)
+                chat_id = int(settings.TELEGRAM_CHAT_ID) if settings.TELEGRAM_CHAT_ID else 0
+                asyncio.create_task(asm._run_loop(chat_id))
+        except Exception as e:
+            logger.warning("asm_resurrection_failed", error=str(e))
+
         logger.info("orchestrator_ready")
 
         jobstores = {"default": MemoryJobStore()}

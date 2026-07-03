@@ -396,3 +396,39 @@ def record_sl_execution(ticker: str, success: bool):
     """Record stop-loss execution outcome. Call from sl_engine.py."""
     status = "success" if success else "failed"
     SL_EXECUTION_TOTAL.labels(ticker=ticker, status=status).inc()
+
+
+# ============================================================
+# AUTONOMOUS SESSION METRICS
+# ============================================================
+
+AUTO_SESSION_ACTIVE = Gauge(
+    "karsa_auto_session_active",
+    "1 if autonomous session is running, 0 if stopped",
+)
+
+AUTO_SESSION_CASH_USD = Gauge(
+    "karsa_auto_session_available_cash_usd",
+    "Available cash (excluding floating PnL)",
+)
+
+AUTO_SESSION_REALIZED_PNL = Gauge(
+    "karsa_auto_session_realized_pnl_usd",
+    "Realized PnL during autonomous session",
+)
+
+AUTO_SESSION_UNREALIZED_PNL = Gauge(
+    "karsa_auto_session_unrealized_pnl_usd",
+    "Unrealized MTM PnL during autonomous session",
+)
+
+AUTO_SESSION_TRADES_TOTAL = Counter(
+    "karsa_auto_session_trades_total",
+    "Total trades taken during autonomous session",
+    ["result"],
+)
+
+AUTO_SESSION_REGIME_PAUSES = Counter(
+    "karsa_auto_session_regime_pauses_total",
+    "Times loop paused due to bad regime",
+)

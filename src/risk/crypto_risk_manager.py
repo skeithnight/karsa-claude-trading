@@ -331,6 +331,9 @@ class CryptoRiskManager:
         max_concurrent = self.max_concurrent
         max_risk_pct = self.max_risk_pct
         max_position_pct = self.max_position_pct
+        # ASM override: allow full balance for position sizing
+        if signal.get("_override_max_position_pct"):
+            max_position_pct = signal["_override_max_position_pct"]
         sl_mult = 1.5
         tp_mult = 3.0
         if profile_config:

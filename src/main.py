@@ -915,6 +915,10 @@ class KarsaApp:
                     alerts.append(f"• {ticker}: {liq['reason']}")
 
             if alerts:
+                # Check if alerts are muted
+                alerts_on = await self.redis_client.get("karsa:alerts_enabled")
+                if alerts_on in ("0", b"0"):
+                    return
                 try:
                     import httpx
                     token = settings.CRYPTO_TELEGRAM_TOKEN or settings.TELEGRAM_TOKEN

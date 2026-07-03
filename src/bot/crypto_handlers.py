@@ -56,7 +56,8 @@ def build_main_keyboard():
         [InlineKeyboardButton("💼 Portfolio", callback_data="cmd_portfolio"),
          InlineKeyboardButton("📈 Performance", callback_data="cmd_performance")],
         [InlineKeyboardButton("📡 Universe Detail", callback_data="universe_detail"),
-         InlineKeyboardButton("🎛️ Control", callback_data="cmd_control")]
+         InlineKeyboardButton("🎛️ Control", callback_data="cmd_control")],
+        [InlineKeyboardButton("🤖 ASM", callback_data="cmd_auto")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -319,9 +320,17 @@ async def control_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         halt_active, cooldown = False, None
 
+    # Alerts state
+    try:
+        alerts_raw = await r.get("karsa:alerts_enabled")
+        alerts_on = alerts_raw in ("1", b"1") if alerts_raw is not None else True
+    except Exception:
+        alerts_on = True
+
     state_block = (
         f"Global Halt: {'🚨 ACTIVE' if halt_active else '🟢 INACTIVE'}\n"
-        f"Cooldown: {'⏳ ACTIVE' if cooldown else '🟢 INACTIVE'}"
+        f"Cooldown: {'⏳ ACTIVE' if cooldown else '🟢 INACTIVE'}\n"
+        f"Trade Alerts: {'🔔 ON' if alerts_on else '🔕 MUTED'}"
     )
 
     # Risk profile block
@@ -363,6 +372,10 @@ async def control_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("🔥 Aggressive", callback_data="mode_aggressive"),
         ],
         [InlineKeyboardButton("🔄 Refresh Universe", callback_data="universe_refresh")],
+        [InlineKeyboardButton(
+            "🔕 Mute Alerts" if alerts_on else "🔔 Unmute Alerts",
+            callback_data="toggle_alerts"
+        )],
         [InlineKeyboardButton("🚨 EXECUTE KILL (Close All)", callback_data="crypto_kill")],
         [InlineKeyboardButton("🧹 Sell All (15m break)", callback_data="crypto_sellall")],
         [InlineKeyboardButton("▶️ Resume Operations", callback_data="crypto_resume")],
@@ -645,6 +658,97 @@ async def _show_universe_detail(update: Update, context: ContextTypes.DEFAULT_TY
                  reply_markup=InlineKeyboardMarkup(keyboard))
 
 
+# --- Autonomous Session Manager (ASM) View ---
+
+async def _asm_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show ASM status with Start/Stop/Refresh buttons."""
+    r = _get_redis(context)
+    bybit = _get_bybit(context)
+    orch = context.bot_data.get("orchestrator")
+
+    from src.agents.autonomous_session import AutonomousSessionManager, REDIS_ACTIVE
+    asm = AutonomousSessionManager(orch, r, bybit)
+
+    is_active = await asm.is_active()
+    status_text = await asm.get_status()
+
+    if is_active:
+        keyboard = [
+            [InlineKeyboardButton("⏹ Stop", callback_data="auto_stop"),
+             InlineKeyboardButton("🔄 Refresh", callback_data="auto_refresh")],
+            [InlineKeyboardButton("🏠 Dashboard", callback_data="cmd_dashboard")]
+        ]
+    else:
+        keyboard = [
+            [InlineKeyboardButton("▶️ 10%", callback_data="auto_start_10"),
+             InlineKeyboardButton("▶️ 30%", callback_data="auto_start_30"),
+             InlineKeyboardButton("▶️ 50%", callback_data="auto_start_50")],
+            [InlineKeyboardButton("▶️ 70%", callback_data="auto_start_70"),
+             InlineKeyboardButton("🔥 100%", callback_data="auto_start_100")],
+            [InlineKeyboardButton("🏠 Dashboard", callback_data="cmd_dashboard")]
+        ]
+
+    await _reply(update, status_text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def _auto_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start autonomous session with chosen risk level."""
+    r = _get_redis(context)
+    bybit = _get_bybit(context)
+    orch = context.bot_data.get("orchestrator")
+    chat_id = update.effective_chat.id
+    data = update.callback_query.data
+
+    # Parse risk from callback: "auto_start_30" -> 30.0
+    try:
+        risk_pct = float(data.split("_")[-1])
+    except (ValueError, IndexError):
+        risk_pct = 10.0
+
+    from src.agents.autonomous_session import AutonomousSessionManager
+    asm = AutonomousSessionManager(orch, r, bybit)
+    result = await asm.start(chat_id, {"risk_pct": risk_pct, "max_pos": 3, "interval": 15})
+
+    keyboard = [
+        [InlineKeyboardButton("⏹ Stop", callback_data="auto_stop"),
+         InlineKeyboardButton("🔄 Refresh", callback_data="auto_refresh")],
+        [InlineKeyboardButton("🏠 Dashboard", callback_data="cmd_dashboard")]
+    ]
+    await _reply(update, result, reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def _auto_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Stop autonomous session and show MTM report."""
+    r = _get_redis(context)
+    bybit = _get_bybit(context)
+    orch = context.bot_data.get("orchestrator")
+
+    from src.agents.autonomous_session import AutonomousSessionManager
+    asm = AutonomousSessionManager(orch, r, bybit)
+    result = await asm.stop()
+
+    await _reply(update, result, reply_markup=build_main_keyboard())
+
+
+async def _auto_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Force refresh ASM status (bypass cooldown)."""
+    await _asm_view(update, context)
+
+
+async def _toggle_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Toggle trade alert notifications on/off."""
+    r = _get_redis(context)
+    current = await r.get("karsa:alerts_enabled")
+    is_on = current in ("1", b"1") if current is not None else True
+    await r.set("karsa:alerts_enabled", "0" if is_on else "1")
+    status = "🔕 Alerts Muted" if is_on else "🔔 Alerts Enabled"
+    await update.callback_query.edit_message_text(
+        f"<b>{status}</b>",
+        parse_mode="HTML",
+        reply_markup=build_main_keyboard(),
+    )
+
+
 # --- Global Callback Router ---
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -658,6 +762,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "cmd_portfolio": await portfolio_cmd(update, context)
     elif data == "cmd_performance": await performance_cmd(update, context)
     elif data == "cmd_control": await control_cmd(update, context)
+    elif data == "cmd_auto": await _asm_view(update, context)
+
+    # Autonomous Session Manager
+    elif data.startswith("auto_start_"): await _auto_start(update, context)
+    elif data == "auto_stop": await _auto_stop(update, context)
+    elif data == "auto_refresh": await _auto_refresh(update, context)
+    elif data == "toggle_alerts": await _toggle_alerts(update, context)
 
     # Operations
     elif data == "crypto_kill": await _execute_kill(update, context)
