@@ -149,6 +149,26 @@ POSITION_PNL = Gauge(
     "Unrealized PnL per open position",
     ["ticker", "side"])
 
+POSITION_ENTRY_PRICE = Gauge(
+    "karsa_position_entry_price_usd",
+    "Entry price per open position",
+    ["ticker"])
+
+POSITION_MARK_PRICE = Gauge(
+    "karsa_position_mark_price_usd",
+    "Current mark price per open position",
+    ["ticker"])
+
+POSITION_SIZE = Gauge(
+    "karsa_position_size_qty",
+    "Position size in base currency",
+    ["ticker"])
+
+POSITION_LEVERAGE = Gauge(
+    "karsa_position_leverage",
+    "Position leverage",
+    ["ticker"])
+
 # ponytail: no "level" label — alert threshold handles danger/warning
 LIQ_DISTANCE_PCT = Gauge(
     "karsa_liquidation_distance_pct",

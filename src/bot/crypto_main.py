@@ -97,6 +97,14 @@ app = FastAPI(title="Karsa Crypto Bot", lifespan=lifespan)
 async def health_check():
     return {"status": "healthy", "service": "crypto-bot"}
 
+@app.get("/metrics")
+async def metrics():
+    """Expose Prometheus metrics for Grafana dashboard."""
+    import src.metrics.crypto_metrics  # ensure registered
+    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+    from fastapi.responses import Response
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
 @app.post("/alert")
 async def alertmanager_webhook(payload: dict):
     """Receive Alertmanager webhook and forward to Telegram."""

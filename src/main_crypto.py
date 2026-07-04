@@ -524,7 +524,7 @@ class CryptoKarsaApp:
             if not positions:
                 JOB_LAST_RUN.labels(job_id="kill_switch").set(time.time())
                 return
-            total_pnl = sum(float(p.get("unrealisedPnl", 0) or 0) for p in positions)
+            total_pnl = sum(float(p.get("unrealized_pnl", 0) or 0) for p in positions)
             total_equity = float(await bybit.get_wallet_balance("USDT") or 0)
             if total_equity > 0 and total_pnl < 0:
                 loss_pct = abs(total_pnl) / total_equity * 100

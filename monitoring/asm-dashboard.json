@@ -1,0 +1,585 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "karsa-asm-ops",
+    "title": "Karsa ASM & Trading Operations",
+    "tags": [
+      "crypto",
+      "asm",
+      "trading",
+      "karsa"
+    ],
+    "timezone": "browser",
+    "schemaVersion": 38,
+    "version": 1,
+    "refresh": "10s",
+    "time": {
+      "from": "now-24h",
+      "to": "now"
+    },
+    "panels": [
+      {
+        "id": 1,
+        "type": "row",
+        "title": "Autonomous Session Manager (ASM) & Safety",
+        "gridPos": {
+          "h": 1,
+          "w": 24,
+          "x": 0,
+          "y": 0
+        }
+      },
+      {
+        "id": 2,
+        "type": "stat",
+        "title": "ASM Active State",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "targets": [
+          {
+            "expr": "karsa_auto_session_active{job=\"karsa-crypto-bot\"}",
+            "legendFormat": "ASM",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              {
+                "options": {
+                  "0": {
+                    "text": "OFFLINE",
+                    "color": "red"
+                  }
+                },
+                "type": "value"
+              },
+              {
+                "options": {
+                  "1": {
+                    "text": "ONLINE",
+                    "color": "green"
+                  }
+                },
+                "type": "value"
+              }
+            ]
+          }
+        },
+        "gridPos": {
+          "h": 4,
+          "w": 6,
+          "x": 0,
+          "y": 1
+        }
+      },
+      {
+        "id": 3,
+        "type": "stat",
+        "title": "Available Cash",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "targets": [
+          {
+            "expr": "karsa_auto_session_available_cash_usd{job=\"karsa-crypto-bot\"}",
+            "legendFormat": "Cash"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "decimals": 2
+          }
+        },
+        "gridPos": {
+          "h": 4,
+          "w": 6,
+          "x": 6,
+          "y": 1
+        }
+      },
+      {
+        "id": 4,
+        "type": "stat",
+        "title": "Realized PnL (Session)",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "targets": [
+          {
+            "expr": "karsa_auto_session_realized_pnl_usd{job=\"karsa-crypto-bot\"}",
+            "legendFormat": "Realized"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "decimals": 2,
+            "thresholds": {
+              "steps": [
+                {
+                  "color": "red",
+                  "value": null
+                },
+                {
+                  "color": "green",
+                  "value": 0
+                }
+              ]
+            }
+          }
+        },
+        "gridPos": {
+          "h": 4,
+          "w": 6,
+          "x": 12,
+          "y": 1
+        }
+      },
+      {
+        "id": 5,
+        "type": "stat",
+        "title": "Kill Switch / Circuit Breaker",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "targets": [
+          {
+            "expr": "karsa_kill_switch_active{job=\"karsa-crypto-bot\"}",
+            "legendFormat": "Kill"
+          },
+          {
+            "expr": "karsa_circuit_breaker_active{job=\"karsa-crypto-bot\"}",
+            "legendFormat": "Breaker"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              {
+                "options": {
+                  "0": {
+                    "text": "SAFE",
+                    "color": "green"
+                  }
+                },
+                "type": "value"
+              },
+              {
+                "options": {
+                  "1": {
+                    "text": "TRIGGERED",
+                    "color": "red"
+                  }
+                },
+                "type": "value"
+              }
+            ]
+          }
+        },
+        "gridPos": {
+          "h": 4,
+          "w": 6,
+          "x": 18,
+          "y": 1
+        }
+      },
+      {
+        "id": 6,
+        "type": "row",
+        "title": "Portfolio Performance & Market Regime",
+        "gridPos": {
+          "h": 1,
+          "w": 24,
+          "x": 0,
+          "y": 5
+        }
+      },
+      {
+        "id": 7,
+        "type": "timeseries",
+        "title": "Portfolio Equity",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "targets": [
+          {
+            "expr": "karsa_portfolio_equity_usd",
+            "legendFormat": "Equity"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "custom": {
+              "fillOpacity": 20,
+              "lineWidth": 2
+            }
+          }
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 6
+        }
+      },
+      {
+        "id": 8,
+        "type": "state-timeline",
+        "title": "Market Regime",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "targets": [
+          {
+            "expr": "karsa_crypto_regime",
+            "legendFormat": "Regime"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              {
+                "options": {
+                  "0": {
+                    "text": "CHOP"
+                  }
+                },
+                "type": "value"
+              },
+              {
+                "options": {
+                  "1": {
+                    "text": "MEAN REVERT"
+                  }
+                },
+                "type": "value"
+              },
+              {
+                "options": {
+                  "2": {
+                    "text": "BEAR"
+                  }
+                },
+                "type": "value"
+              },
+              {
+                "options": {
+                  "3": {
+                    "text": "BULL"
+                  }
+                },
+                "type": "value"
+              }
+            ],
+            "color": {
+              "mode": "discrete"
+            }
+          }
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 6
+        }
+      },
+      {
+        "id": 9,
+        "type": "row",
+        "title": "Execution Health & Risk Rejections",
+        "gridPos": {
+          "h": 1,
+          "w": 24,
+          "x": 0,
+          "y": 14
+        }
+      },
+      {
+        "id": 10,
+        "type": "stat",
+        "title": "Open Positions",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "targets": [
+          {
+            "expr": "karsa_open_positions_count",
+            "legendFormat": "Positions"
+          }
+        ],
+        "gridPos": {
+          "h": 4,
+          "w": 4,
+          "x": 0,
+          "y": 15
+        }
+      },
+      {
+        "id": 11,
+        "type": "stat",
+        "title": "WS Last Message (s ago)",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "targets": [
+          {
+            "expr": "time() - karsa_ws_last_message_timestamp_seconds",
+            "legendFormat": "Lag"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s",
+            "thresholds": {
+              "steps": [
+                {
+                  "color": "green",
+                  "value": null
+                },
+                {
+                  "color": "red",
+                  "value": 10
+                }
+              ]
+            }
+          }
+        },
+        "gridPos": {
+          "h": 4,
+          "w": 4,
+          "x": 4,
+          "y": 15
+        }
+      },
+      {
+        "id": 12,
+        "type": "timeseries",
+        "title": "Order Fill Latency",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(karsa_order_fill_latency_seconds_bucket[5m]))",
+            "legendFormat": "95th %ile"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s"
+          }
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 8,
+          "y": 15
+        }
+      },
+      {
+        "id": 13,
+        "type": "barchart",
+        "title": "Signal Rejections (24h)",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "targets": [
+          {
+            "expr": "sum by (reason) (increase(karsa_signal_rejections_total[24h]))",
+            "legendFormat": "{{reason}}"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 16,
+          "y": 15
+        }
+      },
+      {
+        "id": 14,
+        "type": "table",
+        "title": "Open Positions",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "targets": [
+          {
+            "expr": "karsa_position_unrealized_pnl_usd",
+            "legendFormat": "{{ticker}}",
+            "format": "table",
+            "instant": true,
+            "refId": "A"
+          },
+          {
+            "expr": "karsa_position_entry_price_usd",
+            "legendFormat": "{{ticker}}",
+            "format": "table",
+            "instant": true,
+            "refId": "B"
+          },
+          {
+            "expr": "karsa_position_mark_price_usd",
+            "legendFormat": "{{ticker}}",
+            "format": "table",
+            "instant": true,
+            "refId": "C"
+          },
+          {
+            "expr": "karsa_position_size_qty",
+            "legendFormat": "{{ticker}}",
+            "format": "table",
+            "instant": true,
+            "refId": "D"
+          },
+          {
+            "expr": "karsa_position_leverage",
+            "legendFormat": "{{ticker}}",
+            "format": "table",
+            "instant": true,
+            "refId": "E"
+          }
+        ],
+        "transformations": [
+          {
+            "id": "seriesToColumns",
+            "options": {
+              "byField": "ticker"
+            }
+          },
+          {
+            "id": "organize",
+            "options": {
+              "excludeByName": {
+                "Time": true,
+                "Time A": true,
+                "Time B": true,
+                "Time C": true,
+                "Time D": true,
+                "Time E": true,
+                "Side": true
+              },
+              "renameByName": {
+                "ticker": "Token",
+                "Value #A": "uPnL ($)",
+                "Value #B": "Entry Price",
+                "Value #C": "Mark Price",
+                "Value #D": "Size (Qty)",
+                "Value #E": "Leverage",
+                "side": "Side"
+              }
+            }
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {},
+          "overrides": [
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "uPnL ($)"
+              },
+              "properties": [
+                {
+                  "id": "unit",
+                  "value": "currencyUSD"
+                },
+                {
+                  "id": "decimals",
+                  "value": 4
+                },
+                {
+                  "id": "thresholds",
+                  "value": {
+                    "steps": [
+                      {
+                        "color": "red",
+                        "value": null
+                      },
+                      {
+                        "color": "green",
+                        "value": 0
+                      }
+                    ]
+                  }
+                },
+                {
+                  "id": "custom.cellOptions",
+                  "value": {
+                    "type": "color-background",
+                    "mode": "basic"
+                  }
+                }
+              ]
+            },
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "Entry Price"
+              },
+              "properties": [
+                {
+                  "id": "unit",
+                  "value": "currencyUSD"
+                },
+                {
+                  "id": "decimals",
+                  "value": 4
+                }
+              ]
+            },
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "Mark Price"
+              },
+              "properties": [
+                {
+                  "id": "unit",
+                  "value": "currencyUSD"
+                },
+                {
+                  "id": "decimals",
+                  "value": 4
+                }
+              ]
+            },
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "Leverage"
+              },
+              "properties": [
+                {
+                  "id": "unit",
+                  "value": "short"
+                }
+              ]
+            }
+          ]
+        },
+        "gridPos": {
+          "h": 6,
+          "w": 12,
+          "x": 0,
+          "y": 23
+        }
+      }
+    ]
+  }
+}

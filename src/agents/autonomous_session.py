@@ -88,6 +88,19 @@ class AutonomousSessionManager:
         # Persist session to DB
         await self._save_session_start(session_config, starting_equity)
 
+        # Update Prometheus — ASM started
+        try:
+            from src.metrics.crypto_metrics import (
+                AUTO_SESSION_ACTIVE, AUTO_SESSION_CASH_USD,
+                AUTO_SESSION_REALIZED_PNL, AUTO_SESSION_UNREALIZED_PNL,
+            )
+            AUTO_SESSION_ACTIVE.set(1)
+            AUTO_SESSION_CASH_USD.set(starting_equity)
+            AUTO_SESSION_REALIZED_PNL.set(0)
+            AUTO_SESSION_UNREALIZED_PNL.set(0)
+        except Exception:
+            pass
+
         logger.info("asm_started", config=session_config, equity=starting_equity)
 
         # Spawn the loop
@@ -109,6 +122,13 @@ class AutonomousSessionManager:
 
         await self.redis.set(REDIS_ACTIVE, "0")
         logger.info("asm_stopping")
+
+        # Update Prometheus — ASM stopped
+        try:
+            from src.metrics.crypto_metrics import AUTO_SESSION_ACTIVE
+            AUTO_SESSION_ACTIVE.set(0)
+        except Exception:
+            pass
 
         # Generate MTM report
         report = await self._generate_final_report()
@@ -152,7 +172,7 @@ class AutonomousSessionManager:
             if size <= 0:
                 continue
             open_count += 1
-            pnl = float(p.get("unrealisedPnl", 0) or 0)
+            pnl = float(p.get("unrealized_pnl", 0) or 0)
             unrealized_pnl += pnl
             emoji = "🟢" if pnl >= 0 else "🔴"
             side = "L" if p.get("side") == "Buy" else "S"
@@ -226,6 +246,39 @@ class AutonomousSessionManager:
 
         while await self.is_active():
             try:
+                # Update ASM metrics each iteration
+                try:
+                    from src.metrics.crypto_metrics import (
+                        AUTO_SESSION_CASH_USD, AUTO_SESSION_UNREALIZED_PNL,
+                    )
+                    wallet = await self.bybit.get_wallet_balance()
+                    cash = float(wallet.get("balance", 0))
+                    AUTO_SESSION_CASH_USD.set(cash)
+                    # Unrealized PnL from open positions
+                    positions = await self.bybit.get_positions()
+                    unrl = sum(float(p.get("unrealized_pnl", 0)) for p in positions)
+                    AUTO_SESSION_UNREALIZED_PNL.set(unrl)
+                    # Per-position metrics for dashboard table
+                    from src.metrics.crypto_metrics import (
+                        POSITION_PNL, POSITION_ENTRY_PRICE, POSITION_MARK_PRICE,
+                        POSITION_SIZE, POSITION_LEVERAGE, OPEN_POSITIONS,
+                    )
+                    OPEN_POSITIONS.set(len(positions))
+                    for pos in positions:
+                        t = pos.get("ticker", "?")
+                        POSITION_PNL.labels(ticker=t, side=pos.get("side","?")).set(
+                            float(pos.get("unrealized_pnl", 0)))
+                        POSITION_ENTRY_PRICE.labels(ticker=t).set(
+                            float(pos.get("entry_price", 0)))
+                        POSITION_MARK_PRICE.labels(ticker=t).set(
+                            float(pos.get("current_price", 0)))
+                        POSITION_SIZE.labels(ticker=t).set(
+                            float(pos.get("size", 0)))
+                        POSITION_LEVERAGE.labels(ticker=t).set(
+                            float(pos.get("leverage", 1)))
+                except Exception:
+                    pass
+
                 # 1. Regime gate
                 should_pause, regime_msg = await self._check_regime()
                 if should_pause:
@@ -403,7 +456,7 @@ class AutonomousSessionManager:
             size = float(p.get("size", 0) or 0)
             if size > 0:
                 open_count += 1
-                unrealized_pnl += float(p.get("unrealisedPnl", 0) or 0)
+                unrealized_pnl += float(p.get("unrealized_pnl", 0) or 0)
 
         total_pnl = realized_pnl + unrealized_pnl
         win_rate = (wins / total_trades * 100) if total_trades > 0 else 0.0

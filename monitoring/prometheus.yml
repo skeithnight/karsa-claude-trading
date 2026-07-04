@@ -20,3 +20,8 @@ scrape_configs:
     static_configs:
       - targets: ['karsa-crypto-orchestrator:8001']
     metrics_path: '/metrics'
+
+  - job_name: 'karsa-crypto-bot'
+    static_configs:
+      - targets: ['karsa-crypto-bot:8444']
+    metrics_path: '/metrics'

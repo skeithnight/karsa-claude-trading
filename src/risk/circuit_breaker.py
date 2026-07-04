@@ -189,7 +189,7 @@ class CircuitBreakerManager:
                     continue
 
                 losing = sum(1 for p in tier_pos_list
-                             if float(p.get("unrealisedPnl", 0)) < 0)
+                             if float(p.get("unrealized_pnl", 0)) < 0)
                 loss_ratio = losing / len(tier_pos_list)
 
                 if loss_ratio >= CORRELATION_CASCADE_PCT:
