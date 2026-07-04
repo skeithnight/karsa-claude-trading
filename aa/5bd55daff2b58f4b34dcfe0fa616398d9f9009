@@ -1,0 +1,25 @@
+AGENTS.md
+  c8300b1d553d7df6 41-48
+CLAUDE.md
+  c8300b1d553d7df6 141,145,147,268-303
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "aa5bd55daff2b58f4b34dcfe0fa616398d9f9009",
+  "prompts": {
+    "c8300b1d553d7df6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5a8edc20-c8bf-4274-9027-7d4475f21f43",
+        "model": "mimo-v2.5"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 47,
+      "total_deletions": 3,
+      "accepted_lines": 47,
+      "overriden_lines": 0
+    }
+  }
+}
