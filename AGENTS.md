@@ -38,6 +38,14 @@
 **Deterministic pre-filter**: Rejects RSI > 85 for LONG, RSI < 15 for SHORT, funding rate > 0.1% for LONG, < -0.1% for SHORT. Only calls LLM for signals that pass.
 **File**: `src/agents/crypto_auditor.py`
 
+## Autonomous Session Manager (`asm`)
+**Role**: Fully autonomous crypto trading loop — scans, evaluates, executes without human intervention.
+**Control**: Telegram `/start` to begin, `/stop` to end with MTM report.
+**Loop**: Regime check → scan 30 coins → filter by confidence (aggressive=35) → risk gates → SOR → execute → notify.
+**Safety**: Kill switch, daily loss limit (3%), correlation tier limits, cooldown after sell-all, max concurrent positions.
+**Metrics**: Prometheus on port 8444 — active state, cash, PnL (realized + unrealized), per-position metrics, signal rejections.
+**File**: `src/agents/autonomous_session.py`
+
 ## Risk Module (not agents — deterministic modules)
 
 ### Emergency Stop (`src/risk/emergency.py`)

@@ -138,13 +138,13 @@ print(f'Blackout tickers: {universe if universe else \"None\"}')
 
 ## Architecture
 
-**Three main containers** share the same Python package (`src/`):
+**Four main containers** share the same Python package (`src/`):
 
 1. **karsa-orchestrator** (`src/main.py`) — APScheduler runs 23+ cron jobs (IDX pre-open/morning/afternoon/pre-close scans, US+ETF scans, 2 EOD reviews, pre-market battle plan, paper position updates, kill switch, cache flush, crypto scan 24/7, crypto position monitor, crypto funding sync, crypto PnL snapshot, crypto position reconciliation, trailing stop updates, partial/time-based exits, circuit breaker checks, funding limit enforcement, liquidity checks, OMS cleanup). Each scan job dispatches agents via `Orchestrator.scan_all_markets()` which runs IDX/US/ETF analysts in parallel (`asyncio.gather`). Crypto scans use batched prompting (5 coins/LLM call). Confidence calibration applied to all crypto signals before risk gate.
 
-2. **karsa-crypto-orchestrator** (`src/main_crypto.py`) — Dedicated crypto-only orchestrator. Runs only crypto-related APScheduler jobs (no IDX/US/ETF). Health endpoint on port 8001. Shares Redis, Postgres, and 9router with main orchestrator. `CRYPTO_ONLY_MODE=true` env var. IDX scans are gated by composite score (≤-50 skips, ≤-20 reduces sizing). Signals ≥50 confidence get validated, persisted to DB, and risk-checked. Kill switch activates emergency stop via Redis at `CRYPTO_DAILY_LOSS_LIMIT_PCT`. Health check via FastAPI on port 8000 (`/health`, `/health/scheduler`).
+2. **karsa-crypto-bot** (`src/main_crypto.py`) — Dedicated crypto-only orchestrator. Runs only crypto-related APScheduler jobs (no IDX/US/ETF). Health endpoint on port 8001. Shares Redis, Postgres, and 9router with main orchestrator. `CRYPTO_ONLY_MODE=true` env var. IDX scans are gated by composite score (≤-50 skips, ≤-20 reduces sizing). Signals ≥50 confidence get validated, persisted to DB, and risk-checked. Kill switch activates emergency stop via Redis at `CRYPTO_DAILY_LOSS_LIMIT_PCT`. Health check via FastAPI on port 8000 (`/health`, `/health/scheduler`). **ASM (Autonomous Session Manager)** runs inside this container — Telegram `/start` and `/stop` control it. ASM loop: regime check → scan crypto pairs → filter by confidence → execute through risk gates → SOR → notify. Prometheus metrics on port 8444 (`/metrics`).
 
-2. **karsa-telegram-bot** (`src/bot/main.py`) — FastAPI webhook + python-telegram-bot polling (default). Commands: `/start`, `/status`, `/scan`, `/portfolio`, `/trades`, `/add`, `/remove`, `/edit`, `/analyze`, `/audit`, `/briefing`, `/regime`, `/pnl`, `/idx`, `/stop`, `/resume`. `/idx` shows IDX Intelligence dashboard (composite score, sector rotation, breadth, flow, earnings). The bot reuses the orchestrator's `idx_intel` instance for cached intelligence data. Inline keyboard buttons provide navigation between views. Auth enforced — all commands require `TELEGRAM_CHAT_ID` to be set.
+3. **karsa-telegram-bot** (`src/bot/main.py`) — FastAPI webhook + python-telegram-bot polling (default). Commands: `/start`, `/status`, `/scan`, `/portfolio`, `/trades`, `/add`, `/remove`, `/edit`, `/analyze`, `/audit`, `/briefing`, `/regime`, `/pnl`, `/idx`, `/stop`, `/resume`. `/idx` shows IDX Intelligence dashboard (composite score, sector rotation, breadth, flow, earnings). The bot reuses the orchestrator's `idx_intel` instance for cached intelligence data. Inline keyboard buttons provide navigation between views. Auth enforced — all commands require `TELEGRAM_CHAT_ID` to be set.
 
 3. **karsa-crypto-bot** (`src/bot/crypto_main.py`) — Separate Telegram bot for crypto trading on Bybit. 15 commands: `/start`, `/status`, `/portfolio`, `/scan`, `/pnl`, `/risk`, `/kill`, `/sellall`, `/resume`, `/activity`, `/audit_agent`, `/guide`, `/regime`, `/funding`, `/trades`. Auto-execute pipeline: scan → risk gate (8 gates) → SOR → save → notify. Shares orchestrator + Redis via `bot_data`. Inline keyboard navigation on all commands. `/kill` sets Redis global halt, flattens all positions. `/sellall` flattens + 15min cooldown.
 
@@ -265,4 +265,40 @@ print(f'Blackout tickers: {universe if universe else \"None\"}')
 - `BaseAgent.run()` returns `dict` — if LLM returns JSON array, it's parsed as single object. Batch prompt in orchestrator handles this with fallback `batch_result.get("signals", [batch_result])`.
 - `sentence-transformers` not in Dockerfile — RAG memory gracefully degrades (returns empty string). Add `pip install sentence-transformers` to Dockerfile for full RAG support.
 - Universe engine config: `MAX_UNIVERSE_SIZE=40`, `UNIVERSE_TTL=30min` (buffer for 15min scheduler), aggressive profile scans 30 coins, `BATCH_SIZE=5` per LLM call, `min_volume_usd=250_000` absolute floor. Scheduler runs `_job_refresh_universe` every 15min.
+- **Correlation tiers**: Tier1 (BTC/ETH) max 2 pos 15%, Tier2 (SOL/AVAX/SUI/LINK/BNB/NEAR) max 2 pos 15%, Tier3 (DOGE/XRP/ADA/PEPE/DOT/MATIC + others) max 2 pos 10%. Relaxed from original to support small capital.
+- **Risk profile min_confidence**: conservative=70, moderate=50, aggressive=35. Aggressive profile scans 30 coins per cycle.
+
+## Monitoring
+
+### Grafana Dashboard
+- **URL**: http://localhost:3000 (admin/admin)
+- **Dashboard**: "Karsa ASM & Trading Operations" (`/d/karsa-asm-ops`)
+- **Panels**: ASM active state, available cash, realized/unrealized PnL, kill switch status, portfolio equity chart, market regime timeline, open positions table (per-position: ticker, entry/mark price, size, leverage, uPnL with color coding), WS lag, order fill latency, signal rejections
+- **Refresh**: 10s auto-refresh
+
+### Prometheus Metrics (port 8444)
+- `karsa_auto_session_active` — ASM online/offline
+- `karsa_auto_session_available_cash_usd` — available USDT balance
+- `karsa_auto_session_realized_pnl_usd` — session realized PnL
+- `karsa_auto_session_unrealized_pnl_usd` — total unrealized PnL
+- `karsa_position_unrealized_pnl_usd{ticker,side}` — per-position PnL
+- `karsa_position_entry_price_usd{ticker}` — entry price
+- `karsa_position_mark_price_usd{ticker}` — current mark price
+- `karsa_position_size_qty{ticker}` — position size in base currency
+- `karsa_position_leverage{ticker}` — leverage multiplier
+- `karsa_open_positions_count` — number of open positions
+- `karsa_signal_rejections_total{reason}` — rejection reasons
+- `karsa_kill_switch_active` / `karsa_circuit_breaker_active` — safety states
+
+### Quick Commands
+```bash
+# View live positions
+docker exec karsa-crypto-bot curl -s localhost:8444/metrics | grep -E "position_|auto_session_"
+
+# Check ASM status
+docker exec karsa-crypto-bot curl -s localhost:8444/metrics | grep auto_session_active
+
+# View rejection reasons
+docker logs karsa-crypto-bot --tail 100 2>&1 | grep signal_rejected
+```
 - `WS_LAST_MESSAGE_TIMESTAMP` initializes to `time.time()` at import (not 0) — prevents Grafana "53 years" display before first WS tick.
