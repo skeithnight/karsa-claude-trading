@@ -1,0 +1,37 @@
+src/agents/autonomous_session.py
+  c8300b1d553d7df6 91-103,126-132,175,249-281,459
+monitoring/asm-dashboard.json
+  c8300b1d553d7df6 22,24,30,32-33,77-79,103,105-106,143-145,192-194,196,202,204-205,233-235,294,296-297,299,306-308,327-329,364,366-367,391-393
+src/metrics/crypto_metrics.py
+  c8300b1d553d7df6 152-171
+src/main_crypto.py
+  c8300b1d553d7df6 527
+monitoring/prometheus.yml
+  c8300b1d553d7df6 23-27
+src/bot/crypto_main.py
+  c8300b1d553d7df6 100-107
+src/risk/crypto_risk_manager.py
+  c8300b1d553d7df6 26,29-30,585-591
+src/risk/circuit_breaker.py
+  c8300b1d553d7df6 192
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "63256f1c2b6c0ba8692515602a58c0594451684d",
+  "prompts": {
+    "c8300b1d553d7df6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5a8edc20-c8bf-4274-9027-7d4475f21f43",
+        "model": "mimo-v2.5"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 123,
+      "total_deletions": 429,
+      "accepted_lines": 142,
+      "overriden_lines": 0
+    }
+  }
+}
