@@ -1,0 +1,23 @@
+README.md
+  c8300b1d553d7df6 2-15,18-20,22,24-38,56-145,148,151-153,155,161,165,167-175,177-178,180-182,184,186,191,211-213,215,229-269,271,273-289,292,294-295,297-298,302-322,324
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "3054a82825287d5a943672f5ec42fa5e91b3fbc9",
+  "prompts": {
+    "c8300b1d553d7df6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5a8edc20-c8bf-4274-9027-7d4475f21f43",
+        "model": "mimo-v2.5"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 245,
+      "total_deletions": 44,
+      "accepted_lines": 245,
+      "overriden_lines": 0
+    }
+  }
+}
