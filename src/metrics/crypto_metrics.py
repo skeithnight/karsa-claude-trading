@@ -452,3 +452,45 @@ AUTO_SESSION_REGIME_PAUSES = Counter(
     "karsa_auto_session_regime_pauses_total",
     "Times loop paused due to bad regime",
 )
+
+# ============================================================
+# 7. Architecture Components
+# ============================================================
+
+EVENT_BUS_ACTIVE = Gauge(
+    "karsa_event_bus_active",
+    "1 if event bus is active and publishing",
+)
+
+EXIT_ENGINE_BLOCKS = Counter(
+    "karsa_exit_engine_blocks_total",
+    "Times Exit Engine blocked a trailing/SL action",
+    ["decision"],
+)
+
+EVENTS_TOTAL = Counter(
+    "karsa_events_total",
+    "Business events published",
+    ["event_type"],
+)
+
+POSITION_MANAGER_WRITES = Counter(
+    "karsa_position_manager_writes_total",
+    "Position Manager DB writes by operation",
+    ["operation"],
+)
+
+
+def record_exit_engine_block(decision: str):
+    """Call when ExitEngine blocks a trailing stop action."""
+    EXIT_ENGINE_BLOCKS.labels(decision=decision).inc()
+
+
+def record_event(event_type: str):
+    """Increment event counter. Call from publish_event()."""
+    EVENTS_TOTAL.labels(event_type=event_type).inc()
+
+
+def record_pm_write(operation: str):
+    """Increment Position Manager write counter."""
+    POSITION_MANAGER_WRITES.labels(operation=operation).inc()

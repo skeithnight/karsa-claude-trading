@@ -65,10 +65,10 @@ def build_main_keyboard():
 
 async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update): return
-    
+
     redis_ok, bybit_ok, db_ok, halt_active = False, False, False, False
     wallet, regime_state, hurst, adx, rec = {}, "UNKNOWN", 0.5, 0.0, ""
-    
+
     try:
         r = _get_redis(context)
         redis_ok = await r.ping()
@@ -87,7 +87,7 @@ async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bybit = _get_bybit(context)
         wallet = await bybit.get_wallet_balance()
         bybit_ok = not wallet.get("error")
-        
+
         orch = context.bot_data.get("orchestrator")
         from src.advisory.crypto_regime import CryptoRegimeFilter
         regime = await CryptoRegimeFilter(orch.mcp).get_current_regime()
@@ -97,8 +97,21 @@ async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rec = regime.get("recommendation", "")
     except Exception: pass
 
+    # Architecture component health
+    arch_parts = []
+    try:
+        r2 = _get_redis(context)
+        eb = await r2.get("karsa:feature_flags:event_bus_enabled")
+        pm = await r2.get("karsa:feature_flags:position_manager_enabled")
+        asm = await r2.get("karsa:auto:state:active")
+        arch_parts.append(f"{'🟢' if eb == 'true' else '🔴'} EventBus")
+        arch_parts.append(f"{'🟢' if pm == 'true' else '🟡'} PosMgr")
+        arch_parts.append(f"{'🟢' if asm == '1' else '🔴'} ASM")
+    except Exception: pass
+
     sys_status = (
         f"Bybit: {'🟢 Connected' if bybit_ok else '🔴 Off'} | DB: {'🟢' if db_ok else '🔴'} | Redis: {'🟢' if redis_ok else '🔴'}\n"
+        f"{' | '.join(arch_parts)}\n"
     )
     regime_display = f"Regime: {'🟢' if 'BULL' in regime_state else '🔴' if 'BEAR' in regime_state else '🟡'} {regime_state} (Hurst: {hurst:.2f}, ADX: {adx:.0f})"
     
@@ -876,3 +889,44 @@ async def replay_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, parse_mode="HTML")
     except Exception as e:
         await update.message.reply_text(f"Replay error: {e}")
+
+
+# --- /events command — recent event history from Redis ---
+
+async def events_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show recent architecture events from Redis history."""
+    limit = 10
+    if context.args:
+        try:
+            limit = min(int(context.args[0]), 30)
+        except ValueError:
+            pass
+
+    try:
+        import redis.asyncio as redis
+        from src.config import settings
+        from src.architecture.events.redis_bus import get_event_history
+
+        r = redis.from_url(settings.REDIS_URL, decode_responses=True)
+        events = await get_event_history(r, limit)
+
+        if not events:
+            await update.message.reply_text("No events in history yet")
+            return
+
+        lines = [f"📊 <b>Recent Events ({len(events)})</b>\n"]
+        emoji_map = {
+            "PositionOpened": "🟢", "PositionReduced": "🟡",
+            "PositionClosed": "🔴", "TrailingActivated": "📈",
+            "BreakEvenActivated": "🔒", "StopLossTriggered": "⛔",
+            "StopLossRecovered": "🛡️", "TestCrossProcess": "🧪",
+        }
+        for ev in events:
+            e = emoji_map.get(ev.get("event_type", ""), "📌")
+            lines.append(f"{e} {ev.get('event_type')} → {ev.get('aggregate_id')}")
+            if ev.get("publisher"):
+                lines.append(f"   by: {ev['publisher']}")
+
+        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+    except Exception as e:
+        await update.message.reply_text(f"Events error: {e}")

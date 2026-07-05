@@ -72,7 +72,10 @@ class CryptoKarsaApp:
         from src.architecture.events import event_bus as _event_bus
         from src.architecture.feature_flags import flags as _arch_flags
         _arch_flags.set_redis(self.redis_client)
+        _event_bus.set_redis(self.redis_client)
         await _event_bus.start()
+        from src.metrics.crypto_metrics import EVENT_BUS_ACTIVE
+        EVENT_BUS_ACTIVE.set(1)
         from src.architecture.events.subscribers import metrics_subscriber, journal_subscriber
         _event_bus.subscribe("PositionReduced", metrics_subscriber)
         _event_bus.subscribe("PositionClosed", metrics_subscriber)
@@ -475,6 +478,8 @@ class CryptoKarsaApp:
                                               priority=signal.priority)
                                 # Block trailing stop for emergency, stop-loss, and full exit
                                 if signal.decision.value in ("EMERGENCY_EXIT", "STOP_LOSS", "FULL_EXIT"):
+                                    from src.metrics.crypto_metrics import record_exit_engine_block
+                                    record_exit_engine_block(signal.decision.value)
                                     blocked_by_exit_engine.add(pos.ticker)
                                     logger.critical("exit_engine_blocked_trailing",
                                                    ticker=pos.ticker,

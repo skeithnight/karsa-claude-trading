@@ -316,10 +316,13 @@ pytest tests/test_agents/test_idx_analyst.py -v
 
 ## 📚 Documentation
 
-- [Crypto Audit](docs/AUDIT_KARSA_CRYPTO_BOT.md) — Post-implementation audit (18 findings, 5 critical)
-- [Crypto Design](docs/KARSA_CRYPTO_DESIGN_TEXT.md) — Crypto bot UI design system
-- [Review Qwen](docs/AUDIT_REVIEW_QWEN_2JUL.md) — Implementation audit (10 steps, 3 bugs fixed)
-- [Review Grok](docs/AUDIT_REVIEW_GROK_2JUL.md) — Implementation audit (6 steps, 1 bug fixed)
+- [ASM Enhancements](docs/ASM_Enhancements.md) — ASM enhancement design and recommendations
+- [Profit Protection](docs/PROFIT_PROTECTION_DYNAMIC_EXIT_ENGINE.md) — Dynamic exit engine design
+- [Architecture Validation](docs/Karsa_Architecture_Validation_Report.md) — Architecture validation report
+- [Crypto Audit](docs/archive/AUDIT_KARSA_CRYPTO_BOT.md) — Post-implementation audit (18 findings, 5 critical)
+- [Crypto Design](docs/archive/KARSA_CRYPTO_DESIGN_TEXT.md) — Crypto bot UI design system
+- [Review Qwen](docs/archive/AUDIT_REVIEW_QWEN_2JUL.md) — Implementation audit (10 steps, 3 bugs fixed)
+- [Review Grok](docs/archive/AUDIT_REVIEW_GROK_2JUL.md) — Implementation audit (6 steps, 1 bug fixed)
 
 ---
 

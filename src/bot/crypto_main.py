@@ -16,7 +16,7 @@ from src.bot.crypto_handlers import (
     start_cmd, dashboard_cmd, activity_cmd,
     portfolio_cmd, performance_cmd, control_cmd,
     mode_cmd, setmode_cmd, universe_cmd, refresh_universe_cmd,
-    replay_cmd, button_callback
+    replay_cmd, events_cmd, button_callback
 )
 from src.data.cache import CacheManager
 from src.data.mcp_client import MCPClient
@@ -46,6 +46,7 @@ async def lifespan(app: FastAPI):
     telegram_app.add_handler(CommandHandler("universe", universe_cmd))
     telegram_app.add_handler(CommandHandler("refresh_universe", refresh_universe_cmd))
     telegram_app.add_handler(CommandHandler("replay", replay_cmd))
+    telegram_app.add_handler(CommandHandler("events", events_cmd))
     
     # Unified Callback Handler
     telegram_app.add_handler(CallbackQueryHandler(button_callback))
@@ -84,6 +85,8 @@ async def lifespan(app: FastAPI):
                         "StopLossRecovered"]:
                 _event_bus.subscribe(evt, telegram_subscriber)
             logger.info("telegram_event_subscriber_wired")
+            from src.metrics.crypto_metrics import EVENT_BUS_ACTIVE
+            EVENT_BUS_ACTIVE.set(1)
     except Exception as e:
         logger.warning("telegram_subscriber_setup_failed", error=str(e))
 

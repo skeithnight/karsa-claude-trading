@@ -163,6 +163,11 @@ class PositionManager:
 
     async def _persist(self, event_type: str, pos: Position, **extra):
         """Emit event and persist to DB when db_id is available."""
+        try:
+            from src.metrics.crypto_metrics import record_pm_write
+            record_pm_write(event_type)
+        except Exception:
+            pass
         await self._emit(event_type, pos)
         db_id = extra.get("db_id")
         if not db_id:

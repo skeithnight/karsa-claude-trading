@@ -138,15 +138,15 @@ print(f'Blackout tickers: {universe if universe else \"None\"}')
 
 ## Architecture
 
-**Four main containers** share the same Python package (`src/`):
+**Four main application containers** share the same Python package (`src/`). Infra (redis, postgres, warp, 9router) and monitoring (prometheus, alertmanager, grafana) are separate services.
 
-1. **karsa-orchestrator** (`src/main.py`) — APScheduler runs 23+ cron jobs (IDX pre-open/morning/afternoon/pre-close scans, US+ETF scans, 2 EOD reviews, pre-market battle plan, paper position updates, kill switch, cache flush, crypto scan 24/7, crypto position monitor, crypto funding sync, crypto PnL snapshot, crypto position reconciliation, trailing stop updates, partial/time-based exits, circuit breaker checks, funding limit enforcement, liquidity checks, OMS cleanup). Each scan job dispatches agents via `Orchestrator.scan_all_markets()` which runs IDX/US/ETF analysts in parallel (`asyncio.gather`). Crypto scans use batched prompting (5 coins/LLM call). Confidence calibration applied to all crypto signals before risk gate.
+1. **karsa-orchestrator** (`src/main.py`) — APScheduler runs 25+ cron jobs (IDX pre-open/morning/afternoon/pre-close scans, US+ETF scans, 2 EOD reviews, pre-market battle plan, paper position updates, kill switch, cache flush, crypto scan 24/7, crypto position monitor, crypto funding sync, crypto PnL snapshot, crypto position reconciliation, trailing stop updates, partial/time-based exits, circuit breaker checks, funding limit enforcement, liquidity checks, OMS cleanup). Each scan job dispatches agents via `Orchestrator.scan_all_markets()` which runs IDX/US/ETF analysts in parallel (`asyncio.gather`). Crypto scans use batched prompting (5 coins/LLM call). Confidence calibration applied to all crypto signals before risk gate.
 
-2. **karsa-crypto-bot** (`src/main_crypto.py`) — Dedicated crypto-only orchestrator. Runs only crypto-related APScheduler jobs (no IDX/US/ETF). Health endpoint on port 8001. Shares Redis, Postgres, and 9router with main orchestrator. `CRYPTO_ONLY_MODE=true` env var. IDX scans are gated by composite score (≤-50 skips, ≤-20 reduces sizing). Signals ≥50 confidence get validated, persisted to DB, and risk-checked. Kill switch activates emergency stop via Redis at `CRYPTO_DAILY_LOSS_LIMIT_PCT`. Health check via FastAPI on port 8000 (`/health`, `/health/scheduler`). **ASM (Autonomous Session Manager)** runs inside this container — Telegram `/start` and `/stop` control it. ASM loop: regime check → scan crypto pairs → filter by confidence → execute through risk gates → SOR → notify. Prometheus metrics on port 8444 (`/metrics`).
+2. **karsa-crypto-orchestrator** (`src/main_crypto.py`) — Dedicated crypto-only orchestrator. Runs only crypto-related APScheduler jobs (no IDX/US/ETF). Health endpoint on port 8001. Shares Redis, Postgres, and 9router with main orchestrator. `CRYPTO_ONLY_MODE=true` env var. IDX scans are gated by composite score (≤-50 skips, ≤-20 reduces sizing). Signals ≥50 confidence get validated, persisted to DB, and risk-checked. Kill switch activates emergency stop via Redis at `CRYPTO_DAILY_LOSS_LIMIT_PCT`. Health check via FastAPI on port 8000 (`/health`, `/health/scheduler`). **ASM (Autonomous Session Manager)** runs inside this container — Telegram `/start` and `/stop` control it. ASM loop: regime check → scan crypto pairs → filter by confidence → execute through risk gates → SOR → notify. Prometheus metrics on port 8444 (`/metrics`).
 
 3. **karsa-telegram-bot** (`src/bot/main.py`) — FastAPI webhook + python-telegram-bot polling (default). Commands: `/start`, `/status`, `/scan`, `/portfolio`, `/trades`, `/add`, `/remove`, `/edit`, `/analyze`, `/audit`, `/briefing`, `/regime`, `/pnl`, `/idx`, `/stop`, `/resume`. `/idx` shows IDX Intelligence dashboard (composite score, sector rotation, breadth, flow, earnings). The bot reuses the orchestrator's `idx_intel` instance for cached intelligence data. Inline keyboard buttons provide navigation between views. Auth enforced — all commands require `TELEGRAM_CHAT_ID` to be set.
 
-3. **karsa-crypto-bot** (`src/bot/crypto_main.py`) — Separate Telegram bot for crypto trading on Bybit. 15 commands: `/start`, `/status`, `/portfolio`, `/scan`, `/pnl`, `/risk`, `/kill`, `/sellall`, `/resume`, `/activity`, `/audit_agent`, `/guide`, `/regime`, `/funding`, `/trades`. Auto-execute pipeline: scan → risk gate (8 gates) → SOR → save → notify. Shares orchestrator + Redis via `bot_data`. Inline keyboard navigation on all commands. `/kill` sets Redis global halt, flattens all positions. `/sellall` flattens + 15min cooldown.
+4. **karsa-crypto-bot** (`src/bot/crypto_main.py`) — Separate Telegram bot for crypto trading on Bybit. 15 commands: `/start`, `/status`, `/portfolio`, `/scan`, `/pnl`, `/risk`, `/kill`, `/sellall`, `/resume`, `/activity`, `/audit_agent`, `/guide`, `/regime`, `/funding`, `/trades`. Auto-execute pipeline: scan → risk gate (8 gates) → SOR → save → notify. Shares orchestrator + Redis via `bot_data`. Inline keyboard navigation on all commands. `/kill` sets Redis global halt, flattens all positions. `/sellall` flattens + 15min cooldown.
 
 **Agent loop** (`src/agents/base.py`): Each agent is a `BaseAgent` subclass with a system prompt, tool definitions, and an `_handle_tool_call` override. The `run()` method implements the Anthropic SDK tool-use loop — call LLM, process tool calls, repeat until `end_turn`.
 
@@ -222,6 +222,12 @@ print(f'Blackout tickers: {universe if universe else \"None\"}')
 - `src/risk/position_manager.py` — Post-entry lifecycle: partial exit at +1R target (50%), time-based exits for stale positions (48h, <1% gain).
 - `src/risk/position_sync.py` — Bidirectional reconciliation: position drift (phantom/missing/size), order drift (orphaned/unknown), balance drift. Runs every 5min.
 - `src/risk/trailing_stop.py` — `TrailingStopManager`: ATR-based trailing with regime-aware multipliers (TREND_BULL/BEAR=2.0x, MEAN_REVERSION=1.5x, CHOP=disabled).
+- `src/risk/profit_lock.py` — R-multiple profit lock engine: +1.0R→tight trail (1.0x ATR), +2.0R→medium (0.75x), +3.0R→tight (0.5x).
+- `src/risk/distributed_lock.py` — Redis `SET NX EX` one-line distributed lock for concurrent job safety.
+- `src/advisory/coin_regime.py` — `CoinRegimeEngine`: per-coin regime classifier (ADX + BB + deterministic). Per-coin cache, no LLM calls.
+- `src/architecture/` — Event-driven trading OS infrastructure (9-phase migration, each phase feature-flagged). Subpackages: `events/` (Redis + in-process bus), `position/` (commands, manager, aggregate), `exit/` (engine, strategies), `decision/` (engine, sources), `policy/` (engine, rules), `replay/` (engine), `workflow/` (engine, scanner, checkpoint), `agent_runtime/` (registry, runtime), `common/` (base, interfaces). Entry: `src/architecture/__init__.py`.
+- `src/architecture/feature_flags.py` — Redis-backed feature flags for phase-gated rollout. `is_enabled(flag)` / `enable(flag)` / `disable(flag)`.
+
 - `src/advisory/crypto_market_watch.py` — `CryptoMarketWatchEngine`: top movers, full scan summary, funding alerts across universe.
 - `src/advisory/performance_tracker.py` — `PerformanceTracker`: equity curve from daily snapshots, drawdown stats, trade statistics. Persists to CryptoPnLSnapshot.
 - `src/advisory/strategy_selector.py` — `StrategySelector`: regime→strategy config mapping (confidence boost, max positions, size multiplier, preferred pairs). Used by CryptoAnalyst for dynamic prompts.
@@ -230,19 +236,28 @@ print(f'Blackout tickers: {universe if universe else \"None\"}')
 - `db/migrations/add_crypto_market.sql` — Migration adding CRYPTO to all CHECK constraints.
 - `docs/AUDIT_KARSA_3.md` — Initial crypto audit (June 30, 2026).
 - `docs/AUDIT_KARSA_CRYPTO_BOT.md` — Post-implementation audit (July 1, 2026). 18 findings, 5 critical.
-- `docs/KARSA_CRYPTO_DESIGN_TEXT.md` — Crypto bot UI design system.
+- `docs/archive/KARSA_CRYPTO_DESIGN_TEXT.md` — Crypto bot UI design system.
 - `src/metrics/crypto_metrics.py` — Prometheus metrics definitions (counters, gauges, histograms) for all 6 domains: P&L, risk safety, positions, execution, infrastructure, WS health. Must be imported at startup.
 - `src/api/routes.py` — FastAPI API routes for external access.
+- `src/config.py` — Settings via pydantic-settings. All env vars loaded here. `DB_PASSWORD` validated at startup.
+- `src/patch_websocket.py` — WebSocket monkey-patch for Bybit library compatibility.
 - `src/advisory/universe_scorer.py` — Universe coin scoring for dynamic crypto universe.
 - `monitoring/` — Prometheus + Grafana configs. `prometheus.yml` scrapes `/metrics` on orchestrator (8000) and crypto-orchestrator (8001). `grafana-dashboard.json` — Karsa trading metrics dashboard. `alertmanager.yml` — alert routing. `grafana/provisioning/datasources/` — auto-provisions Prometheus datasource.
 - `db/migrations/add_adaptive_research_tables.sql` — adaptive research agent tables
 - `db/migrations/add_crypto_lifecycle_tables.sql` — crypto position lifecycle tables
-- `docs/` — Design docs, audit results, feature roadmap
-- `docs/AUDIT_REVIEW_QWEN_2JUL.md` — REVIEW_QWEN implementation audit (10 steps, 3 bugs fixed)
-- `docs/AUDIT_REVIEW_GROK_2JUL.md` — REVIEW_GROK implementation audit (6 steps, 1 bug fixed)
+- `docs/` — Active design docs. `docs/archive/` — historical audits and reviews.
+- `docs/ASM_Enhancements.md` — ASM enhancement design and recommendations
+- `docs/PROFIT_PROTECTION_DYNAMIC_EXIT_ENGINE.md` — 5-phase profit protection engine design
+- `docs/Karsa_Architecture_Validation_Report.md` — architecture validation report
+- `monitoring/asm-dashboard.json` — ASM Grafana dashboard (uncommitted)
+- `monitoring/alertmanager.yml` — Alertmanager routing config
+- `monitoring/grafana/` — Grafana provisioning (datasources, dashboards)
+- `monitoring/prometheus/` — Prometheus provisioning
 - `db/migrations/add_pgvector_memory.sql` — pgvector extension + trade_memory table for RAG
 - `db/migrations/add_risk_profile.sql` — risk_profile_audit table + signal columns
 - `db/migrations/add_universe_history.sql` — universe_history table
+- `db/migrations/add_autonomous_session.sql` — ASM (Autonomous Session Manager) tables
+- `db/migrations/add_volatility_regime_column.sql` — volatility regime column for crypto
 - `graphify-out/` — committed knowledge graph; query before reading source files
 
 ## Gotchas
@@ -270,9 +285,10 @@ print(f'Blackout tickers: {universe if universe else \"None\"}')
 
 ## Monitoring
 
-### Grafana Dashboard
+### Grafana Dashboards
 - **URL**: http://localhost:3000 (admin/admin)
-- **Dashboard**: "Karsa ASM & Trading Operations" (`/d/karsa-asm-ops`)
+- **Dashboard 1**: "Karsa ASM & Trading Operations" (`/d/karsa-asm-ops`) — `monitoring/asm-dashboard.json`
+- **Dashboard 2**: "Karsa Trading Operations v2" (`/d/karsa-v2-dashboard`) — `monitoring/grafana-dashboard.json`
 - **Panels**: ASM active state, available cash, realized/unrealized PnL, kill switch status, portfolio equity chart, market regime timeline, open positions table (per-position: ticker, entry/mark price, size, leverage, uPnL with color coding), WS lag, order fill latency, signal rejections
 - **Refresh**: 10s auto-refresh
 

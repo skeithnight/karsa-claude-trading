@@ -25,11 +25,12 @@ class ReplayEngine:
     """Deterministic replay of business events for a given aggregate.
 
     ponytail: stores events in-memory list, replays by filtering on aggregate_id.
-    Production: swap list with DB-backed event store.
+    DB persistence optional via db_session_factory.
     """
 
-    def __init__(self):
+    def __init__(self, db_session_factory=None):
         self._event_store: List[EventEnvelope] = []
+        self._db = db_session_factory
 
     def store_event(self, event: EventEnvelope):
         self._event_store.append(event)

@@ -35,13 +35,16 @@ async def publish_event(
     from src.architecture.feature_flags import flags
     if not flags.is_enabled("event_bus_enabled"):
         return
+    import uuid
+    from src.metrics.crypto_metrics import record_event
+    record_event(event_type)
     envelope = EventEnvelope(
         event_type=event_type,
         aggregate_id=aggregate_id,
         aggregate_type=aggregate_type,
         payload=payload,
         publisher=publisher,
-        correlation_id=correlation_id,
+        correlation_id=correlation_id or str(uuid.uuid4()),
     )
     await event_bus.publish(envelope)
 

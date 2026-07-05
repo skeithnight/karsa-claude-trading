@@ -11,7 +11,7 @@
     ],
     "timezone": "browser",
     "schemaVersion": 38,
-    "version": 1,
+    "version": 2,
     "refresh": "10s",
     "time": {
       "from": "now-24h",
@@ -293,7 +293,7 @@
       {
         "id": 6,
         "type": "row",
-        "title": "Portfolio Performance & Market Regime",
+        "title": "Portfolio & Positions",
         "gridPos": {
           "h": 1,
           "w": 24,
@@ -394,17 +394,6 @@
         }
       },
       {
-        "id": 9,
-        "type": "row",
-        "title": "Execution Health & Risk Rejections",
-        "gridPos": {
-          "h": 1,
-          "w": 24,
-          "x": 0,
-          "y": 14
-        }
-      },
-      {
         "id": 10,
         "type": "stat",
         "title": "Open Positions",
@@ -422,71 +411,7 @@
           "h": 4,
           "w": 4,
           "x": 0,
-          "y": 15
-        }
-      },
-      {
-        "id": 11,
-        "type": "stat",
-        "title": "WS Last Message (s ago)",
-        "datasource": {
-          "type": "prometheus",
-          "uid": "prometheus"
-        },
-        "targets": [
-          {
-            "expr": "time() - karsa_ws_last_message_timestamp_seconds",
-            "legendFormat": "Lag"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "s",
-            "thresholds": {
-              "steps": [
-                {
-                  "color": "green",
-                  "value": null
-                },
-                {
-                  "color": "red",
-                  "value": 10
-                }
-              ]
-            }
-          }
-        },
-        "gridPos": {
-          "h": 4,
-          "w": 4,
-          "x": 4,
-          "y": 15
-        }
-      },
-      {
-        "id": 12,
-        "type": "timeseries",
-        "title": "Order Fill Latency",
-        "datasource": {
-          "type": "prometheus",
-          "uid": "prometheus"
-        },
-        "targets": [
-          {
-            "expr": "histogram_quantile(0.95, rate(karsa_order_fill_latency_seconds_bucket[5m]))",
-            "legendFormat": "95th %ile"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "s"
-          }
-        },
-        "gridPos": {
-          "h": 8,
-          "w": 8,
-          "x": 8,
-          "y": 15
+          "y": 14
         }
       },
       {
@@ -504,10 +429,10 @@
           }
         ],
         "gridPos": {
-          "h": 8,
-          "w": 8,
-          "x": 16,
-          "y": 15
+          "h": 4,
+          "w": 10,
+          "x": 4,
+          "y": 14
         }
       },
       {
@@ -677,7 +602,36 @@
           "h": 6,
           "w": 12,
           "x": 0,
-          "y": 23
+          "y": 18
+        }
+      },
+      {
+        "id": 20,
+        "type": "timeseries",
+        "title": "Events by Type (24h)",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "targets": [
+          {
+            "expr": "sum(rate(karsa_events_total{job=\"karsa-crypto-bot\"}[5m])) by (event_type)",
+            "legendFormat": "{{event_type}}"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "drawStyle": "line",
+              "fillOpacity": 10
+            }
+          }
+        },
+        "gridPos": {
+          "h": 6,
+          "w": 12,
+          "x": 12,
+          "y": 18
         }
       }
     ]
