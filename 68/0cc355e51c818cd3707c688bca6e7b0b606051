@@ -1,0 +1,97 @@
+src/bot/crypto_handlers.py
+  6f66a07dda963e7d 833-878
+src/architecture/workflow/scanner.py
+  6f66a07dda963e7d 1-77
+docs/PROFIT_PROTECTION_DYNAMIC_EXIT_ENGINE.md
+  06cf542d694d288d 1-193
+db/migrations/add_volatility_regime_column.sql
+  c8300b1d553d7df6 1-10
+src/risk/trailing_stop.py
+  6f66a07dda963e7d 121-142,144-152
+  06cf542d694d288d 55-66,194-269
+src/architecture/position/__init__.py
+  6f66a07dda963e7d 3-6,9-12
+src/risk/position_sync.py
+  6f66a07dda963e7d 132-151,153-165
+src/architecture/events/redis_bus.py
+  6f66a07dda963e7d 1-70
+src/architecture/events/subscribers.py
+  6f66a07dda963e7d 7,18-20,22,38-95
+src/architecture/workflow/engine.py
+  6f66a07dda963e7d 62,64
+src/architecture/workflow/__init__.py
+  6f66a07dda963e7d 4,6
+src/risk/position_manager.py
+  06cf542d694d288d 5-6,9,17,61-64,281-364
+  6f66a07dda963e7d 148-166,168-175,177-178
+src/architecture/position/commands.py
+  6f66a07dda963e7d 3,22,37-46,48-70
+src/main_crypto.py
+  06cf542d694d288d 274-275,427-428,435,437-448,489,500,522-560
+  6f66a07dda963e7d 88-149,450-488,490-499,504-517
+src/main.py
+  6f66a07dda963e7d 79-99,115-150,814-857
+monitoring/asm-dashboard.json
+  c8300b1d553d7df6 108,116-122,157-167,169-170,175-184,190-191,204-205,207-208,217-222,226,231
+src/architecture/agent_runtime/__init__.py
+  6f66a07dda963e7d 3,5
+src/bot/crypto_main.py
+  6f66a07dda963e7d 19,48,75-109
+src/agents/orchestrator.py
+  6f66a07dda963e7d 276-313,342-354
+src/architecture/position/manager.py
+  6f66a07dda963e7d 14-17,32-33,86-113,115-127,140-148,163-189
+src/architecture/events/__init__.py
+  6f66a07dda963e7d 12,17-18
+src/bot/main.py
+  6f66a07dda963e7d 72-105
+src/risk/profit_lock.py
+  06cf542d694d288d 1-117,147-154,171-225
+  6f66a07dda963e7d 118-146
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "680cc355e51c818cd3707c688bca6e7b0b606051",
+  "prompts": {
+    "06cf542d694d288d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "88eeac0d-b661-4f38-a85d-de55a2e6bcd9",
+        "model": "mimo-v2.5"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 686,
+      "total_deletions": 64,
+      "accepted_lines": 611,
+      "overriden_lines": 1
+    },
+    "6f66a07dda963e7d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "222475c0-d0f8-4a21-ba43-dda41029d128",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 933,
+      "total_deletions": 163,
+      "accepted_lines": 861,
+      "overriden_lines": 0
+    },
+    "c8300b1d553d7df6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5a8edc20-c8bf-4274-9027-7d4475f21f43",
+        "model": "mimo-v2.5"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 75,
+      "total_deletions": 6,
+      "accepted_lines": 55,
+      "overriden_lines": 13
+    }
+  }
+}
