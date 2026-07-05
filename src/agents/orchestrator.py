@@ -273,6 +273,44 @@ class Orchestrator:
                         result["confidence_score"] = confidence
                     except Exception:
                         pass
+                # Decision Engine (Phase 5 — weighted vote fusion)
+                if hasattr(self, 'decision_engine') and self.decision_engine:
+                    try:
+                        decision = await self.decision_engine.decide(ticker, {
+                            "analyzer_signal": result,
+                            "market": market,
+                            "trading_mode": settings.TRADING_MODE,
+                        })
+                        if decision.action.value in ("REJECT", "IGNORE"):
+                            logger.info("decision_engine_rejected", ticker=ticker,
+                                       action=decision.action.value, reason=decision.explanation)
+                            try:
+                                from src.metrics.crypto_metrics import record_signal_rejection
+                                record_signal_rejection(profile_name, f"decision_{decision.action.value}")
+                            except Exception:
+                                pass
+                            continue
+                    except Exception as e:
+                        logger.warning("decision_engine_error", ticker=ticker, error=str(e))
+                # Policy Engine (Phase 7 — business rules check)
+                if hasattr(self, 'policy_engine') and self.policy_engine:
+                    try:
+                        policy_result = self.policy_engine.evaluate({
+                            "kill_switch_active": await emergency.is_active(),
+                            "trading_mode": settings.TRADING_MODE,
+                            "open_position_count": 0,
+                            "daily_loss_pct": 0,
+                        })
+                        if not policy_result.allowed:
+                            logger.info("policy_rejected", ticker=ticker, reason=policy_result.reason)
+                            try:
+                                from src.metrics.crypto_metrics import record_signal_rejection
+                                record_signal_rejection(profile_name, f"policy_{policy_result.policy_name}")
+                            except Exception:
+                                pass
+                            continue
+                    except Exception as e:
+                        logger.warning("policy_engine_error", ticker=ticker, error=str(e))
                 if confidence >= min_conf:
                     signals.append(result)
                     try:
@@ -301,7 +339,19 @@ class Orchestrator:
                 from src.utils.validation import sanitize_for_prompt
                 safe_ticker = sanitize_for_prompt(ticker)
                 prompt = f"Analyze {safe_ticker} for trading opportunities right now.{context_hint}"
-                result = await agent.run(prompt)
+
+                # Agent Runtime lifecycle tracking (Phase 8)
+                if hasattr(self, 'agent_runtime') and self.agent_runtime:
+                    agent_fn = lambda p=prompt: agent.run(p)
+                    run = await self.agent_runtime.execute(
+                        agent_id=f"{market}:{ticker}",
+                        agent_type=market.lower(),
+                        fn=agent_fn,
+                    )
+                    result = run.result if run.result else {"error": run.error or "Agent runtime failed"}
+                else:
+                    result = await agent.run(prompt)
+
                 if result.get("error"):
                     logger.warning("agent_error", market=market, ticker=ticker, error=result["error"])
                     continue

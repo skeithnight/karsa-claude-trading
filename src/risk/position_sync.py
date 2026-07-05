@@ -129,27 +129,40 @@ class PositionReconciler:
     async def _handle_phantom(self, db_pos: CryptoPosition, exchange_positions: list[dict]) -> Optional[dict]:
         """Handle phantom position: in DB but not on exchange."""
         try:
-            # Check if it was recently closed (might be in closed_trades)
-            # For now, mark as CLOSED
-            async with async_session() as session:
-                pos = await session.get(CryptoPosition, db_pos.id)
-                if pos:
-                    pos.status = "CLOSED"
-                    pos.last_synced_at = datetime.utcnow()
+            # Position Manager promotion (Phase 3 — single writer)
+            from src.architecture.feature_flags import flags
+            if flags.is_enabled("position_manager_enabled"):
+                from src.architecture.position import PositionManager, SyncFromExchange
+                from src.architecture.events import event_bus
+                arch_pm = PositionManager(event_bus=event_bus)
+                cmd = SyncFromExchange(
+                    position_id=f"db:{db_pos.id}",
+                    exchange_size=0,
+                    exchange_status="CLOSED",
+                )
+                await arch_pm.sync_from_exchange(cmd)
+                logger.info("position_manager_write", ticker=db_pos.ticker, action="phantom_closed")
+            else:
+                # Legacy direct DB write
+                async with async_session() as session:
+                    pos = await session.get(CryptoPosition, db_pos.id)
+                    if pos:
+                        pos.status = "CLOSED"
+                        pos.last_synced_at = datetime.utcnow()
 
-                    session.add(CryptoReconciliationLog(
-                        position_id=db_pos.id,
-                        drift_type="PHANTOM",
-                        exchange_state={"exists": False},
-                        db_state={
-                            "ticker": db_pos.ticker,
-                            "side": db_pos.side,
-                            "size": str(db_pos.size),
-                            "status": db_pos.status,
-                        },
-                        resolution="marked_closed",
-                    ))
-                    await session.commit()
+                        session.add(CryptoReconciliationLog(
+                            position_id=db_pos.id,
+                            drift_type="PHANTOM",
+                            exchange_state={"exists": False},
+                            db_state={
+                                "ticker": db_pos.ticker,
+                                "side": db_pos.side,
+                                "size": str(db_pos.size),
+                                "status": db_pos.status,
+                            },
+                            resolution="marked_closed",
+                        ))
+                        await session.commit()
 
             logger.info("phantom_position_closed", ticker=db_pos.ticker, position_id=db_pos.id)
             return {

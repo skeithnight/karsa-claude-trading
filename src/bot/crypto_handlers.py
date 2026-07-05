@@ -830,3 +830,49 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Add fallback routing for root commands matching the UI structure
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await dashboard_cmd(update, context)
+
+
+# --- /replay command — reconstruct position timeline from event store ---
+
+async def replay_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show event timeline for a position ticker."""
+    ticker = context.args[0].upper() if context.args else ""
+    if not ticker:
+        await update.message.reply_text("Usage: /replay BTCUSDT")
+        return
+
+    try:
+        # Get replay engine from main_crypto orchestrator
+        from src.main_crypto import karsa_app
+        if not karsa_app or not hasattr(karsa_app, 'replay_engine'):
+            await update.message.reply_text("Replay engine not available")
+            return
+
+        result = karsa_app.replay_engine.replay(ticker)
+        if not result.timeline:
+            await update.message.reply_text(f"No events found for {ticker}")
+            return
+
+        lines = [f"📋 <b>{ticker} Event Timeline</b>\n"]
+        for i, entry in enumerate(result.timeline, 1):
+            emoji = {
+                "PositionOpened": "🟢", "PositionReduced": "🟡",
+                "PositionClosed": "🔴", "TrailingActivated": "📈",
+                "BreakEvenActivated": "🔒", "StopLossTriggered": "⛔",
+                "StopLossRecovered": "🛡️", "StopLossUpdated": "📝",
+                "PositionSynced": "🔄",
+            }.get(entry["event_type"], "📌")
+            lines.append(f"{i}. {emoji} {entry['event_type']}")
+            if entry.get("publisher"):
+                lines.append(f"   by: {entry['publisher']}")
+            if entry.get("payload"):
+                for k, v in entry["payload"].items():
+                    lines.append(f"   {k}: {v}")
+
+        text = "\n".join(lines[:30])  # limit to 30 lines
+        if len(result.timeline) > 30:
+            text += f"\n\n... and {len(result.timeline) - 30} more events"
+
+        await update.message.reply_text(text, parse_mode="HTML")
+    except Exception as e:
+        await update.message.reply_text(f"Replay error: {e}")

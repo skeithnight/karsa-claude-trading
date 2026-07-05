@@ -206,6 +206,23 @@ class StopLossEngine:
                     "size": size, "order_id": result["orderId"],
                 }))
                 self._position_cache.pop(ticker, None)
+
+                # Publish business event (shadow mode)
+                from src.architecture.events import publish_event
+                await publish_event(
+                    "StopLossTriggered",
+                    aggregate_id=ticker,
+                    aggregate_type="Position",
+                    payload={
+                        "ticker": ticker,
+                        "trigger_price": price,
+                        "stop_loss": stop_loss,
+                        "side": side,
+                        "size": size,
+                        "order_id": result["orderId"],
+                    },
+                    publisher="StopLossEngine",
+                )
             else:
                 logger.error("sl_execute_failed", ticker=ticker, result=result)
                 record_sl_execution(ticker, False)
