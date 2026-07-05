@@ -1,0 +1,58 @@
+src/architecture/events/__init__.py
+  6f66a07dda963e7d 38-40,47
+src/metrics/crypto_metrics.py
+  6f66a07dda963e7d 455-496
+src/architecture/events/redis_bus.py
+  6f66a07dda963e7d 9,19-20,50,52-58,64-67
+src/bot/crypto_main.py
+  6f66a07dda963e7d 19,49,88-89
+AGENTS.md
+  92efff00079c00ec 81-86,102-104,143-145
+src/main.py
+  6f66a07dda963e7d 66,68-69,838-839
+src/architecture/replay/engine.py
+  6f66a07dda963e7d 28,31,33
+src/main_crypto.py
+  6f66a07dda963e7d 75,77-78,481-482
+monitoring/asm-dashboard.json
+  6f66a07dda963e7d 14,296,414,432-435,605,618,634,639
+src/bot/crypto_handlers.py
+  6f66a07dda963e7d 68,71,90,100-109,114,892-932
+README.md
+  92efff00079c00ec 319-325
+src/architecture/position/manager.py
+  6f66a07dda963e7d 166-170
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "3a899da32187e732efbec600317b5fd5a6e0a628",
+  "prompts": {
+    "6f66a07dda963e7d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "222475c0-d0f8-4a21-ba43-dda41029d128",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 216,
+      "total_deletions": 379,
+      "accepted_lines": 193,
+      "overriden_lines": 0
+    },
+    "92efff00079c00ec": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2eccb188-d153-4623-b98a-f005b5eafcbb",
+        "model": "mimo-v2.5"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 46,
+      "total_deletions": 15,
+      "accepted_lines": 19,
+      "overriden_lines": 0
+    }
+  }
+}
