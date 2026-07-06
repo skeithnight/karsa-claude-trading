@@ -1,0 +1,90 @@
+src/bot/crypto_main.py
+  3dfe2d6649852860 22-25,55-63
+src/agents/autonomous_session.py
+  e4c0165c9d619625 317,322,325-326,328,330,332,334,336-344
+  2c87384ebd6dcc2d 36-40,284,346-373,399-409,418,437,444-449,471-475,477,485
+src/aode/__init__.py
+  3dfe2d6649852860 1-18
+src/data/defillama_client.py
+  3dfe2d6649852860 1-277
+src/data/dexscreener_client.py
+  3dfe2d6649852860 1-183
+src/config.py
+  1db42f00a53469b7 47
+  3dfe2d6649852860 69-81
+src/main_crypto.py
+  3dfe2d6649852860 306-313,791-830
+src/metrics/crypto_metrics.py
+  e4c0165c9d619625 209-213
+src/architecture/feature_flags.py
+  3dfe2d6649852860 21-25
+src/risk/trailing_stop.py
+  1db42f00a53469b7 18,96-99,111-116,253-256,325,331-332,335,337-339
+src/advisory/crypto_regime.py
+  1db42f00a53469b7 300,303
+src/data/coingecko_client.py
+  3dfe2d6649852860 1-335
+monitoring/asm-dashboard.json
+  e4c0165c9d619625 543,545,552-553,577-580,612-613,632
+CLAUDE.md
+  3dfe2d6649852860 175,262-281
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "6e77a38b64658a66987dc2262f21e55893ffd309",
+  "prompts": {
+    "1db42f00a53469b7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c1c69a15-c45c-42a3-85a6-63c5199eb96f",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 27,
+      "total_deletions": 34,
+      "accepted_lines": 25,
+      "overriden_lines": 0
+    },
+    "2c87384ebd6dcc2d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0ad2b3b4-c1bd-4e7b-9ee9-2057a05050b9",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 70,
+      "total_deletions": 21,
+      "accepted_lines": 60,
+      "overriden_lines": 0
+    },
+    "3dfe2d6649852860": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "76a91299-6f4c-41a1-ac74-157bd11aaa97",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 913,
+      "total_deletions": 0,
+      "accepted_lines": 913,
+      "overriden_lines": 0
+    },
+    "e4c0165c9d619625": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a28c5304-e2b3-45f0-aace-a8c013ddaba7",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 284,
+      "total_deletions": 313,
+      "accepted_lines": 46,
+      "overriden_lines": 0
+    }
+  }
+}
