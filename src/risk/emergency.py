@@ -1,12 +1,16 @@
 """Emergency stop / kill switch — Redis-backed, survives orchestrator restarts."""
 
+import asyncio
 import json
 from datetime import datetime, timezone
 
 import redis.asyncio as aioredis
 
 from src.config import settings
+from src.utils.logging import get_logger
 from src.metrics.crypto_metrics import update_kill_switch
+
+logger = get_logger("emergency")
 
 KILL_KEY = f"{settings.REDIS_PREFIX}:emergency_stop"
 GLOBAL_HALT_KEY = f"{settings.REDIS_PREFIX}:global_halt"
@@ -21,11 +25,25 @@ def _get_redis() -> aioredis.Redis:
     return _client
 
 
+async def _flatten_open_positions() -> None:
+    """Close all open positions on Bybit. Fire-and-forget."""
+    try:
+        from src.data.bybit_client import BybitClient
+        from src.risk.sor import SmartOrderRouter
+        bybit = BybitClient()
+        sor = SmartOrderRouter(bybit)
+        result = await sor.flatten_all()
+        logger.warning("emergency_flatten", closed=result.get("closed", []), count=result.get("count", 0))
+    except Exception as e:
+        logger.error("emergency_flatten_failed", error=str(e))
+
+
 async def activate(reason: str, operator: str) -> bool:
     """Activate emergency stop — halts all new trading decisions.
 
     Uses SET NX for atomicity — returns True if this call activated,
     False if already active (prevents duplicate alerts).
+    Also flattens all open positions to prevent further losses.
     """
     payload = json.dumps({
         "active": True,
@@ -36,6 +54,13 @@ async def activate(reason: str, operator: str) -> bool:
     result = await _get_redis().set(KILL_KEY, payload, nx=True)
     if result:
         update_kill_switch(True)
+        try:
+            from src.metrics.crypto_metrics import update_risk_status
+            update_risk_status(kill_active=True)
+        except Exception:
+            pass
+        # Auto-flatten all open positions on emergency activation
+        asyncio.create_task(_flatten_open_positions())
     return bool(result)  # True if set, False if already existed
 
 
@@ -43,6 +68,11 @@ async def deactivate(operator: str) -> None:
     """Deactivate emergency stop — resume trading."""
     await _get_redis().delete(KILL_KEY)
     update_kill_switch(False)
+    try:
+        from src.metrics.crypto_metrics import update_risk_status
+        update_risk_status(kill_active=False)
+    except Exception:
+        pass
 
 
 async def is_active() -> bool:
@@ -66,6 +96,7 @@ async def activate_global_halt(reason: str, operator: str) -> bool:
 
     Sets both the global halt key AND the standard emergency stop for compatibility.
     Used by /kill command on crypto bot.
+    Also flattens all open positions.
     """
     payload = json.dumps({
         "active": True,
@@ -79,6 +110,8 @@ async def activate_global_halt(reason: str, operator: str) -> bool:
     # Also set standard emergency stop
     await r.set(KILL_KEY, payload)
     update_kill_switch(True)
+    # Auto-flatten all open positions
+    asyncio.create_task(_flatten_open_positions())
     return bool(result)
 
 

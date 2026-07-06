@@ -78,6 +78,12 @@ Bidirectional reconciliation between Bybit exchange state and local DB. Position
 ### Trailing Stop Manager (`src/risk/trailing_stop.py`)
 Adjusts stop-loss orders upward for winning positions using ATR-based trailing distances. Regime-aware multipliers: TREND_BULL/BEAR=2.0x ATR, MEAN_REVERSION=1.5x ATR, CHOP=disabled. `update_trailing_stops()` runs every 5min: fetches price, updates highest_price, recalculates stop, amends order on Bybit if changed.
 
+### Profit Lock (`src/risk/profit_lock.py`)
+R-multiple profit lock engine. Tiered trailing: +1.0R→tight trail (current price - 1.0x ATR), +2.0R→medium trail (current price - 0.75x ATR), +3.0R→tight trail (current price - 0.5x ATR). Prevents giving back profits on winning trades.
+
+### Distributed Lock (`src/risk/distributed_lock.py`)
+Redis `SET NX EX` one-line distributed lock for concurrent job safety. Prevents overlapping scheduler executions on shared Redis.
+
 ## Advisory Layer (not agents — deterministic modules)
 
 ### Regime Filters (`src/advisory/regime.py`)
@@ -92,6 +98,9 @@ Calculates volatility-target position sizes using ATR. Used for paper trade sizi
 
 ### Crypto Regime Filter (`src/advisory/crypto_regime.py`)
 Deterministic crypto regime classifier using BTC as benchmark. Hurst Exponent (trend persistence) + ADX (trend strength) on 4H/1D data. States: TREND_BULL, TREND_BEAR, MEAN_REVERSION, CHOP. BTC dominance via CoinGecko (>55% = BTC season, <45% = alt season). Size multipliers: TREND_BULL=1.2x, TREND_BEAR=0.5x, MEAN_REVERSION=0.8x, CHOP=0.5x. CHOP regime skips crypto scan entirely. 5-minute in-memory cache.
+
+### Coin Regime (`src/advisory/coin_regime.py`)
+`CoinRegimeEngine`: per-coin regime classifier. ADX + Bollinger Bands + deterministic logic. Per-coin cache, no LLM calls. Determines if individual coins are trending, mean-reverting, or chopping independently of the BTC macro regime.
 
 ### Crypto Technicals (`src/advisory/crypto_technicals.py`)
 Pure Python deterministic indicators — LLM calls these tools instead of doing math. RSI (Wilder smoothing), Bollinger Bands (2σ), EMA, MACD (12/26/9), ATR (14-period). `full_analysis()` runs all at once. Self-test included (`__main__`).
@@ -131,3 +140,6 @@ Composable Telegram HTML formatters (GramIO style). `HTML` marker class prevents
 
 ### MarketHours (`src/utils/market_hours.py`)
 `is_idx_open()` and `is_us_open()` — used by scheduler jobs to skip scans when markets are closed.
+
+### Feature Flags (`src/architecture/feature_flags.py`)
+Redis-backed feature flags for 9-phase architecture migration. `is_enabled(flag)` / `enable(flag)` / `disable(flag)`. Each architecture phase is independently deployable and feature-flagged.

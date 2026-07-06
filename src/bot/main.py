@@ -69,6 +69,40 @@ async def lifespan(app: FastAPI):
     await telegram_app.initialize()
     await telegram_app.start()
 
+    # Wire Telegram event subscriber (Phase 2.2)
+    try:
+        from src.architecture.events import event_bus as _event_bus
+        from src.architecture.events.subscribers import telegram_subscriber, configure_telegram_subscriber
+        chat_id = int(settings.TELEGRAM_CHAT_ID) if settings.TELEGRAM_CHAT_ID else 0
+        if chat_id and telegram_app.bot:
+            configure_telegram_subscriber(telegram_app.bot, chat_id)
+            for evt in ["PositionOpened", "PositionReduced", "PositionClosed",
+                        "TrailingActivated", "BreakEvenActivated", "StopLossTriggered",
+                        "StopLossRecovered"]:
+                _event_bus.subscribe(evt, telegram_subscriber)
+            logger.info("telegram_event_subscriber_wired")
+    except Exception as e:
+        logger.warning("telegram_subscriber_setup_failed", error=str(e))
+
+    # Wire Redis cross-process event delivery
+    try:
+        from src.architecture.events.redis_bus import subscribe_redis_events
+        async def _redis_event_handler(data: dict):
+            from src.architecture.events.subscribers import telegram_subscriber
+            from src.architecture.events.base import EventEnvelope
+            env = EventEnvelope(
+                event_type=data.get("event_type", ""),
+                aggregate_id=data.get("aggregate_id", ""),
+                aggregate_type=data.get("aggregate_type", ""),
+                payload=data.get("payload", {}),
+                publisher=data.get("publisher", ""),
+            )
+            await telegram_subscriber(env)
+        await subscribe_redis_events(redis_client, _redis_event_handler)
+        logger.info("redis_cross_process_events_subscribed")
+    except Exception as e:
+        logger.warning("redis_event_subscribe_failed", error=str(e))
+
     # Start polling in the background (non-blocking)
     if not settings.TELEGRAM_WEBHOOK_URL:
         await telegram_app.updater.start_polling(drop_pending_updates=True)

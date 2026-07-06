@@ -54,9 +54,51 @@ class KarsaApp:
 
         if await self.cache.ping():
             logger.info("redis_ready")
+
         else:
             logger.error("redis_connection_failed")
             sys.exit(1)
+
+        # Event Bus (architecture Phase 2 — shadow mode, no behavioral change)
+        from src.architecture.events import event_bus as _event_bus
+        from src.architecture.feature_flags import flags as _arch_flags
+        _arch_flags.set_redis(self.redis_client)
+        _event_bus.set_redis(self.redis_client)
+        await _event_bus.start()
+        from src.metrics.crypto_metrics import EVENT_BUS_ACTIVE
+        EVENT_BUS_ACTIVE.set(1)
+        from src.architecture.events.subscribers import metrics_subscriber, journal_subscriber
+        _event_bus.subscribe("PositionReduced", metrics_subscriber)
+        _event_bus.subscribe("PositionClosed", metrics_subscriber)
+        _event_bus.subscribe("TrailingActivated", metrics_subscriber)
+        _event_bus.subscribe("BreakEvenActivated", metrics_subscriber)
+        _event_bus.subscribe("StopLossTriggered", metrics_subscriber)
+        _event_bus.subscribe("PositionReduced", journal_subscriber)
+        _event_bus.subscribe("PositionClosed", journal_subscriber)
+        _event_bus.subscribe("TrailingActivated", journal_subscriber)
+        _event_bus.subscribe("BreakEvenActivated", journal_subscriber)
+        _event_bus.subscribe("StopLossTriggered", journal_subscriber)
+
+        # Exit Engine (Phase 4 — single exit authority)
+        from src.architecture.exit import ExitEngine, EmergencyExitStrategy, StopLossStrategy, TimeExitStrategy, TrailingStopStrategy, PartialExitStrategy, BreakEvenStrategy
+        self.exit_engine = ExitEngine()
+        self.exit_engine.register(EmergencyExitStrategy())
+        self.exit_engine.register(StopLossStrategy())
+        self.exit_engine.register(TimeExitStrategy())
+        self.exit_engine.register(TrailingStopStrategy())
+        self.exit_engine.register(PartialExitStrategy())
+        self.exit_engine.register(BreakEvenStrategy())
+        logger.info("exit_engine_ready", strategies=[s.name for s in self.exit_engine._strategies])
+
+        # Replay Engine (Phase 6 — event store subscriber, no orchestrator dependency)
+        from src.architecture.replay import ReplayEngine
+        self.replay_engine = ReplayEngine()
+        _replay_subscriber = self.replay_engine.store_event
+        for evt_type in ["PositionOpened", "PositionReduced", "PositionClosed",
+                         "TrailingActivated", "BreakEvenActivated", "StopLossTriggered",
+                         "StopLossRecovered", "StopLossUpdated", "PositionSynced"]:
+            _event_bus.subscribe(evt_type, _replay_subscriber)
+        logger.info("replay_engine_ready")
 
         self.mcp = MCPClient(self.cache)
 
@@ -72,6 +114,42 @@ class KarsaApp:
         bybit = self.mcp._get_bybit()
         self.universe_engine = UniverseEngine(bybit, self.redis_client, self.profile_manager)
         self.orchestrator.universe_engine = self.universe_engine
+
+        # Decision Engine (Phase 5)
+        from src.architecture.decision import DecisionEngine, AnalyzerSource, PolicySource
+        self.decision_engine = DecisionEngine()
+        self.decision_engine.add_source(AnalyzerSource())
+        self.decision_engine.add_source(PolicySource())
+        self.orchestrator.decision_engine = self.decision_engine
+        logger.info("decision_engine_ready", sources=[s.name for s in self.decision_engine._sources])
+
+        # Policy Engine (Phase 7)
+        from src.architecture.policy import PolicyEngine, TradingPolicy, RiskPolicy, EmergencyPolicy
+        self.policy_engine = PolicyEngine()
+        self.policy_engine.add_policy(EmergencyPolicy.kill_switch())
+        self.policy_engine.add_policy(EmergencyPolicy.circuit_breaker())
+        self.policy_engine.add_policy(RiskPolicy.daily_loss_limit())
+        self.policy_engine.add_policy(RiskPolicy.max_leverage())
+        self.policy_engine.add_policy(TradingPolicy.trading_mode_check())
+        self.policy_engine.add_policy(TradingPolicy.max_positions_check())
+        self.orchestrator.policy_engine = self.policy_engine
+        logger.info("policy_engine_ready", policies=[p["name"] for p in self.policy_engine.list_policies()])
+
+        # Agent Runtime (Phase 8)
+        from src.architecture.agent_runtime import AgentRuntime, AgentRegistry, AgentConfig
+        self.agent_runtime = AgentRuntime(max_concurrent=5)
+        self.agent_registry = AgentRegistry()
+        self.agent_registry.register(AgentConfig("crypto_analyst", max_retries=3, timeout_seconds=120, combo_name="karsa-routine"))
+        self.agent_registry.register(AgentConfig("crypto_auditor", max_retries=2, timeout_seconds=60, combo_name="karsa-routine"))
+        self.orchestrator.agent_runtime = self.agent_runtime
+        logger.info("agent_runtime_ready", agents=self.agent_registry.all_types())
+
+        # Workflow Engine (Phase 9)
+        from src.architecture.workflow import WorkflowEngine, CheckpointManager
+        self.checkpoint_manager = CheckpointManager(redis_client=self.redis_client)
+        self.workflow_engine = WorkflowEngine(checkpoint_manager=self.checkpoint_manager)
+        self.orchestrator.workflow_engine = self.workflow_engine
+        logger.info("workflow_engine_ready")
 
         # Execution engine modules
         from src.execution.websocket_manager import WebSocketManager
@@ -736,9 +814,52 @@ class KarsaApp:
                 )
                 positions = list(result.scalars().all())
 
-            actions = await manager.update_trailing_stops(positions)
-            if actions:
-                logger.info("trailing_stops_updated", actions=len(actions))
+            if positions:
+                # Exit Engine evaluates FIRST (Phase 4 — primary exit authority)
+                blocked_by_exit_engine = set()
+                if hasattr(self, 'exit_engine') and self.exit_engine:
+                    for pos in positions:
+                        try:
+                            from src.architecture.position import Position, PositionState
+                            arch_pos = Position(
+                                symbol=pos.ticker, side=pos.side,
+                                entry_price=float(pos.entry_price), quantity=float(pos.size),
+                                leverage=pos.leverage or 1,
+                                stop_loss=float(pos.stop_loss) if pos.stop_loss else None,
+                                trailing_stop=float(pos.trailing_stop_price) if pos.trailing_stop_price else None,
+                                state=PositionState.OPEN,
+                            )
+                            market_data = {
+                                "mark_price": float(pos.current_price or 0),
+                                "atr": 0, "kill_switch_active": False,
+                            }
+                            signal = self.exit_engine.evaluate(arch_pos, market_data)
+                            if signal and signal.decision.value in ("EMERGENCY_EXIT", "STOP_LOSS", "FULL_EXIT"):
+                                from src.metrics.crypto_metrics import record_exit_engine_block
+                                record_exit_engine_block(signal.decision.value)
+                                blocked_by_exit_engine.add(pos.ticker)
+                                logger.critical("exit_engine_blocked_trailing",
+                                               ticker=pos.ticker,
+                                               decision=signal.decision.value,
+                                               strategy=signal.strategy_name,
+                                               reason=signal.reason)
+                        except Exception as e:
+                            logger.debug("exit_engine_error", ticker=pos.ticker, error=str(e))
+
+                active_positions = [p for p in positions if p.ticker not in blocked_by_exit_engine]
+                if active_positions:
+                    actions = await manager.update_trailing_stops(active_positions)
+
+                    # Profit Lock: tighten stops on winning positions
+                    from src.risk.profit_lock import ProfitLockManager
+                    pl = ProfitLockManager(bybit, self.redis_client)
+                    lock_actions = await pl.check_profit_locks(active_positions)
+                    if lock_actions:
+                        logger.info("profit_locks_activated",
+                                    count=len(lock_actions),
+                                    tickers=[a["ticker"] for a in lock_actions])
+
+                logger.info("trailing_stops_updated", total=len(positions), blocked=len(blocked_by_exit_engine))
         except Exception as e:
             logger.error("trailing_stop_job_failed", error=str(e))
 
@@ -997,6 +1118,8 @@ class KarsaApp:
     async def shutdown(self):
         """Graceful shutdown."""
         logger.info("shutting_down")
+        from src.architecture.events import event_bus as _event_bus
+        await _event_bus.stop()
         if hasattr(self, 'sl_engine') and self.sl_engine:
             await self.sl_engine.stop()
         if hasattr(self, 'ws_manager') and self.ws_manager:

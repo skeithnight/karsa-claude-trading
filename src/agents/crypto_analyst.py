@@ -227,7 +227,25 @@ class CryptoAnalyst(BaseAgent):
                     task = f"{task}\n\n{memory}"
         except Exception:
             pass  # memory is optional
-        return await super().run(task)
+        result = await super().run(task)
+
+        try:
+            from src.utils.logging import get_logger
+            logger = get_logger("crypto_analyst")
+            signals = result if isinstance(result, list) else result.get("signals", [result]) if isinstance(result, dict) else []
+            for signal in signals:
+                if isinstance(signal, dict) and "ticker" in signal:
+                    logger.info("analyst_signal_result",
+                        ticker=signal.get("ticker"),
+                        direction=signal.get("direction"),
+                        confidence=signal.get("confidence_score"),
+                        entry_price=signal.get("entry_price"),
+                        has_stop_loss=bool(signal.get("stop_loss_price")),
+                    )
+        except Exception:
+            pass
+
+        return result
 
     def update_strategy(self, regime_state: str) -> dict:
         """Update agent's strategy based on current regime.
@@ -294,5 +312,6 @@ class CryptoAnalyst(BaseAgent):
 
     def wipe_memory(self):
         """Clear conversation history — used by /sellall to prevent zombie trades."""
+        self._conversation = []
         from src.utils.logging import get_logger
         get_logger("crypto_analyst").info("crypto_memory_wiped", agent=self.name)

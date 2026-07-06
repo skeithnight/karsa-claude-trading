@@ -217,6 +217,11 @@ class CircuitBreakerManager:
         """Activate a circuit breaker — set Redis key with TTL and log to DB."""
         # Update Prometheus gauge (strip ticker suffix for label)
         update_circuit_breaker(breaker_type.split(":")[0], True)
+        try:
+            from src.metrics.crypto_metrics import update_risk_status
+            update_risk_status(cb_active=True)
+        except Exception:
+            pass
 
         # Set Redis key with TTL
         if self._redis:

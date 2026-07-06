@@ -526,7 +526,8 @@ class CryptoRiskManager:
 
                 # Premium Index check: real-time proxy for next funding direction
                 # If perp trades at discount to index, next funding is guaranteed negative
-                ticker_data = await self.bybit.get_ticker(ticker) if self.bybit else {}
+                bybit = self.mcp._get_bybit() if self.mcp else None
+                ticker_data = await bybit.get_ticker(ticker) if bybit else {}
                 index_price = ticker_data.get("index_price", 0)
                 mark_price = ticker_data.get("mark_price", 0)
                 if index_price > 0 and mark_price > 0:
@@ -542,6 +543,7 @@ class CryptoRiskManager:
 
                 # Funding cost projection: daily cost vs ATR-based conservative target
                 daily_funding_cost_pct = abs(rate) * 3 * 100  # 3 settlements/day
+                rr_ratio = tp_mult # defined here to fix NameError in conservative_target_pct
                 # Use ATR-based target (conservative) instead of TP-based (optimistic)
                 conservative_target_pct = (atr / entry_price * 100) if atr else (stop_distance / entry_price * rr_ratio * 100)
                 max_drag = settings.CRYPTO_FUNDING_DRAG_MAX_PCT

@@ -1,0 +1,1 @@
+"""AODE fundamentals module."""

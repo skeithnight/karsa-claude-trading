@@ -16,7 +16,12 @@ from src.bot.crypto_handlers import (
     start_cmd, dashboard_cmd, activity_cmd,
     portfolio_cmd, performance_cmd, control_cmd,
     mode_cmd, setmode_cmd, universe_cmd, refresh_universe_cmd,
-    button_callback
+    replay_cmd, events_cmd, button_callback,
+    session_history_cmd, manage_profiles_cmd, open_positions_cmd,
+)
+from src.bot.aode_handlers import (
+    cmd_discover, cmd_opportunity, cmd_narrative,
+    cmd_watchlist, cmd_buckets, cmd_aode_research, cmd_aode_smartmoney,
 )
 from src.data.cache import CacheManager
 from src.data.mcp_client import MCPClient
@@ -45,6 +50,17 @@ async def lifespan(app: FastAPI):
     telegram_app.add_handler(CommandHandler("setmode", setmode_cmd))
     telegram_app.add_handler(CommandHandler("universe", universe_cmd))
     telegram_app.add_handler(CommandHandler("refresh_universe", refresh_universe_cmd))
+    telegram_app.add_handler(CommandHandler("replay", replay_cmd))
+    telegram_app.add_handler(CommandHandler("events", events_cmd))
+
+    # AODE Research Commands
+    telegram_app.add_handler(CommandHandler("discover", cmd_discover))
+    telegram_app.add_handler(CommandHandler("research", cmd_aode_research))
+    telegram_app.add_handler(CommandHandler("opportunity", cmd_opportunity))
+    telegram_app.add_handler(CommandHandler("narrative", cmd_narrative))
+    telegram_app.add_handler(CommandHandler("smartmoney", cmd_aode_smartmoney))
+    telegram_app.add_handler(CommandHandler("watchlist", cmd_watchlist))
+    telegram_app.add_handler(CommandHandler("buckets", cmd_buckets))
     
     # Unified Callback Handler
     telegram_app.add_handler(CallbackQueryHandler(button_callback))
@@ -71,6 +87,43 @@ async def lifespan(app: FastAPI):
     await telegram_app.initialize()
     await telegram_app.start()
 
+    # Wire Telegram event subscriber (Phase 2.2)
+    try:
+        from src.architecture.events import event_bus as _event_bus
+        from src.architecture.events.subscribers import telegram_subscriber, configure_telegram_subscriber
+        chat_id = int(settings.TELEGRAM_CHAT_ID) if settings.TELEGRAM_CHAT_ID else 0
+        if chat_id and telegram_app.bot:
+            configure_telegram_subscriber(telegram_app.bot, chat_id)
+            for evt in ["PositionOpened", "PositionReduced", "PositionClosed",
+                        "TrailingActivated", "BreakEvenActivated", "StopLossTriggered",
+                        "StopLossRecovered"]:
+                _event_bus.subscribe(evt, telegram_subscriber)
+            logger.info("telegram_event_subscriber_wired")
+            from src.metrics.crypto_metrics import EVENT_BUS_ACTIVE
+            EVENT_BUS_ACTIVE.set(1)
+    except Exception as e:
+        logger.warning("telegram_subscriber_setup_failed", error=str(e))
+
+    # Wire Redis cross-process event delivery for Telegram bot
+    try:
+        redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+        from src.architecture.events.redis_bus import subscribe_redis_events
+        async def _redis_event_handler(data: dict):
+            from src.architecture.events.subscribers import telegram_subscriber
+            from src.architecture.events.base import EventEnvelope
+            env = EventEnvelope(
+                event_type=data.get("event_type", ""),
+                aggregate_id=data.get("aggregate_id", ""),
+                aggregate_type=data.get("aggregate_type", ""),
+                payload=data.get("payload", {}),
+                publisher=data.get("publisher", ""),
+            )
+            await telegram_subscriber(env)
+        await subscribe_redis_events(redis_client, _redis_event_handler)
+        logger.info("redis_cross_process_events_subscribed")
+    except Exception as e:
+        logger.warning("redis_event_subscribe_failed", error=str(e))
+
     if not settings.TELEGRAM_WEBHOOK_URL:
         await telegram_app.updater.start_polling(drop_pending_updates=True)
         logger.info("crypto_bot_polling_mode")
@@ -92,6 +145,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Karsa Crypto Bot", lifespan=lifespan)
+
+from src.api.crypto_control import router as crypto_control_router
+app.include_router(crypto_control_router)
 
 @app.get("/health")
 async def health_check():

@@ -1,0 +1,1 @@
+"""AODE smart money module."""

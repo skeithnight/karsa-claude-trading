@@ -280,7 +280,7 @@ class CryptoRegimeHistory(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "regime IN ('TREND_BULL', 'TREND_BEAR', 'MEAN_REVERSION', 'CHOP', 'UNKNOWN')",
+            "regime IN ('FULL_TREND_ALIGNMENT', 'MACRO_BULL_MICRO_PULLBACK', 'MACRO_BEAR_MICRO_PULLBACK', 'MICRO_BREAKOUT_NO_MACRO', 'MEAN_REVERSION', 'PURE_DEAD_CHOP', 'UNKNOWN')",
             name="ck_crypto_regime"
         ),
     )

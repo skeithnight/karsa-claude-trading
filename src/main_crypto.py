@@ -64,11 +64,95 @@ class CryptoKarsaApp:
         self.cache = CacheManager(self.redis_client)
 
         if not await self.cache.ping():
+
             logger.error("redis_connection_failed")
             sys.exit(1)
 
+        # Event Bus (architecture Phase 2 — shadow mode, no behavioral change)
+        from src.architecture.events import event_bus as _event_bus
+        from src.architecture.feature_flags import flags as _arch_flags
+        _arch_flags.set_redis(self.redis_client)
+        _event_bus.set_redis(self.redis_client)
+        await _event_bus.start()
+        from src.metrics.crypto_metrics import EVENT_BUS_ACTIVE
+        EVENT_BUS_ACTIVE.set(1)
+        from src.architecture.events.subscribers import metrics_subscriber, journal_subscriber
+        _event_bus.subscribe("PositionReduced", metrics_subscriber)
+        _event_bus.subscribe("PositionClosed", metrics_subscriber)
+        _event_bus.subscribe("TrailingActivated", metrics_subscriber)
+        _event_bus.subscribe("BreakEvenActivated", metrics_subscriber)
+        _event_bus.subscribe("StopLossTriggered", metrics_subscriber)
+        _event_bus.subscribe("PositionReduced", journal_subscriber)
+        _event_bus.subscribe("PositionClosed", journal_subscriber)
+        _event_bus.subscribe("TrailingActivated", journal_subscriber)
+        _event_bus.subscribe("BreakEvenActivated", journal_subscriber)
+        _event_bus.subscribe("StopLossTriggered", journal_subscriber)
+
+        # Exit Engine (Phase 4 — single exit authority)
+        from src.architecture.exit import ExitEngine, EmergencyExitStrategy, StopLossStrategy, TimeExitStrategy, TrailingStopStrategy, PartialExitStrategy, BreakEvenStrategy
+        self.exit_engine = ExitEngine()
+        self.exit_engine.register(EmergencyExitStrategy())
+        self.exit_engine.register(StopLossStrategy())
+        self.exit_engine.register(TimeExitStrategy())
+        self.exit_engine.register(TrailingStopStrategy())
+        self.exit_engine.register(PartialExitStrategy())
+        self.exit_engine.register(BreakEvenStrategy())
+        logger.info("exit_engine_ready", strategies=[s.name for s in self.exit_engine._strategies])
+
+        # Position Manager shadow (Phase 3 — single writer, observe mode)
+        from src.architecture.position import PositionManager, UpdateTrailingStop
+        self.arch_position_manager = PositionManager(event_bus=_event_bus)
+        logger.info("arch_position_manager_ready")
+
+        # Decision Engine (Phase 5 — single decision authority)
+        from src.architecture.decision import DecisionEngine, AnalyzerSource, PolicySource
+        self.decision_engine = DecisionEngine()
+        self.decision_engine.add_source(AnalyzerSource())
+        self.decision_engine.add_source(PolicySource())
+        logger.info("decision_engine_ready", sources=[s.name for s in self.decision_engine._sources])
+
+        # Replay Engine (Phase 6 — event store subscriber)
+        from src.architecture.replay import ReplayEngine
+        self.replay_engine = ReplayEngine()
+        _replay_subscriber = self.replay_engine.store_event
+        for evt_type in ["PositionOpened", "PositionReduced", "PositionClosed",
+                         "TrailingActivated", "BreakEvenActivated", "StopLossTriggered",
+                         "StopLossRecovered", "StopLossUpdated", "PositionSynced"]:
+            _event_bus.subscribe(evt_type, _replay_subscriber)
+        logger.info("replay_engine_ready")
+
+        # Policy Engine (Phase 7 — single policy authority)
+        from src.architecture.policy import PolicyEngine, TradingPolicy, RiskPolicy, EmergencyPolicy
+        self.policy_engine = PolicyEngine()
+        self.policy_engine.add_policy(EmergencyPolicy.kill_switch())
+        self.policy_engine.add_policy(EmergencyPolicy.circuit_breaker())
+        self.policy_engine.add_policy(RiskPolicy.daily_loss_limit())
+        self.policy_engine.add_policy(RiskPolicy.max_leverage())
+        self.policy_engine.add_policy(TradingPolicy.trading_mode_check())
+        self.policy_engine.add_policy(TradingPolicy.max_positions_check())
+        logger.info("policy_engine_ready", policies=[p["name"] for p in self.policy_engine.list_policies()])
+
+        # Agent Runtime (Phase 8 — lifecycle management)
+        from src.architecture.agent_runtime import AgentRuntime, AgentRegistry, AgentConfig
+        self.agent_runtime = AgentRuntime(max_concurrent=5)
+        self.agent_registry = AgentRegistry()
+        self.agent_registry.register(AgentConfig("crypto_analyst", max_retries=3, timeout_seconds=120, combo_name="karsa-routine"))
+        self.agent_registry.register(AgentConfig("crypto_auditor", max_retries=2, timeout_seconds=60, combo_name="karsa-routine"))
+        logger.info("agent_runtime_ready", agents=self.agent_registry.all_types())
+
+        # Workflow Engine (Phase 9 — durable business processes)
+        from src.architecture.workflow import WorkflowEngine, CheckpointManager
+        self.checkpoint_manager = CheckpointManager(redis_client=self.redis_client)
+        self.workflow_engine = WorkflowEngine(checkpoint_manager=self.checkpoint_manager)
+        logger.info("workflow_engine_ready")
+
+        # Ponytail: move MCPClient + Orchestrator init before attribute attachment
         self.mcp = MCPClient(self.cache)
         self.orchestrator = Orchestrator(self.mcp, self.cache, self.rate_limiter)
+        self.orchestrator.decision_engine = self.decision_engine
+        self.orchestrator.policy_engine = self.policy_engine
+        self.orchestrator.agent_runtime = self.agent_runtime
+        self.orchestrator.workflow_engine = self.workflow_engine
 
         # Risk profile + dynamic universe engine
         from src.risk.profile_manager import RiskProfileManager
@@ -118,6 +202,13 @@ class CryptoKarsaApp:
         self._register_jobs()
         self.scheduler.start()
         logger.info("scheduler_started")
+
+        # Seed initial PnL snapshot so Grafana has data immediately
+        try:
+            await self._job_crypto_pnl_snapshot()
+            logger.info("startup_pnl_snapshot_done")
+        except Exception as e:
+            logger.error("startup_pnl_snapshot_failed", error=str(e))
 
         # Schedule an immediate scan run on startup (run 5 seconds from now)
         self.scheduler.add_job(
@@ -191,6 +282,8 @@ class CryptoKarsaApp:
         # Lifecycle management
         s.add_job(self._job_update_trailing_stops, "cron", minute="*/5",
                   id="crypto_trailing_stops", name="Crypto Trailing Stop Update", replace_existing=True, misfire_grace_time=120)
+        s.add_job(self._job_verify_sl, "interval", minutes=5,
+                  id="sl_verification", name="SL Verification & Recovery", replace_existing=True, misfire_grace_time=120)
         s.add_job(self._job_check_partial_exits, "cron", minute="*/2",
                   id="crypto_partial_exits", name="Crypto Partial Exit Check", replace_existing=True, misfire_grace_time=60)
         s.add_job(self._job_check_time_exits, "cron", hour="*", minute=30,
@@ -209,6 +302,14 @@ class CryptoKarsaApp:
                   id="kill_switch", name="Crypto Kill Switch", replace_existing=True, misfire_grace_time=60)
         s.add_job(self._job_metrics_sync, "interval", seconds=60,
                   id="crypto_metrics_sync", name="Crypto Metrics Sync", replace_existing=True, misfire_grace_time=30)
+
+        # AODE Research Jobs (feature-flagged inside each job)
+        s.add_job(self._job_aode_discovery, "cron", hour="*/1",
+                  id="aode_discovery", name="AODE Token Discovery", replace_existing=True, misfire_grace_time=300)
+        s.add_job(self._job_aode_research, "cron", hour="*/4",
+                  id="aode_research", name="AODE Research Scoring", replace_existing=True, misfire_grace_time=600)
+        s.add_job(self._job_aode_monitoring, "cron", minute="*/30",
+                  id="aode_monitoring", name="AODE Monitoring Cycle", replace_existing=True, misfire_grace_time=120)
 
         logger.info("crypto_jobs_registered", count=len(self.scheduler.get_jobs()))
 
@@ -315,12 +416,47 @@ class CryptoKarsaApp:
     async def _job_crypto_pnl_snapshot(self):
         start = time.time()
         try:
-            from src.advisory.performance_tracker import PerformanceTracker
-            tracker = PerformanceTracker(self.redis_client)
-            await tracker.snapshot()
+            from src.models.tables import CryptoPnLSnapshot, ClosedPaperTrade
+            from src.models.database import async_session
+            from datetime import datetime as dt
+            from sqlalchemy import select, func, cast, Date
+
+            bybit = self.mcp._get_bybit()
+            wallet = await bybit.get_wallet_balance()
+            positions = await bybit.get_positions()
+            unrealized = sum(p.get("unrealized_pnl", 0) for p in positions)
+
+            async with async_session() as session:
+                today = dt.utcnow().date()
+                realized_result = await session.execute(
+                    select(func.sum(ClosedPaperTrade.realized_pnl)).where(
+                        ClosedPaperTrade.market == "CRYPTO",
+                        ClosedPaperTrade.exit_date >= dt.combine(today, dt.min.time()),
+                    )
+                )
+                realized = realized_result.scalar() or 0
+
+                funding_result = await session.execute(
+                    select(func.sum(CryptoPnLSnapshot.funding_costs)).where(
+                        CryptoPnLSnapshot.snapshot_date >= dt.combine(today, dt.min.time())
+                    )
+                )
+                funding = funding_result.scalar() or 0
+
+                session.add(CryptoPnLSnapshot(
+                    snapshot_date=dt.utcnow(),
+                    realized_pnl=float(realized),
+                    unrealized_pnl=unrealized,
+                    funding_costs=float(funding),
+                    total_pnl=float(realized) + unrealized - float(funding),
+                    equity=wallet.get("total_equity", wallet.get("balance", 0)),
+                    open_positions=len(positions),
+                ))
+                await session.commit()
+
             JOB_LAST_RUN.labels(job_id="crypto_pnl_snapshot").set(time.time())
             JOB_DURATION.labels(job_id="crypto_pnl_snapshot").observe(time.time() - start)
-            logger.info("crypto_pnl_snapshot_done")
+            logger.info("crypto_pnl_snapshot_done", equity=wallet.get("total_equity", 0))
         except Exception as e:
             JOB_ERRORS.labels(job_id="crypto_pnl_snapshot").inc()
             logger.error("crypto_pnl_snapshot_failed", error=str(e))
@@ -342,31 +478,141 @@ class CryptoKarsaApp:
         try:
             from src.risk.trailing_stop import TrailingStopManager
             from src.models.tables import CryptoPosition
+            from src.models.database import async_session
+            from sqlalchemy import select
             bybit = self.mcp._get_bybit()
             manager = TrailingStopManager(bybit, self.redis_client)
             positions_data = await bybit.get_positions()
             if not positions_data:
                 JOB_LAST_RUN.labels(job_id="crypto_trailing_stops").set(time.time())
                 return
+            # Query DB by ticker to get real IDs (required for DB updates)
             positions = []
-            for p in positions_data:
-                if float(p.get("size", 0) or 0) > 0:
-                    positions.append(CryptoPosition(
-                        id=0, ticker=p.get("symbol", ""),
-                        side=p.get("side", "Buy"),
-                        entry_price=float(p.get("avgPrice", 0) or 0),
-                        quantity=float(p.get("size", 0) or 0),
-                        current_price=float(p.get("markPrice", 0) or 0),
-                        status="OPEN",
-                    ))
+            tickers = [p.get("symbol", "") for p in positions_data if float(p.get("size", 0) or 0) > 0]
+            async with async_session() as session:
+                for ticker in tickers:
+                    result = await session.execute(
+                        select(CryptoPosition).where(
+                            CryptoPosition.ticker == ticker,
+                            CryptoPosition.status == "OPEN",
+                        ).order_by(CryptoPosition.id.desc()).limit(1)
+                    )
+                    db_pos = result.scalar_one_or_none()
+                    if db_pos:
+                        positions.append(db_pos)
             if positions:
-                await manager.update_trailing_stops(positions)
+                # Exit Engine evaluates FIRST (Phase 4 — primary exit authority)
+                blocked_by_exit_engine = set()
+                if hasattr(self, 'exit_engine') and self.exit_engine:
+                    for pos in positions:
+                        try:
+                            from src.architecture.position import Position, PositionState
+                            arch_pos = Position(
+                                symbol=pos.ticker, side=pos.side,
+                                entry_price=float(pos.entry_price), quantity=float(pos.size),
+                                leverage=pos.leverage or 1,
+                                stop_loss=float(pos.stop_loss) if pos.stop_loss else None,
+                                trailing_stop=float(pos.trailing_stop_price) if pos.trailing_stop_price else None,
+                                state=PositionState.OPEN,
+                            )
+                            market_data = {
+                                "mark_price": float(pos.current_price or 0),
+                                "atr": 0, "kill_switch_active": False,
+                            }
+                            signal = self.exit_engine.evaluate(arch_pos, market_data)
+                            if signal and signal.decision.value != "CONTINUE":
+                                logger.warning("exit_engine_decision",
+                                              ticker=pos.ticker,
+                                              decision=signal.decision.value,
+                                              strategy=signal.strategy_name,
+                                              reason=signal.reason,
+                                              priority=signal.priority)
+                                # Block trailing stop for emergency, stop-loss, and full exit
+                                if signal.decision.value in ("EMERGENCY_EXIT", "STOP_LOSS", "FULL_EXIT"):
+                                    from src.metrics.crypto_metrics import record_exit_engine_block
+                                    record_exit_engine_block(signal.decision.value)
+                                    blocked_by_exit_engine.add(pos.ticker)
+                                    logger.critical("exit_engine_blocked_trailing",
+                                                   ticker=pos.ticker,
+                                                   decision=signal.decision.value,
+                                                   strategy=signal.strategy_name,
+                                                   reason=signal.reason)
+                        except Exception as e:
+                            logger.debug("exit_engine_error", ticker=pos.ticker, error=str(e))
+
+                # Filter out positions blocked by ExitEngine
+                active_positions = [p for p in positions if p.ticker not in blocked_by_exit_engine]
+
+                if active_positions:
+                    await manager.update_trailing_stops(active_positions)
+
+                    from src.risk.profit_lock import ProfitLockManager
+                    pl = ProfitLockManager(bybit, self.redis_client)
+                    lock_actions = await pl.check_profit_locks(active_positions)
+                    if lock_actions:
+                        logger.info("profit_locks_activated",
+                                    count=len(lock_actions),
+                                    tickers=[a["ticker"] for a in lock_actions])
+
             JOB_LAST_RUN.labels(job_id="crypto_trailing_stops").set(time.time())
             JOB_DURATION.labels(job_id="crypto_trailing_stops").observe(time.time() - start)
             logger.info("trailing_stops_updated", count=len(positions))
+
+            # Position Manager shadow tracking (Phase 3 — observe only)
+            if hasattr(self, 'arch_position_manager') and self.arch_position_manager and positions:
+                try:
+                    for pos in positions:
+                        cmd = UpdateTrailingStop(
+                            position_id=f"db:{pos.id}",
+                            new_trail_stop=float(pos.trailing_stop_price) if pos.trailing_stop_price else 0,
+                            highest_price=float(pos.current_price) if pos.current_price else None,
+                        )
+                        if cmd.new_trail_stop > 0:
+                            await self.arch_position_manager.update_trailing_stop(cmd)
+                except Exception as e:
+                    logger.debug("position_manager_shadow_error", error=str(e))
         except Exception as e:
             JOB_ERRORS.labels(job_id="crypto_trailing_stops").inc()
             logger.error("trailing_stop_job_failed", error=str(e))
+
+    async def _job_verify_sl(self):
+        """Verify all positions have active SL orders. Recover missing ones."""
+        start = time.time()
+        try:
+            from src.risk.position_manager import PositionManager
+            from src.models.tables import CryptoPosition
+            from src.models.database import async_session
+            from sqlalchemy import select
+            bybit = self.mcp._get_bybit()
+            pm = PositionManager(bybit, self.redis_client)
+            positions = await bybit.get_positions()
+            if not positions:
+                JOB_LAST_RUN.labels(job_id="sl_verification").set(time.time())
+                return
+            # Query DB by ticker to get real IDs (required for DB updates)
+            crypto_positions = []
+            tickers = [p.get("symbol", "") for p in positions if float(p.get("size", 0) or 0) > 0]
+            async with async_session() as session:
+                for ticker in tickers:
+                    result = await session.execute(
+                        select(CryptoPosition).where(
+                            CryptoPosition.ticker == ticker,
+                            CryptoPosition.status == "OPEN",
+                        ).order_by(CryptoPosition.id.desc()).limit(1)
+                    )
+                    db_pos = result.scalar_one_or_none()
+                    if db_pos:
+                        crypto_positions.append(db_pos)
+            if crypto_positions:
+                recoveries = await pm.verify_and_recover_sl(crypto_positions)
+                if recoveries:
+                    logger.warning("sl_recoveries", count=len(recoveries),
+                                   tickers=[r["ticker"] for r in recoveries])
+            JOB_LAST_RUN.labels(job_id="sl_verification").set(time.time())
+            JOB_DURATION.labels(job_id="sl_verification").observe(time.time() - start)
+        except Exception as e:
+            JOB_ERRORS.labels(job_id="sl_verification").inc()
+            logger.error("sl_verification_job_failed", error=str(e))
 
     async def _job_check_partial_exits(self):
         start = time.time()
@@ -525,7 +771,8 @@ class CryptoKarsaApp:
                 JOB_LAST_RUN.labels(job_id="kill_switch").set(time.time())
                 return
             total_pnl = sum(float(p.get("unrealized_pnl", 0) or 0) for p in positions)
-            total_equity = float(await bybit.get_wallet_balance("USDT") or 0)
+            wallet = await bybit.get_wallet_balance("USDT")
+            total_equity = float(wallet.get("balance", 0)) if isinstance(wallet, dict) else 0
             if total_equity > 0 and total_pnl < 0:
                 loss_pct = abs(total_pnl) / total_equity * 100
                 DAILY_LOSS_PCT.set(loss_pct)
@@ -541,8 +788,50 @@ class CryptoKarsaApp:
             JOB_ERRORS.labels(job_id="kill_switch").inc()
             logger.error("kill_switch_failed", error=str(e))
 
+    # AODE Job Methods
+    async def _job_aode_discovery(self):
+        """AODE token discovery cycle (feature-flagged)."""
+        from src.architecture.feature_flags import flags
+        if not flags.is_enabled("aode_discovery_enabled"):
+            return
+        try:
+            from src.research.research_orchestrator import ResearchOrchestrator
+            orch = ResearchOrchestrator(cache=self.cache, bybit_client=self.mcp._get_bybit())
+            result = await orch.run_discovery_cycle()
+            logger.info("aode_discovery_done", result=result)
+        except Exception as e:
+            logger.error("aode_discovery_failed", error=str(e))
+
+    async def _job_aode_research(self):
+        """AODE research scoring cycle (feature-flagged)."""
+        from src.architecture.feature_flags import flags
+        if not flags.is_enabled("aode_research_enabled"):
+            return
+        try:
+            from src.research.research_orchestrator import ResearchOrchestrator
+            orch = ResearchOrchestrator(cache=self.cache)
+            result = await orch.run_research_cycle()
+            logger.info("aode_research_done", result=result)
+        except Exception as e:
+            logger.error("aode_research_failed", error=str(e))
+
+    async def _job_aode_monitoring(self):
+        """AODE monitoring cycle (feature-flagged)."""
+        from src.architecture.feature_flags import flags
+        if not flags.is_enabled("aode_monitoring_enabled"):
+            return
+        try:
+            from src.research.monitoring_engine import MonitoringEngine
+            engine = MonitoringEngine(cache=self.cache)
+            result = await engine.run_monitoring_cycle()
+            logger.info("aode_monitoring_done", result=result)
+        except Exception as e:
+            logger.error("aode_monitoring_failed", error=str(e))
+
     async def shutdown(self):
         logger.info("shutting_down")
+        from src.architecture.events import event_bus as _event_bus
+        await _event_bus.stop()
         if hasattr(self, 'sl_engine') and self.sl_engine:
             await self.sl_engine.stop()
         if hasattr(self, 'ws_manager') and self.ws_manager:
