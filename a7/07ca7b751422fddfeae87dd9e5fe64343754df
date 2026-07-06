@@ -1,0 +1,129 @@
+src/bot/crypto_handlers.py
+  9a1b7387bed39a63 52,58,63,66,69-71,73-74,87-88,92,94-97,105,107-111,115-116,120,123-124,126,129-151,153-178,180-222,224,226-246,252-255,257-267,269-275,277,279-290,366-398,401,404-406,408-420,422-452,1001-1007,1030-1039,1133-1135,1153-1155,1158-1175,1177-1189
+src/agents/autonomous_session.py
+  d03f247f1bf6b7aa 751-752
+  e279621f298bd7fe 29-30,84-85,314-315,644-661,663-683,685-708,710-744,765-767,801
+  9f278351c08d56ba 110-111,157,159
+  e4c0165c9d619625 528-529,534,684,709
+  9a1b7387bed39a63 58,73,121,127,277-280,287-294,745-750,753-764,843-981
+docker-compose.yml
+  9f278351c08d56ba 210
+src/bot/crypto_main.py
+  9a1b7387bed39a63 19-20
+monitoring/grafana/provisioning/dashboards/default.yml
+  e279621f298bd7fe 12
+monitoring/grafana/provisioning/datasources/postgres.yml
+  e4c0165c9d619625 16
+src/risk/emergency.py
+  9f278351c08d56ba 39-43,51-55
+src/agents/orchestrator.py
+  9f278351c08d56ba 314-318,322,325
+src/main_crypto.py
+  e4c0165c9d619625 419
+  7536bc837792e9ee 149,152-155,766-767
+src/architecture/decision/engine.py
+  7536bc837792e9ee 12-14,18
+src/risk/trailing_stop.py
+  d03f247f1bf6b7aa 17,335-339,346
+src/risk/position_sync.py
+  e4c0165c9d619625 174-175
+src/metrics/crypto_metrics.py
+  9a1b7387bed39a63 599-658
+  e279621f298bd7fe 114-149
+  9f278351c08d56ba 524-584
+src/risk/circuit_breaker.py
+  9f278351c08d56ba 220-224
+monitoring/asm-dashboard.json
+  9a1b7387bed39a63 5-6,12,16,26,39,67,76,85,123,132-133,140-141,145-146,150-151,170-175,177,186-187,195,200,205,228-233,235-238,242-243,245,252-253,260-261,274,291-293,298,301,309,321,328-329,342-344,360,377-382,384-387,402,409,436-439,443,445,451,457-458,465-467,470-472,482,484-495,501,505-519,536,538,542,544-545,554,559-577,590-592,596,604,608,610-611,619,621-622,628-629,635-636,642-643,649-650,669-670,674,678-679,686-687,693,698,705,710,717,721-724,728-731,733-741,767,770,774-777,791-792,798,802-810,812-814,816-827,835,839-844,846-858,866-869,873,876,879-888
+  e279621f298bd7fe 27,185,196,206,226-227,234,239-241,244,246-251,254-259,262-264,266-267,270-271,275,279,300,308,310,315-320,323-325,327,330-332,340,350-352,359,361,366-373,392-394,401,403,408,410-415,417-419,421-425,434,440-442,444,446-450,481,535,557-558,578,587,589,597,599-603,605-607,656,673
+  9f278351c08d56ba 11,38,46-47,55,61,64,68-75,79-84,86-98,100-113,121,142-144,147-149,152,158-167,201,456,468-469,475-480,483,496-500,502-504,520-523,533,688,732,765,793-797,799-801,828-834,836-838,845,859-861,863-865
+src/risk/position_manager.py
+  e4c0165c9d619625 196-197
+src/execution/websocket_manager.py
+  9f278351c08d56ba 54-58,68-72
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "a707ca7b751422fddfeae87dd9e5fe64343754df",
+  "prompts": {
+    "7536bc837792e9ee": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2dcd40cf-8907-402b-8a5a-52cbfe64b197",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 11,
+      "total_deletions": 5,
+      "accepted_lines": 11,
+      "overriden_lines": 0
+    },
+    "9a1b7387bed39a63": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "25ffbe9a-3f0e-44b6-a7db-e2980b5e9d8a",
+        "model": "mimo-v2.5"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 770,
+      "total_deletions": 1106,
+      "accepted_lines": 831,
+      "overriden_lines": 16
+    },
+    "9f278351c08d56ba": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8f23f4ab-501d-43f5-a603-c20c07d033cb",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 1278,
+      "total_deletions": 1507,
+      "accepted_lines": 311,
+      "overriden_lines": 5
+    },
+    "d03f247f1bf6b7aa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b1810c5d-04da-49e2-bd96-6f3c367d54b2",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 9,
+      "total_deletions": 3,
+      "accepted_lines": 9,
+      "overriden_lines": 0
+    },
+    "e279621f298bd7fe": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bda45d3b-1a07-4bcb-8d78-63e2ac7aa479",
+        "model": "gemini-3-flash-d"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 525,
+      "total_deletions": 121,
+      "accepted_lines": 397,
+      "overriden_lines": 11
+    },
+    "e4c0165c9d619625": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a28c5304-e2b3-45f0-aace-a8c013ddaba7",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 16,
+      "total_deletions": 8,
+      "accepted_lines": 11,
+      "overriden_lines": 0
+    }
+  }
+}
