@@ -1,0 +1,27 @@
+src/risk/emergency.py
+  1db42f00a53469b7 3,10,13,28-40,46,62-63,99,113-114
+src/config.py
+  1db42f00a53469b7 49
+src/risk/trailing_stop.py
+  1db42f00a53469b7 245,250-259
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "debd8b498e7655e777bd72810e35172d04f19193",
+  "prompts": {
+    "1db42f00a53469b7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c1c69a15-c45c-42a3-85a6-63c5199eb96f",
+        "model": "mimo-v2.5-pro"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 37,
+      "total_deletions": 9,
+      "accepted_lines": 35,
+      "overriden_lines": 1
+    }
+  }
+}
