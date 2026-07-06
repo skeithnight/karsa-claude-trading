@@ -15,6 +15,7 @@ from decimal import Decimal
 
 from src.advisory.crypto_technicals import calculate_atr
 from src.advisory.crypto_universe import PAIR_CONFIG
+from src.config import settings
 from src.models.database import async_session
 from src.models.tables import CryptoPosition, CryptoTrailingStop
 from src.utils.logging import get_logger
@@ -92,6 +93,10 @@ class TrailingStopManager:
 
                 # Calculate new trailing stop
                 trail_distance = atr * Decimal(str(multiplier))
+                # cap trail distance to max_sl_pct of current price
+                max_sl_pct = Decimal(str(settings.CRYPTO_MAX_SL_PCT)) / 100
+                max_distance = current * max_sl_pct
+                trail_distance = min(trail_distance, max_distance)
                 if pos.side == "Buy":
                     new_trail_stop = new_highest - trail_distance
                 else:
@@ -102,6 +107,12 @@ class TrailingStopManager:
                     new_trail_stop = max(new_trail_stop, entry_price + atr * Decimal("0.1"))
                 else:
                     new_trail_stop = min(new_trail_stop, entry_price - atr * Decimal("0.1"))
+
+                # Guard: SL must be on correct side of current price
+                if pos.side == "Buy" and new_trail_stop >= current:
+                    continue  # price dropped below breakeven floor, keep initial SL
+                if pos.side == "Sell" and new_trail_stop <= current:
+                    continue
 
                 # Check if stop actually changed
                 old_stop = pos.trailing_stop_price
@@ -239,6 +250,10 @@ class TrailingStopManager:
             atr = Decimal(str(atr_data["atr"]))
             entry = Decimal(str(pos.entry_price))
             distance = atr * Decimal("1.5")
+            # cap SL distance to max_sl_pct of entry
+            max_sl_pct = Decimal(str(settings.CRYPTO_MAX_SL_PCT)) / 100
+            max_distance = entry * max_sl_pct
+            distance = min(distance, max_distance)
 
             if pos.side == "Buy":
                 sl_price = entry - distance
@@ -307,44 +322,21 @@ class TrailingStopManager:
         return None
 
     async def _amend_stop_on_exchange(self, pos: CryptoPosition, new_stop: Decimal) -> bool:
-        """Amend the stop-loss order on Bybit."""
+        """Amend the stop-loss on Bybit via set_trading_stop (correct API for SL)."""
         try:
-            # Find existing stop order
-            resp = await asyncio.to_thread(
-                self.bybit._http_client.get_open_orders,
-                category="linear",
-                symbol=pos.ticker,
-                orderType="Stop",
-            )
-            if resp.get("retCode") != 0:
-                logger.warning("fetch_stop_orders_failed", ticker=pos.ticker, ret=resp.get("retMsg"))
-                return False
-
-            orders = resp.get("result", {}).get("list", [])
-            # Find the stop-loss order (not take-profit)
-            stop_order = None
-            for order in orders:
-                if order.get("stopOrderType") == "StopLoss":
-                    stop_order = order
-                    break
-
-            if not stop_order:
-                logger.warning("no_stop_order_found", ticker=pos.ticker)
-                return False
-
-            # Round to tick size — Bybit rejects prices not aligned to tick
             tick = PAIR_CONFIG.get(pos.ticker, {}).get("tick_size", 0.001)
             rounded_stop = float(new_stop)
             rounded_stop = round(rounded_stop, len(str(tick).rstrip('0').split('.')[-1]))
 
-            # Amend the order
-            await asyncio.to_thread(
-                self.bybit._http_client.amend_order,
+            resp = await asyncio.to_thread(
+                self.bybit._http_client.set_trading_stop,
                 category="linear",
                 symbol=pos.ticker,
-                orderId=stop_order["orderId"],
-                stopPrice=str(rounded_stop),
+                stopLoss=str(rounded_stop),
             )
+            if resp.get("retCode") != 0:
+                logger.warning("amend_stop_failed", ticker=pos.ticker, ret=resp.get("retMsg"))
+                return False
             return True
 
         except Exception as e:

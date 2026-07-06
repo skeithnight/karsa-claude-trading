@@ -33,7 +33,11 @@ REDIS_MAX_DD = "karsa:auto:max_dd"
 DEFAULT_RISK_PCT = 1.5
 DEFAULT_MAX_POS = 3
 DEFAULT_INTERVAL_MIN = 15
-PROGRESS_COOLDOWN_SEC = 3600  # 1 hour
+PROGRESS_COOLDOWN_SEC = 1800  # 30 min
+REDIS_COOLDOWN_PREFIX = "karsa:auto:cooldown:"  # per-ticker re-entry cooldown
+REENTRY_COOLDOWN_SEC = 7200  # 2 hours after position close
+MAX_CONSECUTIVE_SCAN_FAILURES = 5
+DEFAULT_MAX_DD_PCT = 10.0  # auto-stop if DD exceeds this %
 
 
 class AutonomousSessionManager:
@@ -277,6 +281,7 @@ class AutonomousSessionManager:
         # Max duration check
         max_duration_min = config.get("duration_min", 0)
         start_ts = time.time()
+        consecutive_scan_failures = 0
 
         while await self.is_active():
             if await self.is_paused():
@@ -309,24 +314,63 @@ class AutonomousSessionManager:
                     from src.metrics.crypto_metrics import (
                         POSITION_PNL, POSITION_ENTRY_PRICE, POSITION_MARK_PRICE,
                         POSITION_SIZE, POSITION_LEVERAGE, OPEN_POSITIONS,
+                        POSITION_DATA,
                     )
                     OPEN_POSITIONS.set(len(positions))
                     # Session performance metrics
                     await self._update_metrics(cash, positions)
+                    # ponytail: keep old metrics + emit combined for Grafana single-query table
                     for pos in positions:
                         t = pos.get("ticker", "?")
-                        POSITION_PNL.labels(ticker=t, side=pos.get("side","?")).set(
+                        s = pos.get("side", "?")
+                        POSITION_PNL.labels(ticker=t, side=s).set(
                             float(pos.get("unrealized_pnl", 0)))
-                        POSITION_ENTRY_PRICE.labels(ticker=t, side=pos.get("side","?")).set(
+                        POSITION_ENTRY_PRICE.labels(ticker=t, side=s).set(
                             float(pos.get("entry_price", 0)))
-                        POSITION_MARK_PRICE.labels(ticker=t, side=pos.get("side","?")).set(
+                        POSITION_MARK_PRICE.labels(ticker=t, side=s).set(
                             float(pos.get("current_price", 0)))
-                        POSITION_SIZE.labels(ticker=t, side=pos.get("side","?")).set(
+                        POSITION_SIZE.labels(ticker=t, side=s).set(
                             float(pos.get("size", 0)))
-                        POSITION_LEVERAGE.labels(ticker=t, side=pos.get("side","?")).set(
+                        POSITION_LEVERAGE.labels(ticker=t, side=s).set(
                             float(pos.get("leverage", 1)))
-                except Exception:
-                    pass
+                        POSITION_DATA.labels(ticker=t, side=s, field="uPnL").set(
+                            float(pos.get("unrealized_pnl", 0)))
+                        POSITION_DATA.labels(ticker=t, side=s, field="entry_price").set(
+                            float(pos.get("entry_price", 0)))
+                        POSITION_DATA.labels(ticker=t, side=s, field="mark_price").set(
+                            float(pos.get("current_price", 0)))
+                        POSITION_DATA.labels(ticker=t, side=s, field="size").set(
+                            float(pos.get("size", 0)))
+                        POSITION_DATA.labels(ticker=t, side=s, field="leverage").set(
+                            float(pos.get("leverage", 1)))
+                except Exception as e:
+                    logger.debug("asm_metrics_update_skipped", error=str(e))
+
+                # 0b. Emergency stop check (circuit breaker triggers set this)
+                try:
+                    from src.risk import emergency
+                    if await emergency.is_active():
+                        logger.info("asm_emergency_active", msg="skipping iteration")
+                        await asyncio.sleep(interval_sec)
+                        continue
+                except Exception as e:
+                    logger.debug("asm_emergency_check_failed", error=str(e))
+
+                # 0c. Max drawdown auto-stop
+                try:
+                    peak = float(await self.redis.get(REDIS_PEAK_EQUITY) or 0)
+                    wallet_now = await self.bybit.get_wallet_balance()
+                    current_eq = float(wallet_now.get("total_equity", wallet_now.get("balance", 0)))
+                    if peak > 0 and current_eq > 0:
+                        dd_pct = (peak - current_eq) / peak * 100
+                        max_dd_pct = config.get("max_dd_pct", DEFAULT_MAX_DD_PCT)
+                        if dd_pct >= max_dd_pct:
+                            logger.warning("asm_max_dd_breach", dd_pct=round(dd_pct, 2), limit=max_dd_pct)
+                            if chat_id:
+                                await self._send_telegram(chat_id, f"🚨 <b>Max DD breached</b> ({dd_pct:.1f}% ≥ {max_dd_pct}%). Stopping session.")
+                            break
+                except Exception as e:
+                    logger.debug("asm_dd_check_failed", error=str(e))
 
                 # 1. Regime gate
                 should_pause, regime_msg = await self._check_regime()
@@ -352,7 +396,17 @@ class AutonomousSessionManager:
                 from src.advisory.crypto_regime import CryptoRegimeFilter
                 crf = CryptoRegimeFilter(self.orchestrator.mcp)
                 crypto_regime = await crf.get_current_regime()
-                signals = await self.orchestrator._scan_crypto_parallel(crypto_regime)
+                try:
+                    signals = await self.orchestrator._scan_crypto_parallel(crypto_regime)
+                    consecutive_scan_failures = 0
+                except Exception as scan_err:
+                    consecutive_scan_failures += 1
+                    backoff = min(interval_sec * (2 ** consecutive_scan_failures), 3600)
+                    logger.warning("asm_scan_failed", error=str(scan_err), failures=consecutive_scan_failures, backoff_sec=backoff)
+                    if consecutive_scan_failures >= MAX_CONSECUTIVE_SCAN_FAILURES and chat_id:
+                        await self._send_telegram(chat_id, f"⚠️ <b>{consecutive_scan_failures} consecutive scan failures</b>. Backing off {backoff // 60}min.")
+                    await asyncio.sleep(backoff)
+                    continue
                 logger.info("asm_scan_result", signal_count=len(signals), tickers=[s.get("ticker","?") for s in signals])
 
                 # 4. Execute each signal through existing pipeline
@@ -361,7 +415,7 @@ class AutonomousSessionManager:
                         break
                     if await self._get_open_position_count() >= max_pos:
                         break
-                    await self._execute_signal(signal, chat_id)
+                    await self._execute_signal(signal, chat_id, regime=crypto_regime)
 
                 # 5. Progress update (cooldown enforced)
                 await self._maybe_send_progress(chat_id)
@@ -380,12 +434,18 @@ class AutonomousSessionManager:
 
     # ── Execution ──────────────────────────────────────────────
 
-    async def _execute_signal(self, signal: dict, chat_id: int):
+    async def _execute_signal(self, signal: dict, chat_id: int, regime: dict | None = None):
         """Execute a single signal through lock → risk → SOR."""
         from src.risk.distributed_lock import acquire_execution_lock, release_execution_lock
 
         ticker = signal.get("ticker", "?")
         direction = signal.get("direction", "?")
+
+        # Re-entry cooldown check
+        cooldown_key = f"{REDIS_COOLDOWN_PREFIX}{ticker}"
+        if await self.redis.exists(cooldown_key):
+            logger.info("asm_cooldown_skip", ticker=ticker)
+            return
 
         acquired = await acquire_execution_lock(self.redis, ticker)
         if not acquired:
@@ -408,12 +468,13 @@ class AutonomousSessionManager:
             if "_cash_sized_qty" in signal:
                 signal["qty"] = signal["_cash_sized_qty"]
 
-            # Execute through existing orchestrator pipeline
-            from src.advisory.crypto_regime import CryptoRegimeFilter
-            regime_filter = CryptoRegimeFilter(self.orchestrator.mcp)
-            crypto_regime = await regime_filter.get_current_regime()
+            # Execute through existing orchestrator pipeline — reuse cached regime
+            if regime is None:
+                from src.advisory.crypto_regime import CryptoRegimeFilter
+                regime_filter = CryptoRegimeFilter(self.orchestrator.mcp)
+                regime = await regime_filter.get_current_regime()
             result = await self.orchestrator._auto_execute_crypto(
-                [signal], regime=crypto_regime
+                [signal], regime=regime
             )
 
             if result:
@@ -421,6 +482,7 @@ class AutonomousSessionManager:
                 if status == "EXECUTED":
                     AUTO_SESSION_TRADES_TOTAL.labels(result="executed").inc()
                     logger.info("asm_trade_executed", ticker=ticker, direction=direction)
+                    await self.redis.set(f"{REDIS_COOLDOWN_PREFIX}{ticker}", "1", ex=REENTRY_COOLDOWN_SEC)
                 else:
                     AUTO_SESSION_TRADES_TOTAL.labels(result="rejected").inc()
         except Exception as e:

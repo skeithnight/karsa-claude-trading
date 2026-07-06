@@ -540,17 +540,17 @@
       },
       {
         "id": 11,
-        "type": "barchart",
+        "type": "stat",
         "title": "Daily Net PnL",
-        "description": "Calendar view of daily performance",
+        "description": "Today's realized + unrealized PnL",
         "datasource": {
           "type": "postgres",
           "uid": "postgres"
         },
         "targets": [
           {
-            "rawSql": "SELECT date_trunc('day', snapshot_date) AS time, sum(total_pnl) AS \"Daily PnL\" FROM crypto_pnl_snapshots WHERE snapshot_date >= $__timeFrom() AND snapshot_date < $__timeTo() GROUP BY date_trunc('day', snapshot_date) ORDER BY 1",
-            "format": "time_series",
+            "rawSql": "SELECT sum(total_pnl) AS \"Daily PnL\" FROM crypto_pnl_snapshots WHERE $__timeFilter(snapshot_date)",
+            "format": "table",
             "refId": "A"
           }
         ],
@@ -570,20 +570,14 @@
                   "color": "green"
                 }
               ]
-            },
-            "custom": {
-              "gradientMode": "scheme",
-              "fillOpacity": 80
             }
           }
         },
         "options": {
-          "barWidth": 0.8,
-          "groupWidth": 0.7,
-          "legend": {
-            "displayMode": "hidden"
-          },
-          "orientation": "vertical"
+          "colorMode": "background",
+          "graphMode": "none",
+          "justifyMode": "auto",
+          "textMode": "auto"
         },
         "gridPos": {
           "h": 8,
@@ -615,56 +609,19 @@
         },
         "targets": [
           {
-            "expr": "karsa_position_unrealized_pnl_usd{job=\"karsa-crypto-bot\"}",
-            "legendFormat": "{{ticker}} - {{side}}",
+            "expr": "karsa_position_data{job=\"karsa-crypto-bot\"}",
+            "legendFormat": "{{ticker}} {{side}} {{field}}",
             "instant": true,
             "refId": "A",
-            "format": "table"
-          },
-          {
-            "expr": "karsa_position_entry_price_usd{job=\"karsa-crypto-bot\"}",
-            "legendFormat": "{{ticker}}",
-            "instant": true,
-            "refId": "B",
-            "format": "table"
-          },
-          {
-            "expr": "karsa_position_mark_price_usd{job=\"karsa-crypto-bot\"}",
-            "legendFormat": "{{ticker}}",
-            "instant": true,
-            "refId": "C",
-            "format": "table"
-          },
-          {
-            "expr": "karsa_position_size_qty{job=\"karsa-crypto-bot\"}",
-            "legendFormat": "{{ticker}}",
-            "instant": true,
-            "refId": "D",
-            "format": "table"
-          },
-          {
-            "expr": "karsa_position_leverage{job=\"karsa-crypto-bot\"}",
-            "legendFormat": "{{ticker}}",
-            "instant": true,
-            "refId": "E",
             "format": "table"
           }
         ],
         "transformations": [
           {
-            "id": "merge",
-            "options": {}
-          },
-          {
             "id": "organize",
             "options": {
               "excludeByName": {
                 "Time": true,
-                "Time 1": true,
-                "Time 2": true,
-                "Time 3": true,
-                "Time 4": true,
-                "Time 5": true,
                 "__name__": true,
                 "instance": true,
                 "job": true
@@ -672,11 +629,7 @@
               "renameByName": {
                 "ticker": "Symbol",
                 "side": "Side",
-                "Value #A": "uPnL ($)",
-                "Value #B": "Entry Price",
-                "Value #C": "Mark Price",
-                "Value #D": "Size",
-                "Value #E": "Leverage"
+                "field": "Field"
               }
             }
           }

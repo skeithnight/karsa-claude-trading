@@ -19,6 +19,10 @@ from src.bot.crypto_handlers import (
     replay_cmd, events_cmd, button_callback,
     session_history_cmd, manage_profiles_cmd, open_positions_cmd,
 )
+from src.bot.aode_handlers import (
+    cmd_discover, cmd_opportunity, cmd_narrative,
+    cmd_watchlist, cmd_buckets, cmd_aode_research, cmd_aode_smartmoney,
+)
 from src.data.cache import CacheManager
 from src.data.mcp_client import MCPClient
 from src.utils.rate_limit import RateLimiter
@@ -48,6 +52,15 @@ async def lifespan(app: FastAPI):
     telegram_app.add_handler(CommandHandler("refresh_universe", refresh_universe_cmd))
     telegram_app.add_handler(CommandHandler("replay", replay_cmd))
     telegram_app.add_handler(CommandHandler("events", events_cmd))
+
+    # AODE Research Commands
+    telegram_app.add_handler(CommandHandler("discover", cmd_discover))
+    telegram_app.add_handler(CommandHandler("research", cmd_aode_research))
+    telegram_app.add_handler(CommandHandler("opportunity", cmd_opportunity))
+    telegram_app.add_handler(CommandHandler("narrative", cmd_narrative))
+    telegram_app.add_handler(CommandHandler("smartmoney", cmd_aode_smartmoney))
+    telegram_app.add_handler(CommandHandler("watchlist", cmd_watchlist))
+    telegram_app.add_handler(CommandHandler("buckets", cmd_buckets))
     
     # Unified Callback Handler
     telegram_app.add_handler(CallbackQueryHandler(button_callback))

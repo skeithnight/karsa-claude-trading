@@ -297,10 +297,10 @@ class CryptoRegimeFilter:
             try:
                 from src.models.database import async_session
                 from src.models.tables import CryptoRegimeHistory
-                from datetime import datetime, timezone
+                from datetime import datetime
                 async with async_session() as session:
                     session.add(CryptoRegimeHistory(
-                        timestamp=datetime.now(timezone.utc),
+                        timestamp=datetime.utcnow(),
                         regime=regime,
                         hurst=hurst,
                         adx=adx_4h,

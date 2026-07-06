@@ -206,6 +206,11 @@ POSITION_LEVERAGE = Gauge(
     "Position leverage",
     ["ticker", "side"])
 
+POSITION_DATA = Gauge(
+    "karsa_position_data",
+    "Combined position data for Grafana table",
+    ["ticker", "side", "field"])
+
 # ponytail: no "level" label — alert threshold handles danger/warning
 LIQ_DISTANCE_PCT = Gauge(
     "karsa_liquidation_distance_pct",

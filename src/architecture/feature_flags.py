@@ -18,6 +18,11 @@ _DEFAULT_FLAGS = {
     "policy_engine_enabled": False,
     "workflow_enabled": False,
     "agent_runtime_enabled": False,
+    # AODE (Asymmetric Opportunity Discovery Engine)
+    "aode_discovery_enabled": False,
+    "aode_research_enabled": False,
+    "aode_scoring_enabled": False,
+    "aode_monitoring_enabled": False,
 }
 
 

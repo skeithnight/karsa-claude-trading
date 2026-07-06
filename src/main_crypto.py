@@ -303,6 +303,14 @@ class CryptoKarsaApp:
         s.add_job(self._job_metrics_sync, "interval", seconds=60,
                   id="crypto_metrics_sync", name="Crypto Metrics Sync", replace_existing=True, misfire_grace_time=30)
 
+        # AODE Research Jobs (feature-flagged inside each job)
+        s.add_job(self._job_aode_discovery, "cron", hour="*/1",
+                  id="aode_discovery", name="AODE Token Discovery", replace_existing=True, misfire_grace_time=300)
+        s.add_job(self._job_aode_research, "cron", hour="*/4",
+                  id="aode_research", name="AODE Research Scoring", replace_existing=True, misfire_grace_time=600)
+        s.add_job(self._job_aode_monitoring, "cron", minute="*/30",
+                  id="aode_monitoring", name="AODE Monitoring Cycle", replace_existing=True, misfire_grace_time=120)
+
         logger.info("crypto_jobs_registered", count=len(self.scheduler.get_jobs()))
 
     # --- Job implementations ---
@@ -779,6 +787,46 @@ class CryptoKarsaApp:
         except Exception as e:
             JOB_ERRORS.labels(job_id="kill_switch").inc()
             logger.error("kill_switch_failed", error=str(e))
+
+    # AODE Job Methods
+    async def _job_aode_discovery(self):
+        """AODE token discovery cycle (feature-flagged)."""
+        from src.architecture.feature_flags import flags
+        if not flags.is_enabled("aode_discovery_enabled"):
+            return
+        try:
+            from src.research.research_orchestrator import ResearchOrchestrator
+            orch = ResearchOrchestrator(cache=self.cache, bybit_client=self.mcp._get_bybit())
+            result = await orch.run_discovery_cycle()
+            logger.info("aode_discovery_done", result=result)
+        except Exception as e:
+            logger.error("aode_discovery_failed", error=str(e))
+
+    async def _job_aode_research(self):
+        """AODE research scoring cycle (feature-flagged)."""
+        from src.architecture.feature_flags import flags
+        if not flags.is_enabled("aode_research_enabled"):
+            return
+        try:
+            from src.research.research_orchestrator import ResearchOrchestrator
+            orch = ResearchOrchestrator(cache=self.cache)
+            result = await orch.run_research_cycle()
+            logger.info("aode_research_done", result=result)
+        except Exception as e:
+            logger.error("aode_research_failed", error=str(e))
+
+    async def _job_aode_monitoring(self):
+        """AODE monitoring cycle (feature-flagged)."""
+        from src.architecture.feature_flags import flags
+        if not flags.is_enabled("aode_monitoring_enabled"):
+            return
+        try:
+            from src.research.monitoring_engine import MonitoringEngine
+            engine = MonitoringEngine(cache=self.cache)
+            result = await engine.run_monitoring_cycle()
+            logger.info("aode_monitoring_done", result=result)
+        except Exception as e:
+            logger.error("aode_monitoring_failed", error=str(e))
 
     async def shutdown(self):
         logger.info("shutting_down")

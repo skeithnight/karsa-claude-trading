@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     CRYPTO_FUNDING_ALERT_THRESHOLD: float = 0.05
     CRYPTO_FUNDING_HARD_REJECT_PCT: float = 0.05  # Gate 7: hard reject if funding > 0.05% per 8h
     CRYPTO_FUNDING_DRAG_MAX_PCT: float = 30.0     # Gate 7: max funding cost as % of target move
+    CRYPTO_MAX_SL_PCT: float = 2.0  # max stop-loss distance from entry (2% default)
     CRYPTO_LIQUIDATION_WARN_PCT: float = 20.0
     CRYPTO_LIQUIDATION_ALERT_PCT: float = 10.0
     CRYPTO_LIQUIDATION_FORCE_CLOSE_PCT: float = 5.0
@@ -64,6 +65,19 @@ class Settings(BaseSettings):
     # Risk Profile
     DEFAULT_RISK_PROFILE: str = "conservative"
     ENABLE_RISK_PROFILE_SWITCHING: bool = True
+
+    # AODE (Asymmetric Opportunity Discovery Engine)
+    AODE_ENABLED: bool = False
+    AODE_DISCOVERY_INTERVAL_MIN: int = 60
+    AODE_RESEARCH_BATCH_SIZE: int = 10
+    AODE_MIN_COMPOSITE_SCORE: float = 50.0
+    AODE_MAX_SECURITY_RISK: float = 80.0
+    COINGECKO_API_KEY: str = ""
+    GITHUB_TOKEN: str = ""
+    ETHERSCAN_API_KEY: str = ""
+    SOLSCAN_API_KEY: str = ""
+    BSCSCAN_API_KEY: str = ""
+    DEXSCREENER_ENABLED: bool = True
 
     # Redis Keys
     REDIS_PREFIX: str = "karsa"
