@@ -284,6 +284,33 @@ class CryptoRegimeFilter:
                 "market_season": btc_dom.get("season", "UNKNOWN"),
             }
             _set_cached(result)
+
+            try:
+                from src.metrics.crypto_metrics import CRYPTO_REGIME, REGIME_SIZE_MULT, DOMINANCE
+                _REGIME_ENCODING = {"PURE_DEAD_CHOP": 0, "MEAN_REVERSION": 1, "MACRO_BEAR_MICRO_PULLBACK": 2, "MICRO_BREAKOUT_NO_MACRO": 3, "MACRO_BULL_MICRO_PULLBACK": 4, "FULL_TREND_ALIGNMENT": 5}
+                CRYPTO_REGIME.set(_REGIME_ENCODING.get(regime, -1))
+                REGIME_SIZE_MULT.set(result["size_multiplier"])
+                DOMINANCE.set(result.get("btc_dominance") or 0)
+            except Exception:
+                pass
+                
+            try:
+                from src.models.database import async_session
+                from src.models.tables import CryptoRegimeHistory
+                from datetime import datetime, timezone
+                async with async_session() as session:
+                    session.add(CryptoRegimeHistory(
+                        timestamp=datetime.now(timezone.utc),
+                        regime=regime,
+                        hurst=hurst,
+                        adx=adx_4h,
+                        btc_dominance=result.get("btc_dominance"),
+                        size_multiplier=result["size_multiplier"]
+                    ))
+                    await session.commit()
+            except Exception as e:
+                logger.error("regime_db_persist_failed", error=str(e))
+
             return result
 
         except Exception as e:

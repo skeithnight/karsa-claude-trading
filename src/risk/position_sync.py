@@ -150,6 +150,32 @@ class PositionReconciler:
                         pos.status = "CLOSED"
                         pos.last_synced_at = datetime.utcnow()
 
+                        try:
+                            from src.models.tables import ClosedPaperTrade
+                            exit_price = pos.current_price or pos.entry_price
+                            pnl = pos.unrealized_pnl or 0
+                            pnl_pct = float((exit_price - pos.entry_price) / pos.entry_price * 100) if pos.entry_price else 0
+                            if pos.side == "Sell":
+                                pnl_pct = -pnl_pct
+
+                            session.add(ClosedPaperTrade(
+                                ticker=pos.ticker,
+                                market="CRYPTO",
+                                side=pos.side,
+                                quantity=pos.size,
+                                entry_price=pos.entry_price,
+                                exit_price=exit_price,
+                                realized_pnl=pnl,
+                                realized_pnl_pct=pnl_pct,
+                                entry_date=pos.opened_at,
+                                exit_date=datetime.utcnow(),
+                                exit_reason="phantom_sync"
+                            ))
+                            from src.metrics.crypto_metrics import record_trade_close
+                            record_trade_close(float(pnl), "win" if pnl > 0 else "loss")
+                        except Exception as e:
+                            logger.error("closed_paper_trade_insert_failed", error=str(e))
+
                         session.add(CryptoReconciliationLog(
                             position_id=db_pos.id,
                             drift_type="PHANTOM",

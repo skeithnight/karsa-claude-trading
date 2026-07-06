@@ -1,0 +1,573 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "karsa-asm-ops",
+    "title": "Karsa Auto Session Manager",
+    "description": "Session performance + operational health for autonomous trading",
+    "tags": ["crypto", "asm", "trading", "karsa", "ops"],
+    "timezone": "browser",
+    "schemaVersion": 38,
+    "version": 9,
+    "refresh": "10s",
+    "time": { "from": "now-24h", "to": "now" },
+    "panels": [
+
+      {
+        "id": 1,
+        "type": "row",
+        "title": "Operations",
+        "collapsed": false,
+        "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+      },
+
+      {
+        "id": 2,
+        "type": "stat",
+        "title": "ASM Status",
+        "description": "Is system healthy?",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_asm_state{job=\"karsa-crypto-bot\"}",
+            "legendFormat": "ASM State",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              { "type": "value", "options": { "0": { "text": "● OFFLINE", "color": "red" } } },
+              { "type": "value", "options": { "1": { "text": "● IDLE", "color": "blue" } } },
+              { "type": "value", "options": { "2": { "text": "● TRADING", "color": "green" } } },
+              { "type": "value", "options": { "3": { "text": "● RUNNING", "color": "green" } } },
+              { "type": "special", "options": { "match": "null", "result": { "text": "N/A", "color": "gray" } } }
+            ],
+            "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "red" }, { "value": 1, "color": "green" }] }
+          }
+        },
+        "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "textMode": "auto" },
+        "gridPos": { "h": 5, "w": 4, "x": 0, "y": 1 }
+      },
+
+      {
+        "id": 3,
+        "type": "stat",
+        "title": "Portfolio Value",
+        "description": "How much capital is managed?",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_portfolio_equity_usd{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "Equity",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "decimals": 2,
+            "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "blue" }] }
+          }
+        },
+        "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "textMode": "auto" },
+        "gridPos": { "h": 5, "w": 5, "x": 4, "y": 1 }
+      },
+
+      {
+        "id": 4,
+        "type": "stat",
+        "title": "Session PnL",
+        "description": "Realized + Unrealized PnL",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_auto_session_realized_pnl_usd{job=\"karsa-crypto-orchestrator\"} + karsa_auto_session_unrealized_pnl_usd{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "Total",
+            "instant": true,
+            "refId": "A"
+          },
+          {
+            "expr": "karsa_auto_session_realized_pnl_usd{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "Realized",
+            "instant": true,
+            "refId": "B"
+          },
+          {
+            "expr": "karsa_auto_session_unrealized_pnl_usd{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "Floating",
+            "instant": true,
+            "refId": "C"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "decimals": 2,
+            "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "red" }, { "value": 0, "color": "green" }] }
+          }
+        },
+        "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "textMode": "auto" },
+        "gridPos": { "h": 5, "w": 5, "x": 9, "y": 1 }
+      },
+
+      {
+        "id": 5,
+        "type": "stat",
+        "title": "Available Cash",
+        "description": "Free USDT available for new trades",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_auto_session_available_cash_usd{job=\"karsa-crypto-bot\"}",
+            "legendFormat": "Cash",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "decimals": 2,
+            "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "blue" }] }
+          }
+        },
+        "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "textMode": "auto" },
+        "gridPos": { "h": 5, "w": 5, "x": 14, "y": 1 }
+      },
+
+      {
+        "id": 6,
+        "type": "stat",
+        "title": "Risk Status",
+        "description": "Is portfolio safe?",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "max(karsa_kill_switch_active{job=\"karsa-crypto-bot\"}) * 2 or max(karsa_circuit_breaker_active{job=\"karsa-crypto-bot\"}) * 2 or (max(karsa_drawdown_pct{job=\"karsa-crypto-orchestrator\"}) > bool 2) or vector(0)",
+            "legendFormat": "Risk",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              { "type": "value", "options": { "0": { "text": "● NORMAL", "color": "green" } } },
+              { "type": "value", "options": { "1": { "text": "● WARNING", "color": "yellow" } } },
+              { "type": "value", "options": { "2": { "text": "● CRITICAL", "color": "red" } } },
+              { "type": "special", "options": { "match": "null", "result": { "text": "● NORMAL", "color": "green" } } }
+            ],
+            "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "green" }, { "value": 1, "color": "yellow" }, { "value": 2, "color": "red" }] }
+          }
+        },
+        "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "textMode": "auto" },
+        "gridPos": { "h": 5, "w": 5, "x": 19, "y": 1 }
+      },
+
+      {
+        "id": 10,
+        "type": "row",
+        "title": "Session Performance",
+        "collapsed": false,
+        "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 }
+      },
+
+      {
+        "id": 11,
+        "type": "stat",
+        "title": "Total Return",
+        "description": "Return since session start %",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_session_return_pct{job=\"karsa-crypto-bot\"}",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "decimals": 2,
+            "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "red" }, { "value": 0, "color": "green" }] }
+          }
+        },
+        "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "textMode": "auto" },
+        "gridPos": { "h": 4, "w": 4, "x": 0, "y": 7 }
+      },
+
+      {
+        "id": 12,
+        "type": "stat",
+        "title": "Win Rate",
+        "description": "Winning trades / total trades",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_winning_trades_count{job=\"karsa-crypto-bot\"} / (karsa_winning_trades_count{job=\"karsa-crypto-bot\"} + karsa_losing_trades_count{job=\"karsa-crypto-bot\"}) * 100",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "decimals": 1,
+            "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "red" }, { "value": 40, "color": "yellow" }, { "value": 55, "color": "green" }] }
+          }
+        },
+        "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "textMode": "auto" },
+        "gridPos": { "h": 4, "w": 4, "x": 4, "y": 7 }
+      },
+
+      {
+        "id": 13,
+        "type": "stat",
+        "title": "Profit Factor",
+        "description": "Gross profit / gross loss",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_profit_factor{job=\"karsa-crypto-bot\"}",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "decimals": 2,
+            "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "red" }, { "value": 0.8, "color": "yellow" }, { "value": 1.2, "color": "green" }] }
+          }
+        },
+        "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "textMode": "auto" },
+        "gridPos": { "h": 4, "w": 4, "x": 8, "y": 7 }
+      },
+
+      {
+        "id": 14,
+        "type": "stat",
+        "title": "Current Drawdown",
+        "description": "From peak equity",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_drawdown_pct{job=\"karsa-crypto-orchestrator\"}",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "decimals": 2,
+            "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "green" }, { "value": 1, "color": "yellow" }, { "value": 3, "color": "red" }] }
+          }
+        },
+        "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "textMode": "auto" },
+        "gridPos": { "h": 4, "w": 4, "x": 12, "y": 7 }
+      },
+
+      {
+        "id": 15,
+        "type": "stat",
+        "title": "Total Trades",
+        "description": "Executed in session",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_total_trades_count{job=\"karsa-crypto-bot\"}",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "blue" }] }
+          }
+        },
+        "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "textMode": "auto" },
+        "gridPos": { "h": 4, "w": 4, "x": 16, "y": 7 }
+      },
+
+      {
+        "id": 16,
+        "type": "stat",
+        "title": "Max Drawdown",
+        "description": "Worst drawdown this session",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_max_drawdown_pct{job=\"karsa-crypto-bot\"}",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "decimals": 2,
+            "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "green" }, { "value": 2, "color": "yellow" }, { "value": 5, "color": "red" }] }
+          }
+        },
+        "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "textMode": "auto" },
+        "gridPos": { "h": 4, "w": 4, "x": 20, "y": 7 }
+      },
+
+      {
+        "id": 20,
+        "type": "row",
+        "title": "Portfolio Performance",
+        "collapsed": false,
+        "gridPos": { "h": 1, "w": 24, "x": 0, "y": 11 }
+      },
+
+      {
+        "id": 21,
+        "type": "timeseries",
+        "title": "Portfolio Equity Curve",
+        "description": "Portfolio value over time",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_portfolio_equity_usd{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "Equity"
+          },
+          {
+            "expr": "karsa_auto_session_realized_pnl_usd{job=\"karsa-crypto-orchestrator\"} + karsa_auto_session_unrealized_pnl_usd{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "Session PnL"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "decimals": 2,
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "smooth",
+              "lineWidth": 2,
+              "fillOpacity": 15,
+              "showPoints": "never",
+              "gradientMode": "scheme"
+            }
+          },
+          "overrides": [
+            { "matcher": { "id": "byName", "options": "Session PnL" }, "properties": [{ "id": "custom.fillOpacity", "value": 30 }] }
+          ]
+        },
+        "options": {
+          "legend": { "displayMode": "list", "placement": "bottom" },
+          "tooltip": { "mode": "multi" }
+        },
+        "gridPos": { "h": 8, "w": 16, "x": 0, "y": 12 }
+      },
+
+      {
+        "id": 22,
+        "type": "piechart",
+        "title": "Asset Allocation",
+        "description": "Capital distribution across positions",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_position_allocation_pct{job=\"karsa-crypto-bot\"}",
+            "legendFormat": "{{ticker}}",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "decimals": 1
+          }
+        },
+        "options": {
+          "legend": { "displayMode": "table", "placement": "right", "values": ["value"] },
+          "tooltip": { "mode": "single" },
+          "pieType": "donut"
+        },
+        "gridPos": { "h": 8, "w": 8, "x": 16, "y": 12 }
+      },
+
+      {
+        "id": 30,
+        "type": "row",
+        "title": "Positions & Attribution",
+        "collapsed": false,
+        "gridPos": { "h": 1, "w": 24, "x": 0, "y": 20 }
+      },
+
+      {
+        "id": 31,
+        "type": "table",
+        "title": "Open Positions",
+        "description": "Current open positions with PnL and allocation",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_position_entry_price_usd{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "{{ticker}}",
+            "instant": true,
+            "format": "table",
+            "refId": "A"
+          },
+          {
+            "expr": "karsa_position_mark_price_usd{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "{{ticker}}",
+            "instant": true,
+            "format": "table",
+            "refId": "B"
+          },
+          {
+            "expr": "karsa_position_unrealized_pnl_usd{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "{{ticker}}",
+            "instant": true,
+            "format": "table",
+            "refId": "C"
+          },
+          {
+            "expr": "karsa_position_size_qty{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "{{ticker}}",
+            "instant": true,
+            "format": "table",
+            "refId": "D"
+          },
+          {
+            "expr": "karsa_position_leverage{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "{{ticker}}",
+            "instant": true,
+            "format": "table",
+            "refId": "E"
+          },
+          {
+            "expr": "karsa_position_allocation_pct{job=\"karsa-crypto-bot\"}",
+            "legendFormat": "{{ticker}}",
+            "instant": true,
+            "format": "table",
+            "refId": "F"
+          }
+        ],
+        "transformations": [
+          {
+            "id": "joinByField",
+            "options": { "mode": "union" }
+          },
+          {
+            "id": "organize",
+            "options": {
+              "renameByName": {
+                "ticker": "Symbol",
+                "Value #A": "Entry Price",
+                "Value #B": "Mark Price",
+                "Value #C": "Unrealized PnL",
+                "Value #D": "Size",
+                "Value #E": "Leverage",
+                "Value #F": "Allocation %"
+              }
+            }
+          }
+        ],
+        "fieldConfig": {
+          "defaults": { "custom": { "align": "auto" } },
+          "overrides": [
+            { "matcher": { "id": "byName", "options": "Unrealized PnL" }, "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "decimals", "value": 2 }] },
+            { "matcher": { "id": "byName", "options": "Entry Price" }, "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "decimals", "value": 2 }] },
+            { "matcher": { "id": "byName", "options": "Mark Price" }, "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "decimals", "value": 2 }] },
+            { "matcher": { "id": "byName", "options": "Allocation %" }, "properties": [{ "id": "unit", "value": "percent" }, { "id": "decimals", "value": 1 }] }
+          ]
+        },
+        "options": {
+          "showHeader": true,
+          "sortBy": [{ "displayName": "Allocation %", "desc": true }]
+        },
+        "gridPos": { "h": 8, "w": 16, "x": 0, "y": 21 }
+      },
+
+      {
+        "id": 32,
+        "type": "stat",
+        "title": "Best Performer",
+        "description": "Highest returning open position",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_best_performer_pct{job=\"karsa-crypto-bot\"}",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "decimals": 2,
+            "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "green" }] }
+          }
+        },
+        "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "center", "textMode": "auto" },
+        "gridPos": { "h": 4, "w": 8, "x": 16, "y": 21 }
+      },
+
+      {
+        "id": 33,
+        "type": "stat",
+        "title": "Worst Performer",
+        "description": "Lowest returning open position",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_worst_performer_pct{job=\"karsa-crypto-bot\"}",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "decimals": 2,
+            "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "red" }, { "value": 0, "color": "green" }] }
+          }
+        },
+        "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "center", "textMode": "auto" },
+        "gridPos": { "h": 4, "w": 8, "x": 16, "y": 25 }
+      },
+
+      {
+        "id": 40,
+        "type": "row",
+        "title": "System Health",
+        "collapsed": false,
+        "gridPos": { "h": 1, "w": 24, "x": 0, "y": 29 }
+      },
+
+      {
+        "id": 41,
+        "type": "timeseries",
+        "title": "Signal Rejections & WS Reconnects",
+        "description": "Rejections and reconnects over time",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "increase(karsa_signal_rejections_total{job=\"karsa-crypto-bot\"}[5m])",
+            "legendFormat": "Rejections"
+          },
+          {
+            "expr": "increase(karsa_ws_reconnects_total{job=\"karsa-crypto-bot\"}[5m])",
+            "legendFormat": "WS Reconnects"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "drawStyle": "bars",
+              "lineWidth": 1,
+              "fillOpacity": 60,
+              "gradientMode": "scheme",
+              "showPoints": "never",
+              "stacking": { "mode": "normal", "group": "A" },
+              "axisLabel": "Count / 5min"
+            }
+          },
+          "overrides": [
+            { "matcher": { "id": "byName", "options": "Rejections" }, "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }] },
+            { "matcher": { "id": "byName", "options": "WS Reconnects" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }] }
+          ]
+        },
+        "options": {
+          "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum", "max"] },
+          "tooltip": { "mode": "multi" }
+        },
+        "gridPos": { "h": 6, "w": 24, "x": 0, "y": 30 }
+      }
+
+    ]
+  }
+}

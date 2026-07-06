@@ -311,12 +311,18 @@ class Orchestrator:
                             continue
                     except Exception as e:
                         logger.warning("policy_engine_error", ticker=ticker, error=str(e))
+                try:
+                    from src.metrics.crypto_metrics import record_signal_received
+                    record_signal_received(market)
+                except Exception:
+                    pass
                 if confidence >= min_conf:
                     signals.append(result)
                     try:
-                        from src.metrics.crypto_metrics import record_signal_executed, record_signal_confidence
+                        from src.metrics.crypto_metrics import record_signal_executed, record_signal_confidence, record_signal_validated
                         record_signal_executed(profile_name)
                         record_signal_confidence(profile_name, confidence, True)
+                        record_signal_validated(market)
                     except Exception:
                         pass
                 else:

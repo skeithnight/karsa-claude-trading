@@ -174,6 +174,30 @@ class PositionManager:
                             reason=reason,
                         ))
 
+                        try:
+                            from src.models.tables import ClosedPaperTrade
+                            pnl_pct = float((exit_price - pos.entry_price) / pos.entry_price * 100) if pos.entry_price else 0
+                            if pos.side == "Sell":
+                                pnl_pct = -pnl_pct
+
+                            session.add(ClosedPaperTrade(
+                                ticker=pos.ticker,
+                                market="CRYPTO",
+                                side=pos.side,
+                                quantity=exit_qty,
+                                entry_price=pos.entry_price,
+                                exit_price=exit_price,
+                                realized_pnl=pnl_usdt,
+                                realized_pnl_pct=pnl_pct,
+                                entry_date=pos.opened_at,
+                                exit_date=datetime.now(timezone.utc),
+                                exit_reason=reason
+                            ))
+                            from src.metrics.crypto_metrics import record_trade_close
+                            record_trade_close(float(pnl_usdt), "win" if pnl_usdt > 0 else "loss")
+                        except Exception as e:
+                            logger.error("closed_paper_trade_insert_failed", error=str(e))
+
                         if pos.size <= Decimal("0.00000001"):
                             pos.status = "CLOSED"
 

@@ -109,7 +109,6 @@ class CryptoKarsaApp:
         self.decision_engine = DecisionEngine()
         self.decision_engine.add_source(AnalyzerSource())
         self.decision_engine.add_source(PolicySource())
-        self.orchestrator.decision_engine = self.decision_engine
         logger.info("decision_engine_ready", sources=[s.name for s in self.decision_engine._sources])
 
         # Replay Engine (Phase 6 — event store subscriber)
@@ -131,7 +130,6 @@ class CryptoKarsaApp:
         self.policy_engine.add_policy(RiskPolicy.max_leverage())
         self.policy_engine.add_policy(TradingPolicy.trading_mode_check())
         self.policy_engine.add_policy(TradingPolicy.max_positions_check())
-        self.orchestrator.policy_engine = self.policy_engine
         logger.info("policy_engine_ready", policies=[p["name"] for p in self.policy_engine.list_policies()])
 
         # Agent Runtime (Phase 8 — lifecycle management)
@@ -140,18 +138,21 @@ class CryptoKarsaApp:
         self.agent_registry = AgentRegistry()
         self.agent_registry.register(AgentConfig("crypto_analyst", max_retries=3, timeout_seconds=120, combo_name="karsa-routine"))
         self.agent_registry.register(AgentConfig("crypto_auditor", max_retries=2, timeout_seconds=60, combo_name="karsa-routine"))
-        self.orchestrator.agent_runtime = self.agent_runtime
         logger.info("agent_runtime_ready", agents=self.agent_registry.all_types())
 
         # Workflow Engine (Phase 9 — durable business processes)
         from src.architecture.workflow import WorkflowEngine, CheckpointManager
         self.checkpoint_manager = CheckpointManager(redis_client=self.redis_client)
         self.workflow_engine = WorkflowEngine(checkpoint_manager=self.checkpoint_manager)
-        self.orchestrator.workflow_engine = self.workflow_engine
         logger.info("workflow_engine_ready")
 
+        # Ponytail: move MCPClient + Orchestrator init before attribute attachment
         self.mcp = MCPClient(self.cache)
         self.orchestrator = Orchestrator(self.mcp, self.cache, self.rate_limiter)
+        self.orchestrator.decision_engine = self.decision_engine
+        self.orchestrator.policy_engine = self.policy_engine
+        self.orchestrator.agent_runtime = self.agent_runtime
+        self.orchestrator.workflow_engine = self.workflow_engine
 
         # Risk profile + dynamic universe engine
         from src.risk.profile_manager import RiskProfileManager
@@ -201,6 +202,13 @@ class CryptoKarsaApp:
         self._register_jobs()
         self.scheduler.start()
         logger.info("scheduler_started")
+
+        # Seed initial PnL snapshot so Grafana has data immediately
+        try:
+            await self._job_crypto_pnl_snapshot()
+            logger.info("startup_pnl_snapshot_done")
+        except Exception as e:
+            logger.error("startup_pnl_snapshot_failed", error=str(e))
 
         # Schedule an immediate scan run on startup (run 5 seconds from now)
         self.scheduler.add_job(
@@ -400,12 +408,47 @@ class CryptoKarsaApp:
     async def _job_crypto_pnl_snapshot(self):
         start = time.time()
         try:
-            from src.advisory.performance_tracker import PerformanceTracker
-            tracker = PerformanceTracker(self.redis_client)
-            await tracker.snapshot()
+            from src.models.tables import CryptoPnLSnapshot, ClosedPaperTrade
+            from src.models.database import async_session
+            from datetime import datetime as dt
+            from sqlalchemy import select, func, cast, Date
+
+            bybit = self.mcp._get_bybit()
+            wallet = await bybit.get_wallet_balance()
+            positions = await bybit.get_positions()
+            unrealized = sum(p.get("unrealized_pnl", 0) for p in positions)
+
+            async with async_session() as session:
+                today = dt.utcnow().date()
+                realized_result = await session.execute(
+                    select(func.sum(ClosedPaperTrade.realized_pnl)).where(
+                        ClosedPaperTrade.market == "CRYPTO",
+                        ClosedPaperTrade.exit_date >= dt.combine(today, dt.min.time()),
+                    )
+                )
+                realized = realized_result.scalar() or 0
+
+                funding_result = await session.execute(
+                    select(func.sum(CryptoPnLSnapshot.funding_costs)).where(
+                        CryptoPnLSnapshot.snapshot_date >= dt.combine(today, dt.min.time())
+                    )
+                )
+                funding = funding_result.scalar() or 0
+
+                session.add(CryptoPnLSnapshot(
+                    snapshot_date=dt.utcnow(),
+                    realized_pnl=float(realized),
+                    unrealized_pnl=unrealized,
+                    funding_costs=float(funding),
+                    total_pnl=float(realized) + unrealized - float(funding),
+                    equity=wallet.get("total_equity", wallet.get("balance", 0)),
+                    open_positions=len(positions),
+                ))
+                await session.commit()
+
             JOB_LAST_RUN.labels(job_id="crypto_pnl_snapshot").set(time.time())
             JOB_DURATION.labels(job_id="crypto_pnl_snapshot").observe(time.time() - start)
-            logger.info("crypto_pnl_snapshot_done")
+            logger.info("crypto_pnl_snapshot_done", equity=wallet.get("total_equity", 0))
         except Exception as e:
             JOB_ERRORS.labels(job_id="crypto_pnl_snapshot").inc()
             logger.error("crypto_pnl_snapshot_failed", error=str(e))
@@ -720,7 +763,8 @@ class CryptoKarsaApp:
                 JOB_LAST_RUN.labels(job_id="kill_switch").set(time.time())
                 return
             total_pnl = sum(float(p.get("unrealized_pnl", 0) or 0) for p in positions)
-            total_equity = float(await bybit.get_wallet_balance("USDT") or 0)
+            wallet = await bybit.get_wallet_balance("USDT")
+            total_equity = float(wallet.get("balance", 0)) if isinstance(wallet, dict) else 0
             if total_equity > 0 and total_pnl < 0:
                 loss_pct = abs(total_pnl) / total_equity * 100
                 DAILY_LOSS_PCT.set(loss_pct)

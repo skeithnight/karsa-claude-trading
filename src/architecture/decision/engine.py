@@ -9,9 +9,13 @@ logger = structlog.get_logger(__name__)
 
 
 class DecisionAction(str, Enum):
+    LONG = "LONG"
+    SHORT = "SHORT"
+    CLOSE = "CLOSE"
     BUY = "BUY"
     SELL = "SELL"
     HOLD = "HOLD"
+    WATCH = "WATCH"
     IGNORE = "IGNORE"
     REJECT = "REJECT"
 

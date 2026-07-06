@@ -1,0 +1,17 @@
+apiVersion: 1
+
+datasources:
+  - name: PostgreSQL
+    type: postgres
+    uid: postgres
+    url: karsa-postgres:5432
+    database: trading
+    user: trader
+    secureJsonData:
+      password: "${DB_PASSWORD}"
+    jsonData:
+      sslmode: disable
+      postgresVersion: 1500
+      timescaledb: false
+      database: trading
+    editable: false

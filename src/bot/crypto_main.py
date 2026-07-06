@@ -16,7 +16,8 @@ from src.bot.crypto_handlers import (
     start_cmd, dashboard_cmd, activity_cmd,
     portfolio_cmd, performance_cmd, control_cmd,
     mode_cmd, setmode_cmd, universe_cmd, refresh_universe_cmd,
-    replay_cmd, events_cmd, button_callback
+    replay_cmd, events_cmd, button_callback,
+    session_history_cmd, manage_profiles_cmd, open_positions_cmd,
 )
 from src.data.cache import CacheManager
 from src.data.mcp_client import MCPClient

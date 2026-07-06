@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from src.advisory.crypto_technicals import calculate_atr
+from src.advisory.crypto_universe import PAIR_CONFIG
 from src.models.database import async_session
 from src.models.tables import CryptoPosition, CryptoTrailingStop
 from src.utils.logging import get_logger
@@ -331,13 +332,18 @@ class TrailingStopManager:
                 logger.warning("no_stop_order_found", ticker=pos.ticker)
                 return False
 
+            # Round to tick size — Bybit rejects prices not aligned to tick
+            tick = PAIR_CONFIG.get(pos.ticker, {}).get("tick_size", 0.001)
+            rounded_stop = float(new_stop)
+            rounded_stop = round(rounded_stop, len(str(tick).rstrip('0').split('.')[-1]))
+
             # Amend the order
             await asyncio.to_thread(
                 self.bybit._http_client.amend_order,
                 category="linear",
                 symbol=pos.ticker,
                 orderId=stop_order["orderId"],
-                stopPrice=str(new_stop),
+                stopPrice=str(rounded_stop),
             )
             return True
 

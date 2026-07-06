@@ -76,6 +76,8 @@ class BaseAgent:
             response = None
             for attempt in range(2):
                 try:
+                    import time
+                    t0 = time.time()
                     response = await self.client.messages.create(
                         model=self.combo_name,
                         max_tokens=4096,
@@ -83,6 +85,11 @@ class BaseAgent:
                         tools=self.tools,
                         messages=messages,
                     )
+                    try:
+                        from src.metrics.crypto_metrics import LLM_LATENCY
+                        LLM_LATENCY.labels(agent=self.name).observe(time.time() - t0)
+                    except Exception:
+                        pass
                 except anthropic.RateLimitError:
                     logger.warning("api_rate_limit", agent=self.name, iteration=iteration)
                     return {"error": "api_rate_limited", "agent": self.name}

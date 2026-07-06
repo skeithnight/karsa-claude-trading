@@ -36,6 +36,11 @@ async def activate(reason: str, operator: str) -> bool:
     result = await _get_redis().set(KILL_KEY, payload, nx=True)
     if result:
         update_kill_switch(True)
+        try:
+            from src.metrics.crypto_metrics import update_risk_status
+            update_risk_status(kill_active=True)
+        except Exception:
+            pass
     return bool(result)  # True if set, False if already existed
 
 
@@ -43,6 +48,11 @@ async def deactivate(operator: str) -> None:
     """Deactivate emergency stop — resume trading."""
     await _get_redis().delete(KILL_KEY)
     update_kill_switch(False)
+    try:
+        from src.metrics.crypto_metrics import update_risk_status
+        update_risk_status(kill_active=False)
+    except Exception:
+        pass
 
 
 async def is_active() -> bool:

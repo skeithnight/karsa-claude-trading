@@ -111,6 +111,43 @@ AVG_RR_RATIO_7D = Gauge(
     "karsa_avg_rr_ratio_7d", "7-day average realized R:R ratio")
 
 # ============================================================
+# DOMAIN 1b — Session Performance Metrics
+# ============================================================
+
+SESSION_RETURN_PCT = Gauge(
+    "karsa_session_return_pct", "Total return % since session start")
+
+DAILY_RETURN_PCT = Gauge(
+    "karsa_daily_return_pct", "Today's return %")
+
+MAX_DRAWDOWN_PCT = Gauge(
+    "karsa_max_drawdown_pct", "Max drawdown % in current session")
+
+PROFIT_FACTOR = Gauge(
+    "karsa_profit_factor", "Gross profit / gross loss ratio")
+
+TOTAL_TRADES_COUNT = Gauge(
+    "karsa_total_trades_count", "Total trades executed in session")
+
+WINNING_TRADES = Gauge(
+    "karsa_winning_trades_count", "Winning trades in session")
+
+LOSING_TRADES = Gauge(
+    "karsa_losing_trades_count", "Losing trades in session")
+
+POSITION_ALLOCATION = Gauge(
+    "karsa_position_allocation_pct", "Position allocation as % of equity", ["ticker"])
+
+BEST_PERFORMER_PCT = Gauge(
+    "karsa_best_performer_pct", "Best performing position return %")
+
+WORST_PERFORMER_PCT = Gauge(
+    "karsa_worst_performer_pct", "Worst performing position return %")
+
+AVG_HOLDING_HOURS = Gauge(
+    "karsa_avg_holding_time_hours", "Average holding time in hours")
+
+# ============================================================
 # DOMAIN 2 — Risk Safety (Kill Switch & Circuit Breakers)
 # ============================================================
 
@@ -152,22 +189,22 @@ POSITION_PNL = Gauge(
 POSITION_ENTRY_PRICE = Gauge(
     "karsa_position_entry_price_usd",
     "Entry price per open position",
-    ["ticker"])
+    ["ticker", "side"])
 
 POSITION_MARK_PRICE = Gauge(
     "karsa_position_mark_price_usd",
     "Current mark price per open position",
-    ["ticker"])
+    ["ticker", "side"])
 
 POSITION_SIZE = Gauge(
     "karsa_position_size_qty",
     "Position size in base currency",
-    ["ticker"])
+    ["ticker", "side"])
 
 POSITION_LEVERAGE = Gauge(
     "karsa_position_leverage",
     "Position leverage",
-    ["ticker"])
+    ["ticker", "side"])
 
 # ponytail: no "level" label — alert threshold handles danger/warning
 LIQ_DISTANCE_PCT = Gauge(
@@ -284,6 +321,10 @@ SL_EXECUTION_TOTAL = Counter(
 # ============================================================
 # DOMAIN 6 — Regime & Intelligence (stubs for P3)
 # ============================================================
+
+SCAN_DURATION = Histogram("karsa_scan_duration_seconds", "Full crypto scan cycle time", ["market"])
+COIN_SCAN_DURATION = Histogram("karsa_coin_scan_duration_seconds", "Per-coin analyst call time", ["ticker"])
+REGIME_CLASSIFY_DURATION = Histogram("karsa_regime_classify_seconds", "Regime classification time")
 
 CRYPTO_REGIME = Gauge(
     "karsa_crypto_regime",
@@ -480,6 +521,67 @@ POSITION_MANAGER_WRITES = Counter(
     ["operation"],
 )
 
+# ============================================================
+# DOMAIN 7 — Operations Dashboard (ASM ops panels)
+# ============================================================
+
+ASM_STATE = Gauge(
+    "karsa_asm_state",
+    "ASM tri-state: 0=disabled, 1=idle (no positions), 2=trading (has positions)",
+)
+
+BYBIT_WS_CONNECTED = Gauge(
+    "karsa_bybit_ws_connected",
+    "1 if Bybit WebSocket is connected, 0 otherwise",
+)
+
+SIGNALS_RECEIVED = Counter(
+    "karsa_signals_received_total",
+    "Signals received from analysts before validation",
+    ["market"],
+)
+
+SIGNALS_VALIDATED = Counter(
+    "karsa_signals_validated_total",
+    "Signals that passed validation (before risk gate)",
+    ["market"],
+)
+
+RISK_STATUS = Gauge(
+    "karsa_risk_status",
+    "Aggregate risk status: 0=normal, 1=warning (DD>2%), 2=critical (kill/breaker)",
+)
+
+
+def record_asm_state(state: int):
+    """Update ASM state. Call from ASM start/stop and position changes."""
+    ASM_STATE.set(state)
+
+
+def record_ws_connected(connected: bool):
+    """Update Bybit WS connection state."""
+    BYBIT_WS_CONNECTED.set(1 if connected else 0)
+
+
+def record_signal_received(market: str = "crypto"):
+    """Increment received signal counter. Call when analyst returns a signal."""
+    SIGNALS_RECEIVED.labels(market=market).inc()
+
+
+def record_signal_validated(market: str = "crypto"):
+    """Increment validated signal counter. Call after _validate_signal passes."""
+    SIGNALS_VALIDATED.labels(market=market).inc()
+
+
+def update_risk_status(kill_active: bool = False, cb_active: bool = False, dd_pct: float = 0):
+    """Set aggregate risk status. Callers pass known state."""
+    if kill_active or cb_active:
+        RISK_STATUS.set(2)
+    elif dd_pct > 2:
+        RISK_STATUS.set(1)
+    else:
+        RISK_STATUS.set(0)
+
 
 def record_exit_engine_block(decision: str):
     """Call when ExitEngine blocks a trailing stop action."""
@@ -494,3 +596,63 @@ def record_event(event_type: str):
 def record_pm_write(operation: str):
     """Increment Position Manager write counter."""
     POSITION_MANAGER_WRITES.labels(operation=operation).inc()
+
+
+# ============================================================
+# DOMAIN 7 — Wallet & ASM Dashboard (Grafana Trading Ledger)
+# ============================================================
+
+WALLET_TOTAL_EQUITY = Gauge(
+    "karsa_wallet_total_equity_usd",
+    "Total account equity in USDT")
+
+WALLET_AVAILABLE = Gauge(
+    "karsa_wallet_available_usd",
+    "Available balance in USDT")
+
+WALLET_USED_MARGIN = Gauge(
+    "karsa_wallet_used_margin_usd",
+    "Margin used in USDT")
+
+ASM_UPTIME_SECONDS = Gauge(
+    "karsa_asm_uptime_seconds",
+    "Current ASM session uptime in seconds")
+
+ASM_NEXT_SCAN_SECONDS = Gauge(
+    "karsa_asm_next_scan_seconds",
+    "Seconds until next ASM scan")
+
+TRADE_CLOSED_TOTAL = Counter(
+    "karsa_trade_closed_total",
+    "Total closed trades",
+    ["result"])
+
+TRADE_CLOSED_PNL = Histogram(
+    "karsa_trade_closed_pnl_usd",
+    "Realized PnL per closed trade in USD",
+    buckets=[-500, -200, -100, -50, -10, 0, 10, 50, 100, 200, 500])
+
+
+def update_wallet_metrics(total_equity: float, available: float, used_margin: float):
+    """Update wallet gauges. Call from ASM loop or bot dashboard."""
+    WALLET_TOTAL_EQUITY.set(total_equity)
+    WALLET_AVAILABLE.set(available)
+    WALLET_USED_MARGIN.set(used_margin)
+
+
+def update_asm_uptime(start_time: float):
+    """Update ASM uptime gauge from session start timestamp."""
+    import time
+    uptime = max(0, time.time() - start_time)
+    ASM_UPTIME_SECONDS.set(uptime)
+
+
+def update_asm_next_scan(seconds: float):
+    """Update next scan countdown gauge."""
+    ASM_NEXT_SCAN_SECONDS.set(max(0, seconds))
+
+
+def record_trade_close(pnl: float, result: str):
+    """Record a closed trade. result: 'win' or 'loss'."""
+    TRADE_CLOSED_TOTAL.labels(result=result).inc()
+    TRADE_CLOSED_PNL.observe(pnl)

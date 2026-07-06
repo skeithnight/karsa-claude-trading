@@ -21,10 +21,13 @@ logger = get_logger("autonomous_session")
 
 # Redis keys
 REDIS_ACTIVE = "karsa:auto:state:active"
+REDIS_PAUSED = "karsa:auto:state:paused"
 REDIS_CONFIG = "karsa:auto:config"
 REDIS_START_TIME = "karsa:auto:start_time"
 REDIS_START_EQUITY = "karsa:auto:start_equity"
 REDIS_PROGRESS_TS = "karsa:auto:last_progress_ts"
+REDIS_PEAK_EQUITY = "karsa:auto:peak_equity"
+REDIS_MAX_DD = "karsa:auto:max_dd"
 
 # Default config
 DEFAULT_RISK_PCT = 1.5
@@ -52,6 +55,7 @@ class AutonomousSessionManager:
         risk_pct = float(config.get("risk_pct", DEFAULT_RISK_PCT))
         max_pos = int(config.get("max_pos", DEFAULT_MAX_POS))
         interval = int(config.get("interval", DEFAULT_INTERVAL_MIN))
+        duration_min = int(config.get("duration_min", 0))
 
         # Snapshot starting equity
         wallet = await self.bybit.get_wallet_balance(coin="USDT")
@@ -66,15 +70,19 @@ class AutonomousSessionManager:
             "risk_pct": risk_pct,
             "max_pos": max_pos,
             "interval_min": interval,
+            "duration_min": duration_min,
         }
 
         # Persist to Redis
         try:
             pipe = self.redis.pipeline()
             pipe.set(REDIS_ACTIVE, "1")
+            pipe.set(REDIS_PAUSED, "0")
             pipe.set(REDIS_CONFIG, json.dumps(session_config))
             pipe.set(REDIS_START_TIME, str(time.time()))
             pipe.set(REDIS_START_EQUITY, str(starting_equity))
+            pipe.set(REDIS_PEAK_EQUITY, str(starting_equity))
+            pipe.set(REDIS_MAX_DD, "0")
             pipe.delete(REDIS_PROGRESS_TS)
             results = await pipe.execute()
             logger.info("asm_redis_written", keys=[REDIS_ACTIVE, REDIS_CONFIG], results=results)
@@ -82,6 +90,7 @@ class AutonomousSessionManager:
             logger.error("asm_redis_write_failed", error=str(e))
             # Fallback: direct set
             await self.redis.set(REDIS_ACTIVE, "1")
+            await self.redis.set(REDIS_PAUSED, "0")
             await self.redis.set(REDIS_CONFIG, json.dumps(session_config))
             logger.info("asm_redis_fallback_written")
 
@@ -98,6 +107,8 @@ class AutonomousSessionManager:
             AUTO_SESSION_CASH_USD.set(starting_equity)
             AUTO_SESSION_REALIZED_PNL.set(0)
             AUTO_SESSION_UNREALIZED_PNL.set(0)
+            from src.metrics.crypto_metrics import record_asm_state
+            record_asm_state(1)  # idle — no positions yet
         except Exception:
             pass
 
@@ -107,13 +118,30 @@ class AutonomousSessionManager:
         asyncio.create_task(self._run_loop(chat_id))
 
         from src.utils.format import fmt, bold, code
+        dur_str = "Unlimited" if duration_min == 0 else f"{duration_min // 60}h {duration_min % 60}m" if duration_min >= 60 else f"{duration_min}m"
         return fmt(
             bold("🤖 AUTONOMOUS SESSION STARTED"),
             "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "\n💰 Equity: ", code(f"${starting_equity:,.2f}"),
             "\n📊 Risk: ", code(f"{risk_pct}%"), " | Max Positions: ", code(str(max_pos)),
-            "\n⏱️ Interval: ", code(f"{interval}m"),
+            "\n⏱️ Interval: ", code(f"{interval}m"), " | Duration: ", code(dur_str),
         )
+
+    async def pause(self) -> str:
+        """Pause scanning loop, keeping existing positions intact."""
+        if not await self.is_active():
+            return "ℹ️ No active session to pause."
+        await self.redis.set(REDIS_PAUSED, "1")
+        logger.info("asm_paused")
+        return "⏸ <b>Autonomous Session Paused</b>\nScanning loop frozen. Open positions remain active."
+
+    async def resume(self) -> str:
+        """Resume scanning loop from pause."""
+        if not await self.is_active():
+            return "ℹ️ No active session to resume."
+        await self.redis.set(REDIS_PAUSED, "0")
+        logger.info("asm_resumed")
+        return "▶️ <b>Autonomous Session Resumed</b>\nScanning loop active."
 
     async def stop(self) -> str:
         """Stop the session. Returns MTM report."""
@@ -121,12 +149,14 @@ class AutonomousSessionManager:
             return "ℹ️ No active session."
 
         await self.redis.set(REDIS_ACTIVE, "0")
+        await self.redis.set(REDIS_PAUSED, "0")
         logger.info("asm_stopping")
 
         # Update Prometheus — ASM stopped
         try:
-            from src.metrics.crypto_metrics import AUTO_SESSION_ACTIVE
+            from src.metrics.crypto_metrics import AUTO_SESSION_ACTIVE, record_asm_state
             AUTO_SESSION_ACTIVE.set(0)
+            record_asm_state(0)
         except Exception:
             pass
 
@@ -244,7 +274,24 @@ class AutonomousSessionManager:
 
         logger.info("asm_loop_started", config=config)
 
+        # Max duration check
+        max_duration_min = config.get("duration_min", 0)
+        start_ts = time.time()
+
         while await self.is_active():
+            if await self.is_paused():
+                logger.info("asm_loop_paused")
+                await asyncio.sleep(15)
+                continue
+
+            # Duration check
+            if max_duration_min > 0:
+                elapsed_min = (time.time() - start_ts) / 60
+                if elapsed_min >= max_duration_min:
+                    logger.info("asm_duration_reached", elapsed=f"{elapsed_min:.0f}min", limit=f"{max_duration_min}min")
+                    if chat_id:
+                        await self._send_telegram(chat_id, f"⏰ <b>Duration reached</b> ({max_duration_min}min). Stopping session.")
+                    break
             try:
                 # Update ASM metrics each iteration
                 try:
@@ -264,17 +311,19 @@ class AutonomousSessionManager:
                         POSITION_SIZE, POSITION_LEVERAGE, OPEN_POSITIONS,
                     )
                     OPEN_POSITIONS.set(len(positions))
+                    # Session performance metrics
+                    await self._update_metrics(cash, positions)
                     for pos in positions:
                         t = pos.get("ticker", "?")
                         POSITION_PNL.labels(ticker=t, side=pos.get("side","?")).set(
                             float(pos.get("unrealized_pnl", 0)))
-                        POSITION_ENTRY_PRICE.labels(ticker=t).set(
+                        POSITION_ENTRY_PRICE.labels(ticker=t, side=pos.get("side","?")).set(
                             float(pos.get("entry_price", 0)))
-                        POSITION_MARK_PRICE.labels(ticker=t).set(
+                        POSITION_MARK_PRICE.labels(ticker=t, side=pos.get("side","?")).set(
                             float(pos.get("current_price", 0)))
-                        POSITION_SIZE.labels(ticker=t).set(
+                        POSITION_SIZE.labels(ticker=t, side=pos.get("side","?")).set(
                             float(pos.get("size", 0)))
-                        POSITION_LEVERAGE.labels(ticker=t).set(
+                        POSITION_LEVERAGE.labels(ticker=t, side=pos.get("side","?")).set(
                             float(pos.get("leverage", 1)))
                 except Exception:
                     pass
@@ -316,6 +365,9 @@ class AutonomousSessionManager:
 
                 # 5. Progress update (cooldown enforced)
                 await self._maybe_send_progress(chat_id)
+                await self.redis.set(REDIS_PROGRESS_TS, str(time.time()))
+                from src.metrics.crypto_metrics import update_asm_next_scan
+                update_asm_next_scan(interval_sec)
 
             except Exception as e:
                 logger.critical("asm_loop_error", error=str(e))
@@ -357,8 +409,11 @@ class AutonomousSessionManager:
                 signal["qty"] = signal["_cash_sized_qty"]
 
             # Execute through existing orchestrator pipeline
+            from src.advisory.crypto_regime import CryptoRegimeFilter
+            regime_filter = CryptoRegimeFilter(self.orchestrator.mcp)
+            crypto_regime = await regime_filter.get_current_regime()
             result = await self.orchestrator._auto_execute_crypto(
-                [signal], regime=None
+                [signal], regime=crypto_regime
             )
 
             if result:
@@ -470,11 +525,13 @@ class AutonomousSessionManager:
         # Update Prometheus
         try:
             from src.metrics.crypto_metrics import (
-                AUTO_SESSION_ACTIVE, AUTO_SESSION_REALIZED_PNL, AUTO_SESSION_UNREALIZED_PNL
+                AUTO_SESSION_ACTIVE, AUTO_SESSION_REALIZED_PNL, AUTO_SESSION_UNREALIZED_PNL,
+                DAILY_PNL_USD
             )
             AUTO_SESSION_ACTIVE.set(0)
             AUTO_SESSION_REALIZED_PNL.set(realized_pnl)
             AUTO_SESSION_UNREALIZED_PNL.set(unrealized_pnl)
+            DAILY_PNL_USD.set(realized_pnl)
         except Exception:
             pass
 
@@ -509,6 +566,10 @@ class AutonomousSessionManager:
         val = await self.redis.get(REDIS_ACTIVE)
         return val in ("1", b"1")
 
+    async def is_paused(self) -> bool:
+        val = await self.redis.get(REDIS_PAUSED)
+        return val in ("1", b"1")
+
     async def _get_config(self) -> dict:
         raw = await self.redis.get(REDIS_CONFIG)
         if raw:
@@ -536,7 +597,7 @@ class AutonomousSessionManager:
                     select(func.coalesce(func.sum(ClosedPaperTrade.realized_pnl), 0))
                     .where(
                         ClosedPaperTrade.market == "CRYPTO",
-                        ClosedPaperTrade.exit_date >= datetime.fromtimestamp(start_time),
+                        ClosedPaperTrade.exit_date >= datetime.fromtimestamp(start_time, tz=timezone.utc).replace(tzinfo=None),
                     )
                 )
                 return float(result.scalar() or 0.0)
@@ -561,7 +622,7 @@ class AutonomousSessionManager:
                     )
                     .where(
                         ClosedPaperTrade.market == "CRYPTO",
-                        ClosedPaperTrade.exit_date >= datetime.fromtimestamp(start_time),
+                        ClosedPaperTrade.exit_date >= datetime.fromtimestamp(start_time, tz=timezone.utc).replace(tzinfo=None),
                     )
                 )
                 row = result.one()
@@ -570,7 +631,7 @@ class AutonomousSessionManager:
                     select(func.count(ClosedPaperTrade.id))
                     .where(
                         ClosedPaperTrade.market == "CRYPTO",
-                        ClosedPaperTrade.exit_date >= datetime.fromtimestamp(start_time),
+                        ClosedPaperTrade.exit_date >= datetime.fromtimestamp(start_time, tz=timezone.utc).replace(tzinfo=None),
                         ClosedPaperTrade.realized_pnl > 0,
                     )
                 )
@@ -579,6 +640,130 @@ class AutonomousSessionManager:
         except Exception as e:
             logger.debug("asm_stats_query_failed", error=str(e))
             return 0.0, 0, 0, 0
+
+    async def _get_profit_factor(self) -> float:
+        """Gross profit / gross loss for current session."""
+        start_time = float(await self.redis.get(REDIS_START_TIME) or time.time())
+        try:
+            from src.models.database import async_session
+            from src.models.tables import ClosedPaperTrade
+            from sqlalchemy import select, func
+            async with async_session() as session:
+                result = await session.execute(
+                    select(
+                        func.coalesce(func.sum(
+                            func.greatest(ClosedPaperTrade.realized_pnl, 0)
+                        ), 0),
+                        func.coalesce(func.sum(
+                            func.greatest(-ClosedPaperTrade.realized_pnl, 0)
+                        ), 0),
+                    ).where(
+                        ClosedPaperTrade.market == "CRYPTO",
+                        ClosedPaperTrade.exit_date >= datetime.fromtimestamp(start_time, tz=timezone.utc).replace(tzinfo=None),
+                    )
+                )
+                row = result.one()
+                gross_profit = float(row[0])
+                gross_loss = float(row[1])
+                if gross_loss <= 0:
+                    return 99.9 if gross_profit > 0 else 0.0
+                return round(gross_profit / gross_loss, 2)
+        except Exception as e:
+            logger.debug("asm_profit_factor_failed", error=str(e))
+            return 0.0
+
+    async def _update_metrics(self, current_equity: float, positions: list[dict]):
+        """Publish session performance metrics to Prometheus."""
+        try:
+            start_equity = float(await self.redis.get(REDIS_START_EQUITY) or current_equity)
+
+            from src.metrics.crypto_metrics import (
+                SESSION_RETURN_PCT, MAX_DRAWDOWN_PCT, PROFIT_FACTOR,
+                TOTAL_TRADES_COUNT, WINNING_TRADES, LOSING_TRADES,
+                POSITION_ALLOCATION, BEST_PERFORMER_PCT, WORST_PERFORMER_PCT,
+                AVG_HOLDING_HOURS, DAILY_PNL_USD,
+            )
+
+            # Session return
+            if start_equity > 0:
+                SESSION_RETURN_PCT.set(
+                    round((current_equity - start_equity) / start_equity * 100, 2))
+
+            # Max drawdown tracking
+            peak = float(await self.redis.get(REDIS_PEAK_EQUITY) or current_equity)
+            if current_equity > peak:
+                peak = current_equity
+                await self.redis.set(REDIS_PEAK_EQUITY, str(peak))
+            dd_pct = (peak - current_equity) / peak * 100 if peak > 0 else 0
+            max_dd = float(await self.redis.get(REDIS_MAX_DD) or 0)
+            if dd_pct > max_dd:
+                max_dd = dd_pct
+                await self.redis.set(REDIS_MAX_DD, str(max_dd))
+            MAX_DRAWDOWN_PCT.set(round(max_dd, 2))
+
+            # Trade stats
+            realized_pnl, wins, losses, total_trades = await self._get_session_stats()
+            TOTAL_TRADES_COUNT.set(total_trades)
+            WINNING_TRADES.set(wins)
+            LOSING_TRADES.set(losses)
+            DAILY_PNL_USD.set(realized_pnl)
+
+            # Profit factor
+            pf = await self._get_profit_factor()
+            PROFIT_FACTOR.set(pf)
+
+            # Position allocation, best/worst, avg holding
+            best_pnl_pct = 0.0
+            worst_pnl_pct = 0.0
+            holding_hours = []
+            for p in positions:
+                size = float(p.get("size", 0) or 0)
+                if size <= 0:
+                    continue
+                ticker = p.get("ticker", p.get("symbol", ""))
+                entry = float(p.get("entry_price", 0) or 0)
+                mark = float(p.get("current_price", 0) or entry)
+                pnl_pct = ((mark - entry) / entry * 100) if entry > 0 and p.get("side") == "Buy" else (
+                    ((entry - mark) / entry * 100) if entry > 0 else 0)
+                # Allocation: notional / equity
+                notional = entry * abs(size)
+                alloc = (notional / current_equity * 100) if current_equity > 0 else 0
+                POSITION_ALLOCATION.labels(ticker=ticker).set(round(alloc, 2))
+                if pnl_pct > best_pnl_pct:
+                    best_pnl_pct = pnl_pct
+                if pnl_pct < worst_pnl_pct:
+                    worst_pnl_pct = pnl_pct
+                # Position age from age_hours if available
+                age = float(p.get("age_hours", 0) or 0)
+                if age > 0:
+                    holding_hours.append(age)
+
+            BEST_PERFORMER_PCT.set(round(best_pnl_pct, 2))
+            WORST_PERFORMER_PCT.set(round(worst_pnl_pct, 2))
+            if holding_hours:
+                AVG_HOLDING_HOURS.set(round(sum(holding_hours) / len(holding_hours), 1))
+
+            # Wallet & ASM dashboard metrics
+            from src.metrics.crypto_metrics import (
+                update_wallet_metrics, update_asm_uptime, update_asm_next_scan,
+            )
+            available = current_equity - sum(
+                float(p.get("entry_price", 0)) * abs(float(p.get("size", 0)))
+                for p in positions if float(p.get("size", 0)) > 0)
+            update_wallet_metrics(current_equity, max(0, available), current_equity - available)
+
+            start_ts = float(await self.redis.get(REDIS_START_TIME) or 0)
+            if start_ts > 0:
+                update_asm_uptime(start_ts)
+
+            config = json.loads(await self.redis.get(REDIS_CONFIG) or "{}")
+            interval_sec = config.get("interval_min", DEFAULT_INTERVAL_MIN) * 60
+            last_scan = float(await self.redis.get(REDIS_PROGRESS_TS) or 0)
+            if last_scan > 0:
+                elapsed_since_scan = time.time() - last_scan
+                update_asm_next_scan(max(0, interval_sec - elapsed_since_scan))
+        except Exception as e:
+            logger.debug("asm_metrics_update_failed", error=str(e))
 
     async def _maybe_send_progress(self, chat_id: int):
         """Send progress update if cooldown has elapsed."""
@@ -611,8 +796,9 @@ class AutonomousSessionManager:
     async def _cleanup(self):
         """Remove all Redis keys for this session."""
         await self.redis.delete(
-            REDIS_ACTIVE, REDIS_CONFIG, REDIS_START_TIME,
+            REDIS_ACTIVE, REDIS_PAUSED, REDIS_CONFIG, REDIS_START_TIME,
             REDIS_START_EQUITY, REDIS_PROGRESS_TS,
+            REDIS_PEAK_EQUITY, REDIS_MAX_DD,
         )
 
     # ── DB Persistence ─────────────────────────────────────────
@@ -654,3 +840,142 @@ class AutonomousSessionManager:
                 await session.commit()
         except Exception as e:
             logger.error("asm_session_end_save_failed", error=str(e))
+
+    # ── Dashboard Helpers ────────────────────────────────────────
+
+    async def get_uptime(self) -> str:
+        """Get human-readable uptime string (e.g., '04h 12m')."""
+        try:
+            start_ts = await self.redis.get(REDIS_START_TIME)
+            if not start_ts:
+                return "N/A"
+            elapsed = time.time() - float(start_ts)
+            hours = int(elapsed // 3600)
+            minutes = int((elapsed % 3600) // 60)
+            if hours > 0:
+                return f"{hours:02d}h {minutes:02d}m"
+            return f"{minutes:02d}m"
+        except Exception:
+            return "N/A"
+
+    async def get_session_id(self) -> str:
+        """Get a short session identifier from DB (e.g., '#A8F3')."""
+        try:
+            from src.models.database import async_session
+            from src.models.tables import CryptoAutoSession
+            from sqlalchemy import select, desc
+            async with async_session() as session:
+                result = await session.execute(
+                    select(CryptoAutoSession.id)
+                    .order_by(desc(CryptoAutoSession.id))
+                    .limit(1)
+                )
+                row = result.scalar()
+                if row:
+                    return f"#{row:04X}"
+        except Exception:
+            pass
+        return "N/A"
+
+    async def get_session_pnl(self) -> tuple[float, float]:
+        """Get (realized_pnl, unrealized_pnl) for current session."""
+        realized = await self._get_session_realized_pnl()
+        unrealized = 0.0
+        try:
+            positions = await self.bybit.get_open_positions()
+            for p in positions:
+                unrealized += float(p.get("unrealised_pnl", 0))
+        except Exception:
+            pass
+        return realized, unrealized
+
+    async def get_last_session_stats(self) -> dict:
+        """Get the last completed session's PnL and duration for dashboard display."""
+        try:
+            from src.models.database import async_session
+            from src.models.tables import CryptoAutoSession
+            from sqlalchemy import select, desc
+            async with async_session() as session:
+                result = await session.execute(
+                    select(CryptoAutoSession)
+                    .where(CryptoAutoSession.status.in_(["STOPPED", "COMPLETED"]))
+                    .order_by(desc(CryptoAutoSession.ended_at))
+                    .limit(1)
+                )
+                row = result.scalar()
+                if not row:
+                    return {}
+                pnl = float(row.realized_pnl or 0)
+                duration = ""
+                if row.started_at and row.ended_at:
+                    elapsed = (row.ended_at - row.started_at).total_seconds()
+                    h = int(elapsed // 3600)
+                    m = int((elapsed % 3600) // 60)
+                    duration = f"{h:02d}h {m:02d}m"
+                starting = float(row.starting_equity or 1)
+                pnl_pct = (pnl / starting * 100) if starting else 0
+                return {
+                    "pnl": pnl,
+                    "pnl_pct": pnl_pct,
+                    "trades": row.total_trades or 0,
+                    "wins": row.wins or 0,
+                    "losses": row.losses or 0,
+                    "duration": duration,
+                    "status": row.status,
+                }
+        except Exception as e:
+            logger.debug("asm_last_session_stats_failed", error=str(e))
+            return {}
+
+    async def get_session_history(self, page: int = 0, per_page: int = 5) -> tuple[list[dict], int]:
+        """Get paginated session history. Returns (sessions, total_count)."""
+        try:
+            from src.models.database import async_session
+            from src.models.tables import CryptoAutoSession
+            from sqlalchemy import select, func, desc
+            async with async_session() as session:
+                count_result = await session.execute(
+                    select(func.count(CryptoAutoSession.id))
+                )
+                total = count_result.scalar() or 0
+
+                result = await session.execute(
+                    select(CryptoAutoSession)
+                    .order_by(desc(CryptoAutoSession.started_at))
+                    .offset(page * per_page)
+                    .limit(per_page)
+                )
+                rows = result.scalars().all()
+                sessions = []
+                for r in rows:
+                    pnl = float(r.realized_pnl or 0)
+                    starting = float(r.starting_equity or 1)
+                    pnl_pct = (pnl / starting * 100) if starting else 0
+                    duration = ""
+                    if r.started_at and r.ended_at:
+                        elapsed = (r.ended_at - r.started_at).total_seconds()
+                        h = int(elapsed // 3600)
+                        m = int((elapsed % 3600) // 60)
+                        duration = f"{h:02d}h {m:02d}m"
+                    elif r.started_at:
+                        elapsed = (datetime.now(timezone.utc) - r.started_at).total_seconds()
+                        h = int(elapsed // 3600)
+                        m = int((elapsed % 3600) // 60)
+                        duration = f"{h:02d}h {m:02d}m"
+                    sessions.append({
+                        "id": r.id,
+                        "id_hex": f"#{r.id:04X}",
+                        "status": r.status or "UNKNOWN",
+                        "pnl": pnl,
+                        "pnl_pct": pnl_pct,
+                        "trades": r.total_trades or 0,
+                        "wins": r.wins or 0,
+                        "losses": r.losses or 0,
+                        "duration": duration,
+                        "started_at": r.started_at,
+                        "config": r.config or {},
+                    })
+                return sessions, total
+        except Exception as e:
+            logger.debug("asm_session_history_failed", error=str(e))
+            return [], 0

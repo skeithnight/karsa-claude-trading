@@ -152,3 +152,46 @@ class PerformanceTracker:
             data["pnl"] = round(data["pnl"], 2)
 
         return by_regime
+
+    async def snapshot(self):
+        """Take a PnL snapshot and persist to DB."""
+        from src.data.bybit_client import BybitClient
+        from src.models.tables import CryptoPosition, ClosedPaperTrade
+
+        bybit = BybitClient()
+        try:
+            wallet = await bybit.get_wallet_balance()
+            positions = await bybit.get_positions()
+            unrealized = sum(p.get("unrealised_pnl", 0) for p in positions)
+        except Exception as e:
+            logger.warning("snapshot_bybit_failed", error=str(e))
+            wallet, positions, unrealized = {}, [], 0
+
+        today = datetime.utcnow().date()
+        async with async_session() as session:
+            realized_result = await session.execute(
+                select(func.sum(ClosedPaperTrade.realized_pnl)).where(
+                    ClosedPaperTrade.market == "CRYPTO",
+                    ClosedPaperTrade.exit_date >= datetime.combine(today, datetime.min.time()),
+                )
+            )
+            realized = realized_result.scalar() or 0
+
+            funding_result = await session.execute(
+                select(func.sum(CryptoPnLSnapshot.funding_costs)).where(
+                    CryptoPnLSnapshot.snapshot_date >= datetime.combine(today, datetime.min.time())
+                )
+            )
+            funding = funding_result.scalar() or 0
+
+            session.add(CryptoPnLSnapshot(
+                snapshot_date=datetime.utcnow(),
+                realized_pnl=float(realized),
+                unrealized_pnl=unrealized,
+                funding_costs=float(funding),
+                total_pnl=float(realized) + unrealized - float(funding),
+                equity=wallet.get("total_equity", wallet.get("balance", 0)),
+                open_positions=len(positions),
+            ))
+            await session.commit()
+        logger.info("snapshot_done", equity=wallet.get("total_equity", 0))

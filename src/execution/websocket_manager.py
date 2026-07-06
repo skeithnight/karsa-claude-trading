@@ -51,6 +51,11 @@ class WebSocketManager:
                 await self._sync_subscriptions()
                 self._check_stale_ticks()
                 attempt = 0  # success resets backoff
+                try:
+                    from src.metrics.crypto_metrics import record_ws_connected
+                    record_ws_connected(True)
+                except Exception:
+                    pass
             except Exception as e:
                 attempt += 1
                 if attempt > MAX_RETRIES:
@@ -60,6 +65,11 @@ class WebSocketManager:
                 delay = min(BASE_DELAY * (2 ** attempt), 60) + random.uniform(0, 1)
                 logger.warning("ws_sync_failed", error=str(e), attempt=attempt,
                                retry_in=f"{delay:.1f}s")
+                try:
+                    from src.metrics.crypto_metrics import record_ws_connected
+                    record_ws_connected(False)
+                except Exception:
+                    pass
                 # Force WS recreation on next iteration
                 if self._ws:
                     try:
