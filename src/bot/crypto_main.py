@@ -146,6 +146,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Karsa Crypto Bot", lifespan=lifespan)
 
+from src.api.crypto_control import router as crypto_control_router
+app.include_router(crypto_control_router)
+
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "service": "crypto-bot"}

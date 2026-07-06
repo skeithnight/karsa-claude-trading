@@ -78,25 +78,26 @@ class TrailingStopManager:
                 if current_price is None:
                     continue
 
-                # Fetch ATR for trailing distance
-                ohlcv = await self._get_ohlcv(pos.ticker)
-                if not ohlcv or len(ohlcv) < 15:
-                    continue
-                atr_data = calculate_atr(ohlcv)
-                atr = Decimal(str(atr_data["atr"]))
-
                 # Update highest price
                 entry_price = Decimal(str(pos.entry_price))
                 current = Decimal(str(current_price))
                 old_highest = pos.highest_price or entry_price
                 new_highest = max(old_highest, current)
-
-                # Calculate new trailing stop
-                trail_distance = atr * Decimal(str(multiplier))
-                # cap trail distance to max_sl_pct of current price
                 max_sl_pct = Decimal(str(settings.CRYPTO_MAX_SL_PCT)) / 100
                 max_distance = current * max_sl_pct
-                trail_distance = min(trail_distance, max_distance)
+
+                # Calculate trailing distance
+                if settings.CRYPTO_SL_MODE == "fixed":
+                    trail_distance = min(Decimal(str(settings.CRYPTO_FIXED_SL_DISTANCE)), max_distance)
+                    atr = Decimal("1.0")  # placeholder for breakeven floor calc
+                else:
+                    ohlcv = await self._get_ohlcv(pos.ticker)
+                    if not ohlcv or len(ohlcv) < 15:
+                        continue
+                    atr_data = calculate_atr(ohlcv)
+                    atr = Decimal(str(atr_data["atr"]))
+                    trail_distance = atr * Decimal(str(multiplier))
+                    trail_distance = min(trail_distance, max_distance)
                 if pos.side == "Buy":
                     new_trail_stop = new_highest - trail_distance
                 else:
@@ -241,19 +242,22 @@ class TrailingStopManager:
             return None
 
     async def _create_initial_stop(self, pos: CryptoPosition) -> dict | None:
-        """Create trailing stop from ATR when no SL exists anywhere (recovery path)."""
+        """Create trailing stop when no SL exists (recovery path)."""
         try:
-            ohlcv = await self._get_ohlcv(pos.ticker)
-            if not ohlcv or len(ohlcv) < 15:
-                return None
-            atr_data = calculate_atr(ohlcv)
-            atr = Decimal(str(atr_data["atr"]))
             entry = Decimal(str(pos.entry_price))
-            distance = atr * Decimal("1.5")
-            # cap SL distance to max_sl_pct of entry
             max_sl_pct = Decimal(str(settings.CRYPTO_MAX_SL_PCT)) / 100
             max_distance = entry * max_sl_pct
-            distance = min(distance, max_distance)
+
+            if settings.CRYPTO_SL_MODE == "fixed":
+                distance = min(Decimal(str(settings.CRYPTO_FIXED_SL_DISTANCE)), max_distance)
+            else:
+                ohlcv = await self._get_ohlcv(pos.ticker)
+                if not ohlcv or len(ohlcv) < 15:
+                    return None
+                atr_data = calculate_atr(ohlcv)
+                atr = Decimal(str(atr_data["atr"]))
+                distance = atr * Decimal("1.5")
+                distance = min(distance, max_distance)
 
             if pos.side == "Buy":
                 sl_price = entry - distance
