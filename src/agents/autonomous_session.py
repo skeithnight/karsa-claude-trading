@@ -56,6 +56,10 @@ class AutonomousSessionManager:
         if is_active:
             return "⚠️ Session already running. Use /auto_stop first."
 
+        # Auto-clear stale emergency/halt keys from previous sessions.
+        # Without this, a leftover /kill blocks all new ASM iterations.
+        await self._clear_stale_emergency()
+
         risk_pct = float(config.get("risk_pct", DEFAULT_RISK_PCT))
         max_pos = int(config.get("max_pos", DEFAULT_MAX_POS))
         interval = int(config.get("interval", DEFAULT_INTERVAL_MIN))
@@ -130,6 +134,25 @@ class AutonomousSessionManager:
             "\n📊 Risk: ", code(f"{risk_pct}%"), " | Max Positions: ", code(str(max_pos)),
             "\n⏱️ Interval: ", code(f"{interval}m"), " | Duration: ", code(dur_str),
         )
+
+    async def _clear_stale_emergency(self) -> None:
+        """Clear leftover emergency/halt keys so a fresh ASM session isn't blocked."""
+        from src.risk import emergency
+        cleared = []
+        try:
+            if await emergency.is_active():
+                await emergency.deactivate(operator="asm_auto_start")
+                cleared.append("emergency_stop")
+        except Exception:
+            pass
+        try:
+            if await emergency.is_global_halt():
+                await emergency.deactivate_global_halt(operator="asm_auto_start")
+                cleared.append("global_halt")
+        except Exception:
+            pass
+        if cleared:
+            logger.warning("asm_cleared_stale_emergency", cleared=cleared)
 
     async def pause(self) -> str:
         """Pause scanning loop, keeping existing positions intact."""

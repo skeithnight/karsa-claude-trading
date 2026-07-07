@@ -1,0 +1,136 @@
+{
+  "title": "ASM - Core Operations",
+  "tags": ["asm", "trading", "core"],
+  "timezone": "browser",
+  "refresh": "10s",
+  "time": {"from": "now-24h", "to": "now"},
+  "panels": [
+    {
+      "id": 1,
+      "title": "🟢 ASM Health",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+      "targets": [{"expr": "min(up{job=~\"karsa.*\"})", "legendFormat": "Status"}],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {"steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]},
+          "mappings": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "1": {"text": "HEALTHY", "color": "green"}}}]
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "💰 PnL (Realized & Unrealized)",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 4, "y": 0},
+      "targets": [
+        {"expr": "karsa_auto_session_realized_pnl_usd", "legendFormat": "Realized"},
+        {"expr": "sum(karsa_position_unrealized_pnl_usd)", "legendFormat": "Unrealized"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "thresholds": {"steps": [{"color": "red", "value": null}, {"color": "green", "value": 0}]}
+        }
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "orientation": "horizontal",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "title": "💵 Cash & Equity",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 10, "y": 0},
+      "targets": [
+        {"expr": "karsa_auto_session_available_cash_usd", "legendFormat": "Cash"},
+        {"expr": "karsa_auto_session_available_cash_usd + sum(karsa_position_unrealized_pnl_usd)", "legendFormat": "Equity"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 2,
+          "color": {"mode": "fixed", "fixedColor": "blue"}
+        }
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "orientation": "horizontal",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 4,
+      "title": "📈 Active Positions",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 8, "x": 16, "y": 0},
+      "targets": [{"expr": "karsa_auto_session_active", "legendFormat": "Active"}],
+      "fieldConfig": {"defaults": {"color": {"fixedColor": "blue", "mode": "fixed"}}}
+    },
+    {
+      "id": 5,
+      "title": "🔴 Open Positions (Live)",
+      "type": "table",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "targets": [{"expr": "karsa_position_unrealized_pnl_usd", "format": "table", "instant": true}],
+      "transformations": [
+        {"id": "organize", "options": {"excludeByName": {"Time": true}, "renameByName": {"Value #A": "PnL $"}}},
+        {"id": "sortBy", "options": {"sort": [{"desc": true, "displayName": "PnL $"}]}}
+      ],
+      "fieldConfig": {
+        "defaults": {"custom": {"align": "center"}},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "PnL $"}, "properties": [{"id": "thresholds", "value": {"steps": [{"color": "red", "value": null}, {"color": "green", "value": 0}]}}]}
+        ]
+      },
+      "options": {"showHeader": true, "sortBy": [{"displayName": "PnL $", "desc": true}]}
+    },
+    {
+      "id": 6,
+      "title": "📜 Trade History (Last 24h)",
+      "type": "table",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "targets": [{"expr": "karsa_trade_closed_total", "format": "table", "instant": true}],
+      "transformations": [
+        {"id": "organize", "options": {"excludeByName": {"__name__": true, "Time": true}, "renameByName": {"Value #A": "Count"}}},
+        {"id": "sortBy", "options": {"sort": [{"desc": true, "displayName": "Count"}]}}
+      ],
+      "fieldConfig": {
+        "defaults": {"custom": {"align": "center"}}
+      },
+      "options": {"showHeader": true}
+    },
+    {
+      "id": 7,
+      "title": "🛡️ Exit Reasons",
+      "type": "piechart",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 12},
+      "targets": [{"expr": "sum by (zone) (karsa_perf_gate_zone_total)", "legendFormat": "{{zone}}"}],
+      "options": {"pieType": "donut", "legend": {"displayMode": "table", "placement": "right"}}
+    },
+    {
+      "id": 8,
+      "title": "🤖 AI Actions",
+      "type": "piechart",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 12},
+      "targets": [{"expr": "sum by (action) (karsa_ai_judge_decisions_total)", "legendFormat": "{{action}}"}],
+      "options": {"pieType": "donut", "legend": {"displayMode": "table", "placement": "right"}}
+    },
+    {
+      "id": 9,
+      "title": "💼 Position Proportion",
+      "type": "piechart",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 12},
+      "targets": [{"expr": "karsa_position_size_qty", "legendFormat": "{{ticker}}"}],
+      "options": {"pieType": "donut", "legend": {"displayMode": "table", "placement": "right"}}
+    }
+  ],
+  "schemaVersion": 36
+}

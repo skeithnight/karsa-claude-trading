@@ -194,7 +194,13 @@ class PositionManager:
                                 exit_reason=reason
                             ))
                             from src.metrics.crypto_metrics import record_trade_close
-                            record_trade_close(float(pnl_usdt), "win" if pnl_usdt > 0 else "loss")
+                            record_trade_close(
+                                float(pnl_usdt),
+                                "win" if pnl_usdt > 0 else "loss",
+                                ticker=pos.ticker,
+                                exit_price=float(exit_price),
+                                closed_time=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
+                            )
                         except Exception as e:
                             logger.error("closed_paper_trade_insert_failed", error=str(e))
 

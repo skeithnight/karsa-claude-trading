@@ -22,12 +22,20 @@ Output schema:
 
 import json
 import re
+import time
 from typing import Any
 
 from src.agents.base import BaseAgent
 from src.data.mcp_client import MCPClient
 from src.utils.logging import get_logger
 from src.utils.rate_limit import RateLimiter
+from src.metrics.crypto_metrics import (
+    record_ai_decision,
+    record_tier_used,
+    record_escalation,
+    record_confidence_score,
+    record_judge_latency,
+)
 
 logger = get_logger("position_judge")
 
@@ -163,9 +171,21 @@ class PositionJudge(BaseAgent):
         self.system_prompt = _CHEAP_SYSTEM_PROMPT
         self.tools = []
 
+        # Track tier usage and latency
+        record_tier_used("cheap")
+        start_time = time.time()
+
         task = self._build_task(position_data, escalated=False)
         result = await self.run(task)
-        return self._normalize_result(result, position_data)
+        judgment = self._normalize_result(result, position_data)
+
+        # Record metrics
+        latency = time.time() - start_time
+        record_judge_latency("cheap", latency)
+        record_ai_decision(judgment["action"])
+        record_confidence_score(judgment["confidence"])
+
+        return judgment
 
     async def escalated_pass(self, position_data: dict) -> dict:
         """Tier 2: Full analysis with market data tools.
@@ -179,9 +199,22 @@ class PositionJudge(BaseAgent):
         self.system_prompt = _ESCALATED_SYSTEM_PROMPT
         self.tools = ESCALATED_TOOLS
 
+        # Track tier usage, escalation, and latency
+        record_tier_used("escalated")
+        record_escalation()
+        start_time = time.time()
+
         task = self._build_task(position_data, escalated=True)
         result = await self.run(task)
-        return self._normalize_result(result, position_data)
+        judgment = self._normalize_result(result, position_data)
+
+        # Record metrics
+        latency = time.time() - start_time
+        record_judge_latency("escalated", latency)
+        record_ai_decision(judgment["action"])
+        record_confidence_score(judgment["confidence"])
+
+        return judgment
 
     # ------------------------------------------------------------------
     # Tool dispatch (escalated pass only)

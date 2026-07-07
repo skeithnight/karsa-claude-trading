@@ -37,6 +37,30 @@ from src.metrics.crypto_metrics import JOB_LAST_RUN, JOB_DURATION, JOB_ERRORS, D
 
 logger = get_logger("main_crypto")
 
+
+def _snapshot_position(db_pos):
+    """Extract all needed columns from a CryptoPosition ORM object into a
+    plain namespace, so the object can be used after the session closes
+    without triggering lazy loads or event-loop-mismatch errors."""
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        id=db_pos.id,
+        ticker=db_pos.ticker,
+        side=db_pos.side,
+        status=db_pos.status,
+        size=db_pos.size,
+        entry_price=db_pos.entry_price,
+        current_price=db_pos.current_price,
+        stop_loss=db_pos.stop_loss,
+        trailing_stop_price=db_pos.trailing_stop_price,
+        highest_price=db_pos.highest_price,
+        leverage=db_pos.leverage,
+        regime_at_entry=db_pos.regime_at_entry,
+        signal_source=db_pos.signal_source,
+        opened_at=db_pos.opened_at,
+    )
+
+
 app = FastAPI(title="Karsa Crypto Orchestrator", version="0.1.0")
 karsa_app: "CryptoKarsaApp | None" = None
 
@@ -190,6 +214,8 @@ class CryptoKarsaApp:
                 logger.critical("resurrecting_autonomous_session")
                 from src.agents.autonomous_session import AutonomousSessionManager
                 asm = AutonomousSessionManager(self.orchestrator, self.redis_client, bybit)
+                # Clear any leftover emergency/halt from the previous session
+                await asm._clear_stale_emergency()
                 chat_id = int(settings.TELEGRAM_CHAT_ID) if settings.TELEGRAM_CHAT_ID else 0
                 asyncio.create_task(asm._run_loop(chat_id))
         except Exception as e:
@@ -279,23 +305,24 @@ class CryptoKarsaApp:
         s.add_job(self._job_sync_crypto_positions, "cron", minute="*/5",
                   id="crypto_position_sync", name="Crypto Position Sync", replace_existing=True, misfire_grace_time=120)
 
-        # Lifecycle management
+        # Lifecycle management — DB-heavy jobs get max_instances=1 to prevent
+        # connection pool exhaustion from concurrent runs.
         s.add_job(self._job_update_trailing_stops, "cron", minute="*/5",
-                  id="crypto_trailing_stops", name="Crypto Trailing Stop Update", replace_existing=True, misfire_grace_time=120)
+                  id="crypto_trailing_stops", name="Crypto Trailing Stop Update", replace_existing=True, misfire_grace_time=120, max_instances=1, coalesce=True)
         s.add_job(self._job_verify_sl, "interval", minutes=5,
-                  id="sl_verification", name="SL Verification & Recovery", replace_existing=True, misfire_grace_time=120)
+                  id="sl_verification", name="SL Verification & Recovery", replace_existing=True, misfire_grace_time=120, max_instances=1, coalesce=True)
         s.add_job(self._job_check_partial_exits, "cron", minute="*/2",
-                  id="crypto_partial_exits", name="Crypto Partial Exit Check", replace_existing=True, misfire_grace_time=60)
+                  id="crypto_partial_exits", name="Crypto Partial Exit Check", replace_existing=True, misfire_grace_time=60, max_instances=1, coalesce=True)
         s.add_job(self._job_check_time_exits, "cron", hour="*", minute=30,
-                  id="crypto_time_exits", name="Crypto Time-Based Exit Check", replace_existing=True, misfire_grace_time=300)
+                  id="crypto_time_exits", name="Crypto Time-Based Exit Check", replace_existing=True, misfire_grace_time=300, max_instances=1, coalesce=True)
         s.add_job(self._job_check_performance_gate, "cron", minute="*/5",
                   id="crypto_perf_gate", name="Performance Gate + AI Judge", replace_existing=True, misfire_grace_time=120, max_instances=1, coalesce=True)
         s.add_job(self._job_check_circuit_breakers, "cron", minute="*/1",
-                  id="crypto_circuit_breakers", name="Crypto Circuit Breaker Check", replace_existing=True, misfire_grace_time=60)
+                  id="crypto_circuit_breakers", name="Crypto Circuit Breaker Check", replace_existing=True, misfire_grace_time=60, max_instances=1, coalesce=True)
         s.add_job(self._job_enforce_funding_limit, "cron", hour="*", minute=20,
-                  id="crypto_funding_limit", name="Crypto Funding Limit Enforcement", replace_existing=True, misfire_grace_time=300)
+                  id="crypto_funding_limit", name="Crypto Funding Limit Enforcement", replace_existing=True, misfire_grace_time=300, max_instances=1, coalesce=True)
         s.add_job(self._job_reconcile_positions, "interval", seconds=60,
-                  id="crypto_reconciliation", name="Crypto Position Reconciliation", replace_existing=True, misfire_grace_time=30)
+                  id="crypto_reconciliation", name="Crypto Position Reconciliation", replace_existing=True, misfire_grace_time=30, max_instances=1, coalesce=True)
         s.add_job(self._job_liquidity_check, "cron", minute="*/15",
                   id="crypto_liquidity", name="Crypto Liquidity Check", replace_existing=True, misfire_grace_time=120)
         s.add_job(self._job_oms_cleanup, "interval", minutes=2,
@@ -488,7 +515,9 @@ class CryptoKarsaApp:
             if not positions_data:
                 JOB_LAST_RUN.labels(job_id="crypto_trailing_stops").set(time.time())
                 return
-            # Query DB by ticker to get real IDs (required for DB updates)
+            # Query DB by ticker to get real IDs (required for DB updates).
+            # Extract all needed attributes INSIDE the session to avoid
+            # lazy-load / event-loop-mismatch errors after session closes.
             positions = []
             tickers = [p.get("symbol", "") for p in positions_data if float(p.get("size", 0) or 0) > 0]
             async with async_session() as session:
@@ -501,7 +530,8 @@ class CryptoKarsaApp:
                     )
                     db_pos = result.scalar_one_or_none()
                     if db_pos:
-                        positions.append(db_pos)
+                        # Snapshot all columns to detach from session
+                        positions.append(_snapshot_position(db_pos))
             if positions:
                 # Exit Engine evaluates FIRST (Phase 4 — primary exit authority)
                 blocked_by_exit_engine = set()
@@ -591,7 +621,8 @@ class CryptoKarsaApp:
             if not positions:
                 JOB_LAST_RUN.labels(job_id="sl_verification").set(time.time())
                 return
-            # Query DB by ticker to get real IDs (required for DB updates)
+            # Query DB by ticker to get real IDs (required for DB updates).
+            # Snapshot columns inside session to avoid lazy-load errors.
             crypto_positions = []
             tickers = [p.get("symbol", "") for p in positions if float(p.get("size", 0) or 0) > 0]
             async with async_session() as session:
@@ -604,7 +635,7 @@ class CryptoKarsaApp:
                     )
                     db_pos = result.scalar_one_or_none()
                     if db_pos:
-                        crypto_positions.append(db_pos)
+                        crypto_positions.append(_snapshot_position(db_pos))
             if crypto_positions:
                 recoveries = await pm.verify_and_recover_sl(crypto_positions)
                 if recoveries:
@@ -1076,9 +1107,19 @@ class CryptoKarsaApp:
 
         logger.info("scheduler_running", jobs=len(self.scheduler.get_jobs()))
 
+        # Run uvicorn in a dedicated thread so APScheduler/LLM jobs
+        # cannot starve the HTTP server of event-loop time.
+        import threading
+
         config = uvicorn.Config(app, host="0.0.0.0", port=8001, log_level="warning")
         server = uvicorn.Server(config)
-        loop.create_task(server.serve())
+
+        def _run_uvicorn():
+            asyncio.run(server.serve())
+
+        uvicorn_thread = threading.Thread(target=_run_uvicorn, daemon=True, name="uvicorn-server")
+        uvicorn_thread.start()
+        logger.info("uvicorn_thread_started", port=8001)
 
         if self.universe_engine:
             loop.create_task(self.universe_engine.listen_profile_changes())
@@ -1088,7 +1129,7 @@ class CryptoKarsaApp:
             loop.create_task(self.sl_engine.run())
 
         await self._shutdown.wait()
-        await server.shutdown()
+        # uvicorn is daemon thread — will die with the process
         await self.shutdown()
 
 
