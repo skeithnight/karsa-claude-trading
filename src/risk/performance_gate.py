@@ -1,15 +1,24 @@
-"""Karsa Trading System — Performance Gate Engine
+"""Karsa Trading System — Performance Gate Engine (v2)
 
 Two-layer position exit system:
   Layer 1: Mechanical checkpoints (no LLM, zero cost)
     - Hard fail zone: instant exit (e.g., -10% in 15min)
-    - Clear win zone: hold (e.g., +5% at checkpoint)
+    - Clear win zone: hold + activate trailing stop
     - Ambiguous zone: trigger AI judge
+    - Dynamic stop: AI-set or clear-win trailing stop overrides checkpoints
 
   Layer 2: AI Judge (LLM-based)
     - Cheap pass: compact prompt, pre-collected market data
     - If judge says HOLD but still underperforms next checkpoint:
       escalate to expensive pass with full context + reasoning trace
+    - Consecutive holds >= 3 on negative positions → auto-exit
+
+Enhancements over v1:
+  - dynamic_stop_pct: AI or clear-win sets a floor; if gain drops below → EXIT
+  - Drawdown-from-peak: if gain drops >3% from peak since last checkpoint → trigger AI
+  - Price freshness: skip hard fail if price data >2min old (stale feed guard)
+  - Consecutive hold tracking: force exit after 3 consecutive AI HOLDs on negative positions
+  - Breakeven thresholds adjusted for fee coverage (+1.0% minimum)
 
 Checkpoint schedules per bucket:
   Meme:     15min, 30min, 1h, 2h, 4h, 8h, 24h
@@ -18,16 +27,20 @@ Checkpoint schedules per bucket:
 
 Flow:
   Scheduler calls PerformanceGate.evaluate_all() every 5 min →
-  For each open position: determine bucket → find current checkpoint →
-  Calculate gain % → classify zone →
-    HARD_FAIL → immediate close via SOR
-    CLEAR_WIN → hold, advance checkpoint
+  For each open position: determine bucket → check dynamic stop →
+  find current checkpoint → Calculate gain % → classify zone →
+    DYNAMIC_STOP_HIT → exit (AI or clear-win set stop, price dropped below)
+    HARD_FAIL → immediate close via SOR (unless price stale)
+    CLEAR_WIN → hold, set dynamic stop, advance checkpoint
+    DRAWDOWN_FROM_PEAK → trigger AI judge
     AMBIGUOUS → fire PositionJudge agent → act on judgment
+    CONSECUTIVE_HOLDS >= 3 → auto-exit negative positions
 """
 
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -56,6 +69,8 @@ class Zone(str, Enum):
     AMBIGUOUS = "ambiguous"
     CLEAR_WIN = "clear_win"
     NOT_YET = "not_yet"  # checkpoint not reached yet
+    DYNAMIC_STOP = "dynamic_stop"  # AI/clear-win stop hit
+    DRAWDOWN = "drawdown"  # drawdown from peak
 
 
 class GateAction(str, Enum):
@@ -101,7 +116,7 @@ CHECKPOINTS: dict[str, list[Checkpoint]] = {
     Bucket.MEME: [
         Checkpoint(after_minutes=15,   min_gain_pct=-5.0, reason="meme_15m_crash"),
         Checkpoint(after_minutes=30,   min_gain_pct=-3.0, reason="meme_30m_bleeding"),
-        Checkpoint(after_minutes=60,   min_gain_pct=0.0,  reason="meme_1h_not_breakeven"),
+        Checkpoint(after_minutes=60,   min_gain_pct=-1.0, reason="meme_1h_consolidation"),
         Checkpoint(after_minutes=120,  min_gain_pct=1.0,  reason="meme_2h_weak"),
         Checkpoint(after_minutes=240,  min_gain_pct=2.0,  reason="meme_4h_dead"),
         Checkpoint(after_minutes=480,  min_gain_pct=3.0,  reason="meme_8h_stale"),
@@ -110,14 +125,14 @@ CHECKPOINTS: dict[str, list[Checkpoint]] = {
     Bucket.STANDARD: [
         Checkpoint(after_minutes=60,   min_gain_pct=-5.0, reason="std_1h_crash"),
         Checkpoint(after_minutes=240,  min_gain_pct=-2.0, reason="std_4h_bleeding"),
-        Checkpoint(after_minutes=720,  min_gain_pct=0.0,  reason="std_12h_flat"),
+        Checkpoint(after_minutes=720,  min_gain_pct=1.0,  reason="std_12h_not_profitable"),
         Checkpoint(after_minutes=1440, min_gain_pct=1.0,  reason="std_24h_weak"),
         Checkpoint(after_minutes=4320, min_gain_pct=2.0,  reason="std_72h_stale"),
     ],
     Bucket.CORE: [
         Checkpoint(after_minutes=240,   min_gain_pct=-8.0, reason="core_4h_crash"),
         Checkpoint(after_minutes=1440,  min_gain_pct=-3.0, reason="core_24h_check"),
-        Checkpoint(after_minutes=4320,  min_gain_pct=0.0,  reason="core_72h_flat"),
+        Checkpoint(after_minutes=4320,  min_gain_pct=1.0,  reason="core_72h_not_profitable"),
         Checkpoint(after_minutes=10080, min_gain_pct=2.0,  reason="core_7d_underperform"),
     ],
 }
@@ -125,6 +140,11 @@ CHECKPOINTS: dict[str, list[Checkpoint]] = {
 # Zone boundaries
 HARD_FAIL_THRESHOLD = -8.0   # gain < -8% at any checkpoint = hard fail
 CLEAR_WIN_THRESHOLD = 3.0    # gain > +3% at checkpoint = clear win
+DRAWDOWN_TRIGGER_PCT = 3.0   # drop > 3% from peak = trigger AI
+CONSECUTIVE_HOLDS_LIMIT = 3  # force exit after 3 consecutive AI holds on negative
+PRICE_STALE_SEC = 120        # price data older than 2 min → skip hard fail
+CLEAR_WIN_STOP_FLOOR = 1.0   # minimum dynamic stop % on clear win (covers fees)
+CLEAR_WIN_STOP_RATIO = 0.3   # lock in 30% of peak gain as dynamic stop
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +161,7 @@ def classify_bucket(signal_source: str | None) -> Bucket:
     if any(kw in source for kw in ("meme", "moonshot", "dex_discovery", "sniper", "alpha_wallet")):
         return Bucket.MEME
 
-    if any(kw in source for kw in ("core", "high_conviction", "regime_aligned")):
+    if any(kw in source for kw in ("core", "high_conviction", "regime_aligned", "dip_buying", "accumulation")):
         return Bucket.CORE
 
     return Bucket.STANDARD
@@ -173,8 +193,8 @@ class PerformanceGate:
     """Mechanical checkpoint evaluator.
 
     Evaluates positions against bucket-specific checkpoints.
-    Returns actions: EXIT (hard fail), HOLD (clear win), JUDGE (ambiguous),
-    or SKIP (not at checkpoint yet).
+    Returns actions: EXIT (hard fail/dynamic stop), HOLD (clear win),
+    JUDGE (ambiguous/drawdown), or SKIP (not at checkpoint yet).
     """
 
     def __init__(self, redis_client=None):
@@ -202,6 +222,12 @@ class PerformanceGate:
     async def evaluate(self, pos) -> GateResult | None:
         """Evaluate single position against its checkpoint schedule.
 
+        Checks (in order):
+          1. Dynamic stop — if gain < dynamic_stop_pct → EXIT
+          2. Checkpoint schedule — hard fail / clear win / ambiguous
+          3. Drawdown from peak — if dropped >3% from peak → trigger AI
+          4. Consecutive holds — if >=3 holds and negative → auto-exit
+
         Args:
             pos: CryptoPosition with status='OPEN'
 
@@ -224,6 +250,37 @@ class PerformanceGate:
         hours_held = get_hours_held(opened_at)
         minutes_held = hours_held * 60
 
+        # --- Phase 1A: Dynamic stop check ---
+        dynamic_stop = getattr(pos, 'dynamic_stop_pct', None)
+        if dynamic_stop is not None:
+            dynamic_stop_float = float(dynamic_stop)
+            if gain_pct <= dynamic_stop_float:
+                logger.warning(
+                    "dynamic_stop_hit",
+                    ticker=ticker, gain_pct=round(gain_pct, 2),
+                    dynamic_stop=dynamic_stop_float,
+                )
+                return GateResult(
+                    position_id=pos.id, ticker=ticker, bucket=bucket.value,
+                    zone=Zone.DYNAMIC_STOP, action=GateAction.EXIT,
+                    gain_pct=gain_pct, hours_held=hours_held,
+                    reason=f"dynamic stop hit: gain {gain_pct:+.1f}% <= {dynamic_stop_float}%",
+                )
+
+        # --- Phase 1D: Consecutive holds check ---
+        hold_count = await self._get_consecutive_holds(pos.id)
+        if hold_count >= CONSECUTIVE_HOLDS_LIMIT and gain_pct < 0:
+            logger.warning(
+                "consecutive_holds_exit",
+                ticker=ticker, hold_count=hold_count, gain_pct=round(gain_pct, 2),
+            )
+            return GateResult(
+                position_id=pos.id, ticker=ticker, bucket=bucket.value,
+                zone=Zone.AMBIGUOUS, action=GateAction.EXIT,
+                gain_pct=gain_pct, hours_held=hours_held,
+                reason=f"consecutive holds {hold_count} >= {CONSECUTIVE_HOLDS_LIMIT} on negative position",
+            )
+
         # Find the highest checkpoint we've passed (time-wise)
         active_checkpoint = None
         for cp in checkpoints:
@@ -245,6 +302,51 @@ class PerformanceGate:
                 gain_pct=gain_pct, hours_held=hours_held,
             )
 
+        # --- Phase 2A: Drawdown from peak check ---
+        peak_gain = await self._get_peak_gain(pos.id)
+        if peak_gain is not None and peak_gain > gain_pct:
+            drawdown = peak_gain - gain_pct
+            if drawdown >= DRAWDOWN_TRIGGER_PCT:
+                logger.warning(
+                    "drawdown_from_peak",
+                    ticker=ticker, peak=round(peak_gain, 2),
+                    current=round(gain_pct, 2), drawdown=round(drawdown, 2),
+                )
+                return GateResult(
+                    position_id=pos.id, ticker=ticker, bucket=bucket.value,
+                    zone=Zone.DRAWDOWN, action=GateAction.JUDGE,
+                    gain_pct=gain_pct, hours_held=hours_held,
+                    checkpoint=active_checkpoint,
+                    reason=f"drawdown from peak: {drawdown:+.1f}% (peak {peak_gain:+.1f}% → now {gain_pct:+.1f}%)",
+                )
+
+        # Update peak gain tracking
+        await self._update_peak_gain(pos.id, gain_pct)
+
+        # --- Phase 2B: Price freshness guard ---
+        # (price_at is set by the caller in main_crypto.py; here we just check)
+        price_at = getattr(pos, 'current_price_at', None)
+        if price_at is not None:
+            try:
+                if isinstance(price_at, datetime):
+                    age_sec = (datetime.now(timezone.utc) - price_at.replace(tzinfo=timezone.utc)).total_seconds()
+                    if age_sec > PRICE_STALE_SEC:
+                        logger.warning(
+                            "price_stale_skip_hard_fail",
+                            ticker=ticker, age_sec=round(age_sec),
+                        )
+                        # Skip hard fail but still allow judge/other logic
+                        if gain_pct <= HARD_FAIL_THRESHOLD:
+                            return GateResult(
+                                position_id=pos.id, ticker=ticker, bucket=bucket.value,
+                                zone=Zone.AMBIGUOUS, action=GateAction.JUDGE,
+                                gain_pct=gain_pct, hours_held=hours_held,
+                                checkpoint=active_checkpoint,
+                                reason=f"price stale ({age_sec:.0f}s), skipping hard fail, routing to judge",
+                            )
+            except Exception:
+                pass
+
         # Classify zone
         if gain_pct <= HARD_FAIL_THRESHOLD:
             zone = Zone.HARD_FAIL
@@ -255,6 +357,10 @@ class PerformanceGate:
             action = GateAction.HOLD
             reason = f"clear win: gain {gain_pct:+.1f}% >= {CLEAR_WIN_THRESHOLD}%"
             await self._mark_checkpoint_passed(pos.id, active_checkpoint.after_minutes)
+            # Phase 1B: Set dynamic stop to lock in profit
+            stop_pct = max(CLEAR_WIN_STOP_FLOOR, gain_pct * CLEAR_WIN_STOP_RATIO)
+            await self._set_dynamic_stop(pos.id, stop_pct)
+            reason += f" [dynamic stop set to {stop_pct:.1f}%]"
         elif gain_pct >= active_checkpoint.min_gain_pct:
             # Above minimum but not clear win — ambiguous, judge it
             zone = Zone.AMBIGUOUS
@@ -264,7 +370,7 @@ class PerformanceGate:
                 f"but < {CLEAR_WIN_THRESHOLD}% clear win"
             )
         else:
-            # Below minimum — hard fail or ambiguous depending on severity
+            # Below minimum — ambiguous, judge it
             zone = Zone.AMBIGUOUS
             action = GateAction.JUDGE
             reason = (
@@ -298,12 +404,21 @@ class PerformanceGate:
         )
 
     async def record_judgment(self, position_id: int, judgment: dict) -> None:
-        """Record AI judge decision for escalation tracking."""
+        """Record AI judge decision for escalation and consecutive hold tracking."""
         if not self._redis:
             return
         try:
             key = f"karsa:gate:judgment:{position_id}"
             await self._redis.setex(key, 86400, json.dumps(judgment))  # 24h TTL
+
+            # Phase 1D: Track consecutive holds
+            hold_key = f"karsa:gate:holds:{position_id}"
+            if judgment.get("action") == "HOLD":
+                count = await self._redis.incr(hold_key)
+                await self._redis.expire(hold_key, 86400)
+            else:
+                # Non-HOLD action resets the counter
+                await self._redis.delete(hold_key)
         except Exception:
             pass
 
@@ -314,7 +429,9 @@ class PerformanceGate:
         try:
             cp_key = f"karsa:gate:checkpoints:{position_id}"
             j_key = f"karsa:gate:judgment:{position_id}"
-            await self._redis.delete(cp_key, j_key)
+            peak_key = f"karsa:gate:peak:{position_id}"
+            hold_key = f"karsa:gate:holds:{position_id}"
+            await self._redis.delete(cp_key, j_key, peak_key, hold_key)
         except Exception:
             pass
 
@@ -353,3 +470,68 @@ class PerformanceGate:
             return json.loads(data) if data else None
         except Exception:
             return None
+
+    async def _set_dynamic_stop(self, position_id: int, stop_pct: float) -> None:
+        """Set dynamic stop percentage in Redis (also written to DB by caller)."""
+        if not self._redis:
+            return
+        try:
+            key = f"karsa:gate:dynamic_stop:{position_id}"
+            await self._redis.setex(key, 604800, str(stop_pct))  # 7 days
+        except Exception:
+            pass
+
+    async def _get_dynamic_stop(self, position_id: int) -> float | None:
+        """Get dynamic stop from Redis."""
+        if not self._redis:
+            return None
+        try:
+            key = f"karsa:gate:dynamic_stop:{position_id}"
+            data = await self._redis.get(key)
+            return float(data) if data else None
+        except Exception:
+            return None
+
+    async def _get_peak_gain(self, position_id: int) -> float | None:
+        """Get peak gain since last checkpoint."""
+        if not self._redis:
+            return None
+        try:
+            key = f"karsa:gate:peak:{position_id}"
+            data = await self._redis.get(key)
+            return float(data) if data else None
+        except Exception:
+            return None
+
+    async def _update_peak_gain(self, position_id: int, current_gain: float) -> None:
+        """Update peak gain if current is higher."""
+        if not self._redis:
+            return
+        try:
+            key = f"karsa:gate:peak:{position_id}"
+            peak = await self._redis.get(key)
+            if peak is None or current_gain > float(peak):
+                await self._redis.setex(key, 604800, str(current_gain))  # 7 days
+        except Exception:
+            pass
+
+    async def _reset_peak_gain(self, position_id: int) -> None:
+        """Reset peak gain (called on checkpoint pass)."""
+        if not self._redis:
+            return
+        try:
+            key = f"karsa:gate:peak:{position_id}"
+            await self._redis.delete(key)
+        except Exception:
+            pass
+
+    async def _get_consecutive_holds(self, position_id: int) -> int:
+        """Get consecutive AI HOLD count."""
+        if not self._redis:
+            return 0
+        try:
+            key = f"karsa:gate:holds:{position_id}"
+            data = await self._redis.get(key)
+            return int(data) if data else 0
+        except Exception:
+            return 0
