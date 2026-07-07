@@ -43,7 +43,7 @@
         },
         "targets": [
           {
-            "expr": "karsa_asm_state{job=\"karsa-crypto-bot\"}",
+            "expr": "karsa_asm_state{job=\"karsa-crypto-orchestrator\"}",
             "legendFormat": "ASM State",
             "instant": true
           }
@@ -137,17 +137,17 @@
         },
         "targets": [
           {
-            "expr": "karsa_wallet_total_equity_usd{job=\"karsa-crypto-bot\"}",
+            "expr": "karsa_wallet_total_equity_usd{job=\"karsa-crypto-orchestrator\"}",
             "legendFormat": "Total Equity",
             "instant": true
           },
           {
-            "expr": "karsa_wallet_available_usd{job=\"karsa-crypto-bot\"}",
+            "expr": "karsa_wallet_available_usd{job=\"karsa-crypto-orchestrator\"}",
             "legendFormat": "Available",
             "instant": true
           },
           {
-            "expr": "karsa_wallet_used_margin_usd{job=\"karsa-crypto-bot\"}",
+            "expr": "karsa_wallet_used_margin_usd{job=\"karsa-crypto-orchestrator\"}",
             "legendFormat": "Margin Used",
             "instant": true
           }
@@ -191,17 +191,17 @@
         },
         "targets": [
           {
-            "expr": "karsa_auto_session_realized_pnl_usd{job=\"karsa-crypto-bot\"}",
+            "expr": "karsa_auto_session_realized_pnl_usd{job=\"karsa-crypto-orchestrator\"}",
             "legendFormat": "Realized PnL",
             "instant": true
           },
           {
-            "expr": "karsa_auto_session_unrealized_pnl_usd{job=\"karsa-crypto-bot\"}",
+            "expr": "karsa_auto_session_unrealized_pnl_usd{job=\"karsa-crypto-orchestrator\"}",
             "legendFormat": "Unrealized PnL",
             "instant": true
           },
           {
-            "expr": "karsa_auto_session_realized_pnl_usd{job=\"karsa-crypto-bot\"} + karsa_auto_session_unrealized_pnl_usd{job=\"karsa-crypto-bot\"}",
+            "expr": "karsa_auto_session_realized_pnl_usd{job=\"karsa-crypto-orchestrator\"} + karsa_auto_session_unrealized_pnl_usd{job=\"karsa-crypto-orchestrator\"}",
             "legendFormat": "Total PnL",
             "instant": true
           }
@@ -462,12 +462,12 @@
         },
         "targets": [
           {
-            "expr": "karsa_wallet_total_equity_usd{job=\"karsa-crypto-bot\"}",
+            "expr": "karsa_wallet_total_equity_usd{job=\"karsa-crypto-orchestrator\"}",
             "legendFormat": "Total Equity",
             "refId": "A"
           },
           {
-            "expr": "karsa_wallet_available_usd{job=\"karsa-crypto-bot\"}",
+            "expr": "karsa_wallet_available_usd{job=\"karsa-crypto-orchestrator\"}",
             "legendFormat": "Available Cash",
             "refId": "B"
           }
@@ -609,7 +609,7 @@
         },
         "targets": [
           {
-            "expr": "karsa_position_data{job=\"karsa-crypto-bot\"}",
+            "expr": "karsa_position_data{job=\"karsa-crypto-orchestrator\"}",
             "legendFormat": "{{ticker}} {{side}} {{field}}",
             "instant": true,
             "refId": "A",

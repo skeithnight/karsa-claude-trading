@@ -16,7 +16,9 @@ Roster only — for tools, strategies, thresholds, and formulas on a specific ag
 
 ## Deterministic Modules (not LLM agents)
 
-**Risk** (`src/risk/`): `emergency.py` (kill switch), `idx_limits.py` (IDX compliance/ARA-ARB), `crypto_risk_manager.py` (8 gates), `sor.py` (Smart Order Router), `funding_tracker.py`, `circuit_breaker.py`, `liquidity.py`, `position_manager.py` (partial/time exits), `position_sync.py` (reconciliation), `trailing_stop.py`, `profit_lock.py`, `distributed_lock.py`.
+**Risk** (`src/risk/`): `emergency.py` (kill switch), `idx_limits.py` (IDX compliance/ARA-ARB), `crypto_risk_manager.py` (8 gates), `sor.py` (Smart Order Router), `funding_tracker.py`, `circuit_breaker.py`, `liquidity.py`, `position_manager.py` (partial/time exits), `position_sync.py` (reconciliation), `trailing_stop.py`, `profit_lock.py`, `distributed_lock.py`, `performance_gate.py` (v2 mechanical checkpoint evaluator with AI judge escalation).
+
+**Metrics** (`src/metrics/`): `crypto_metrics.py` — 80+ Prometheus metrics across 10 domains (Performance Gate, Regime, Session, Position, Risk, Order Execution, Infrastructure, LLM Tokens, Signal Outcomes, Daily Trade Count). Helper functions: `record_*()`, `update_*()`. Endpoint: `/metrics`.
 
 **Advisory** (`src/advisory/`): `regime.py` (BULL/BEAR/NEUTRAL), `idx_intelligence.py` (composite scoring), `sizing.py` (ATR position sizing), `crypto_regime.py` (Hurst+ADX macro regime), `coin_regime.py` (per-coin regime), `crypto_technicals.py` (RSI/BB/EMA/MACD/ATR), `crypto_universe.py` (pair config source of truth), `crypto_audit.py`, `crypto_market_watch.py`, `performance_tracker.py`, `strategy_selector.py`.
 
