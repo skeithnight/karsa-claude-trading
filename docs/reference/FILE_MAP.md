@@ -1,0 +1,107 @@
+# File Map (non-obvious)
+
+Prefer `/graphify query "..."` over reading this list — the graph reflects the current codebase; this file can drift after refactors.
+
+- `src/agents/orchestrator.py` — universe lists (IDX_UNIVERSE 30 stocks, US_UNIVERSE 15, ETF_UNIVERSE 12), combo name assignment, parallel market scan with IDX composite gate, signal validation (`_validate_signal`), emergency stop gate, IDX order validation with forced sell triggers, signal persistence to DB, shared `idx_intel` instance
+- `src/agents/base.py` — Anthropic SDK tool-use loop, `getattr()` guards for 9Router response quirks
+- `src/bot/handlers.py` — Telegram command handlers (16 commands), composable HTML formatting via `src/utils/format.py`, approval flow via `src/bot/_approval.py`, inline keyboard routing via `button_callback()`, fail-closed auth check
+- `src/bot/_approval.py` — HITL approval flow: `send_signal_alert()` sends APPROVE/REJECT buttons, `handle_approval()` creates PaperPosition on approve
+- `src/utils/format.py` — Composable Telegram HTML formatters: `HTML` marker, `bold()`, `italic()`, `code()`, `pre()`, `fmt()`, `join()`. Auto-escapes.
+- `src/utils/validation.py` — Shared input validation: `validate_ticker()`, `validate_market()`, `sanitize_for_prompt()`
+- `src/data/cache.py` — Redis wrapper with quote/OHLCV caching
+- `src/data/mcp_client.py` — `tradingview_ta.TA_Handler` wrapper with circuit breaker, 3-tier fallback (TradingView → Massive → Finnhub), `asyncio.to_thread()` for non-blocking I/O, `get_volume_profile()` for flow proxy
+- `src/models/tables.py` — SQLAlchemy ORM: PortfolioState, CashBalance, Signal, PaperPosition, ClosedPaperTrade, AuditLog, OHLCVCache, MarketHoliday, PendingApproval, CryptoPosition, CryptoFundingPayment, CryptoRegimeHistory, CryptoPnLSnapshot
+- `src/models/database.py` — async engine + session factory, `init_db()` creates tables
+- `src/risk/emergency.py` — Redis-backed emergency stop: `activate(reason, operator)`, `deactivate(operator)`, `is_active()`, `get_status()`
+- `src/risk/idx_limits.py` — IDX Fraksi Harga tick sizes, `validate_order()`, dynamic ARA/ARB ceiling/floor, `settlement_date()` T+2, IHSG circuit breaker (`ihsg_circuit_breaker_level`), forced sell triggers (`check_forced_sell_triggers`)
+- `src/advisory/regime.py` — `USRegimeFilter`/`IDXRegimeFilter`: VIX/SPY/200-SMA regime classification
+- `src/advisory/idx_intelligence.py` — `IDXMarketIntelligence` (composite scoring), `FlowTracker` (volume-based foreign flow proxy), `EarningsCalendar` (blackout windows). Sector universe: BANKING/TELCO/CONSUMER/AUTO/ENERGY/TECH/INFRA/MINING
+- `src/advisory/earnings_calendar.json` — static IDX earnings dates, updated quarterly
+- `src/advisory/sizing.py` — `PositionSizer`: volatility-target sizing using ATR
+- `src/utils/rate_limit.py` — Lua-based token bucket in Redis
+- `src/utils/telegram_helpers.py` — `format_pre_table()` for aligned ASCII tables, `send_long_message()` with 4096-char chunking, `build_nav_keyboard()` for inline keyboards
+- `src/utils/market_hours.py` — `is_idx_open()`, `is_us_open()` market hours checks
+- `src/agents/portfolio_analyst.py` — Analyzes holdings vs market data, suggests actions (no execution)
+- `src/backtest/engine.py` — RSI + Bollinger mean reversion backtester (Sharpe > 1.2 gate)
+- `src/agents/crypto_analyst.py` — Crypto Trend+Sentiment agent. Tools: deterministic TA (RSI, BB, MACD, ATR) via `crypto_technicals.py`. 10 Bybit perpetual pairs.
+- `src/agents/crypto_auditor.py` — Performance review agent. Pre-filter rejects extreme RSI/crowded funding before LLM call.
+- `src/bot/crypto_handlers.py` — 15 crypto Telegram commands, inline keyboards, `_get_bybit()`/`_get_redis()` shared connection helpers, activity/audit/guide/regime/funding/trades views.
+- `src/main_crypto.py` — Crypto-only orchestrator entry point. Runs only crypto APScheduler jobs (no IDX/US/ETF). Health on port 8001. Separate Docker service `karsa-crypto-orchestrator`.
+- `src/execution/__init__.py` — Execution engine package.
+- `src/execution/websocket_manager.py` — `WebSocketManager`: persistent Bybit WS for open positions, Redis price cache.
+- `src/execution/sl_engine.py` — `StopLossEngine`: WS-driven stop-loss, sub-second reaction.
+- `src/execution/oms.py` — `OrderManagementSystem`: order lifecycle state machine, stuck order cleanup.
+- `src/risk/calibration_engine.py` — `ConfidenceCalibrator`: LLM confidence vs win rate tracking, multiplier adjustment.
+- `src/risk/portfolio_allocator.py` — `PortfolioAllocator`: cross-market capital limits, global drawdown guard.
+- `src/agents/memory_retriever.py` — RAG memory retriever using pgvector. `get_relevant_trade_memory()` queries nearest past trades. `store_trade_memory()` saves outcomes. Gracefully degrades without `sentence-transformers`.
+- `src/backtest/perp_simulator.py` — `PerpSimulator`: event-driven perpetual backtester with funding fee simulation (8h), maker/taker fees, slippage model, liquidation check.
+- `src/bot/crypto_main.py` — Separate FastAPI app + polling for crypto bot. Wires orchestrator + shared Redis into `bot_data`.
+- `src/data/bybit_client.py` — Bybit REST API client (pybit). Data + execution methods. Exponential backoff retry. Semaphore(5) + 100ms throttle. Proxy support via `BYBIT_PROXY`.
+- `src/advisory/crypto_regime.py` — Hurst Exponent + ADX regime classifier on BTC. BTC dominance via CoinGecko. 5-min cache.
+- `src/advisory/crypto_technicals.py` — Pure Python RSI, BB, EMA, MACD, ATR. Self-test in `__main__`.
+- `src/advisory/crypto_universe.py` — Single source of truth for 10 crypto pairs + per-pair config.
+- `src/advisory/crypto_audit.py` — `CryptoAuditMetrics.gather()` queries DB for deterministic performance metrics.
+- `src/risk/crypto_risk_manager.py` — 8 risk gates, correlation tiers, liquidation proximity, Redis-backed kill switch, tier-based leverage.
+- `src/risk/sor.py` — Smart Order Router: limit→reprice→market fallback, `flatten_all()`.
+- `src/risk/funding_tracker.py` — Funding rate tracking, annualized cost, alert thresholds.
+- `src/risk/circuit_breaker.py` — Automated circuit breakers: daily DD, volatility spike (5%/15min→30min halt), correlation cascade (>60% correlated positions losing). Redis-backed with 30min TTL.
+- `src/risk/liquidity.py` — `LiquidityMonitor` checks orderbook depth/spread, `SlippageEstimator` simulates fills through orderbook levels. Used by SOR before market orders.
+- `src/risk/position_manager.py` — Post-entry lifecycle: partial exit at +1R target (50%), time-based exits for stale positions (48h, <1% gain).
+- `src/risk/position_sync.py` — Bidirectional reconciliation: position drift (phantom/missing/size), order drift (orphaned/unknown), balance drift. Runs every 5min.
+- `src/risk/trailing_stop.py` — `TrailingStopManager`: ATR-based trailing with regime-aware multipliers (TREND_BULL/BEAR=2.0x, MEAN_REVERSION=1.5x, CHOP=disabled).
+- `src/risk/profit_lock.py` — R-multiple profit lock engine: +1.0R→tight trail (1.0x ATR), +2.0R→medium (0.75x), +3.0R→tight (0.5x).
+- `src/risk/distributed_lock.py` — Redis `SET NX EX` one-line distributed lock for concurrent job safety.
+- `src/advisory/coin_regime.py` — `CoinRegimeEngine`: per-coin regime classifier (ADX + BB + deterministic). Per-coin cache, no LLM calls.
+- `src/architecture/` — Event-driven trading OS infrastructure (9-phase migration, each phase feature-flagged). Subpackages: `events/`, `position/`, `exit/`, `decision/`, `policy/`, `replay/`, `workflow/`, `agent_runtime/`, `common/`. Entry: `src/architecture/__init__.py`.
+- `src/architecture/feature_flags.py` — Redis-backed feature flags for phase-gated rollout. `is_enabled(flag)` / `enable(flag)` / `disable(flag)`.
+- `src/advisory/crypto_market_watch.py` — `CryptoMarketWatchEngine`: top movers, full scan summary, funding alerts across universe.
+- `src/advisory/performance_tracker.py` — `PerformanceTracker`: equity curve from daily snapshots, drawdown stats, trade statistics. Persists to CryptoPnLSnapshot.
+- `src/advisory/strategy_selector.py` — `StrategySelector`: regime→strategy config mapping (confidence boost, max positions, size multiplier, preferred pairs). Used by CryptoAnalyst for dynamic prompts.
+- `src/utils/trader_format.py` — Rich Telegram formatters for crypto: `funding_gauge()`, `regime_banner()`, `signal_card()`.
+- `src/utils/logging.py` — Structured logging via structlog (JSON output, log level config).
+- `db/migrations/add_crypto_market.sql` — Migration adding CRYPTO to all CHECK constraints.
+- `docs/AUDIT_KARSA_3.md` — Initial crypto audit (June 30, 2026).
+- `docs/AUDIT_KARSA_CRYPTO_BOT.md` — Post-implementation audit (July 1, 2026). 18 findings, 5 critical.
+- `docs/archive/KARSA_CRYPTO_DESIGN_TEXT.md` — Crypto bot UI design system.
+- `src/metrics/crypto_metrics.py` — Prometheus metrics definitions (counters, gauges, histograms) for all 6 domains: P&L, risk safety, positions, execution, infrastructure, WS health. Must be imported at startup.
+- `src/api/routes.py` — FastAPI API routes for external access.
+- `src/config.py` — Settings via pydantic-settings. All env vars loaded here. `DB_PASSWORD` validated at startup.
+- `src/patch_websocket.py` — WebSocket monkey-patch for Bybit library compatibility.
+- `src/advisory/universe_scorer.py` — Universe coin scoring for dynamic crypto universe.
+- `monitoring/` — Prometheus + Grafana configs. `prometheus.yml` scrapes `/metrics` on orchestrator (8000) and crypto-orchestrator (8001). `grafana-dashboard.json` — Karsa trading metrics dashboard. `alertmanager.yml` — alert routing. `grafana/provisioning/datasources/` — auto-provisions Prometheus datasource.
+- `db/migrations/add_adaptive_research_tables.sql` — adaptive research agent tables
+- `db/migrations/add_crypto_lifecycle_tables.sql` — crypto position lifecycle tables
+- `docs/` — Active design docs. `docs/archive/` — historical audits and reviews.
+- `docs/ASM_Enhancements.md` — ASM enhancement design and recommendations
+- `docs/PROFIT_PROTECTION_DYNAMIC_EXIT_ENGINE.md` — 5-phase profit protection engine design
+- `docs/Karsa_Architecture_Validation_Report.md` — architecture validation report
+- `monitoring/asm-dashboard.json` — ASM Grafana dashboard (uncommitted)
+- `monitoring/alertmanager.yml` — Alertmanager routing config
+- `monitoring/grafana/` — Grafana provisioning (datasources, dashboards)
+- `monitoring/prometheus/` — Prometheus provisioning
+- `db/migrations/add_pgvector_memory.sql` — pgvector extension + trade_memory table for RAG
+- `db/migrations/add_risk_profile.sql` — risk_profile_audit table + signal columns
+- `db/migrations/add_universe_history.sql` — universe_history table
+- `db/migrations/add_autonomous_session.sql` — ASM (Autonomous Session Manager) tables
+- `db/migrations/add_volatility_regime_column.sql` — volatility regime column for crypto
+- `db/migrations/add_aode_tables.sql` — AODE research platform tables (10 tables: discovered_tokens, research_reports, crypto_narratives, smart_money_wallets, smart_money_transactions, onchain_snapshots, developer_snapshots, community_snapshots, portfolio_allocations, research_audit_log)
+- `src/data/coingecko_client.py` — CoinGecko free API client (trending, top coins, coin details, categories, global data). Circuit breaker + Redis caching.
+- `src/data/defillama_client.py` — DeFiLlama API client (TVL, protocols, stablecoins, yields). No API key required.
+- `src/data/dexscreener_client.py` — DexScreener API client (DEX pairs, new listings, trending). No API key required.
+- `src/data/github_client.py` — GitHub REST API client (repos, commits, contributors, releases, activity scoring). Optional `GITHUB_TOKEN`.
+- `src/data/onchain_client.py` — Multi-chain block explorer client (Etherscan, BscScan, Solana). Contract info, transfers, balances.
+- `src/research/discovery_engine.py` — Multi-source token discovery (CoinGecko + DeFiLlama + DexScreener + Bybit). Dedup, filter, persist.
+- `src/research/onchain_intel.py` — On-chain intelligence: TVL, DEX volume, holder metrics, liquidity. Score 0-100.
+- `src/research/developer_intel.py` — Developer intelligence: GitHub stars, commits, contributors, doc quality. Score 0-100.
+- `src/research/community_intel.py` — Community intelligence: Twitter, Reddit, Telegram, sentiment. Score 0-100.
+- `src/research/narrative_intel.py` — Narrative intelligence: CoinGecko categories, narrative strength/momentum. Score 0-100.
+- `src/research/smart_money_intel.py` — Smart money intelligence: whale/VC wallet tracking, accumulation detection. Score 0-100.
+- `src/research/risk_intel.py` — Contract risk intelligence: verification, rug indicators, tokenomics analysis. Score 0-100.
+- `src/research/fundamental_intel.py` — LLM-powered fundamental analysis (team/product/tech/business). Uses BaseAgent tool-use loop.
+- `src/research/opportunity_scorer.py` — Weighted composite scoring engine (Fundamental 25%, Narrative 15%, Smart Money 15%, On-chain 15%, Developer 10%, Community 8%, Market 7%, Technical 5%). Bucket classification.
+- `src/research/research_orchestrator.py` — Research pipeline coordinator: discovery→score→persist cycle. Top opportunities, watchlist.
+- `src/research/portfolio_bucker.py` — Portfolio allocation engine: Core/Growth/Speculative/Moonshot buckets.
+- `src/research/monitoring_engine.py` — Continuous monitoring: score change detection, watchlist alerts.
+- `src/research/learning_engine.py` — Outcome tracking, weight recalibration, post-mortem generation.
+- `src/bot/aode_handlers.py` — 7 Telegram commands: /discover, /research, /opportunity, /narrative, /smartmoney, /watchlist, /buckets.
+- `graphify-out/` — committed knowledge graph; query before reading source files

@@ -7,7 +7,8 @@ ALTER TABLE crypto_positions
     ADD COLUMN IF NOT EXISTS bucket VARCHAR(20) DEFAULT 'standard',
     ADD COLUMN IF NOT EXISTS last_judgment JSONB,
     ADD COLUMN IF NOT EXISTS last_judgment_at TIMESTAMP,
-    ADD COLUMN IF NOT EXISTS judge_escalated BOOLEAN DEFAULT FALSE;
+    ADD COLUMN IF NOT EXISTS judge_escalated BOOLEAN DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS dynamic_stop_pct NUMERIC(18,4);
 
 -- Bucket constraint
 DO $$
@@ -30,3 +31,4 @@ COMMENT ON COLUMN crypto_positions.bucket IS 'Position bucket: meme (aggressive 
 COMMENT ON COLUMN crypto_positions.last_judgment IS 'Most recent AI judge decision: {action, confidence, reason}';
 COMMENT ON COLUMN crypto_positions.last_judgment_at IS 'Timestamp of last judge evaluation';
 COMMENT ON COLUMN crypto_positions.judge_escalated IS 'True if escalated pass (Tier 2) was used';
+COMMENT ON COLUMN crypto_positions.dynamic_stop_pct IS 'Dynamic stop-loss percentage set by AI judge or clear-win trailing';

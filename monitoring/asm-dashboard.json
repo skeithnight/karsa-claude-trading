@@ -828,6 +828,200 @@
           "x": 12,
           "y": 17
         }
+      },
+      {
+        "id": 15,
+        "type": "row",
+        "title": "Performance Gate v2",
+        "collapsed": false,
+        "gridPos": {
+          "h": 1,
+          "w": 24,
+          "x": 0,
+          "y": 24
+        }
+      },
+      {
+        "id": 16,
+        "type": "stat",
+        "title": "Dynamic Stops Active",
+        "description": "Positions with AI or clear-win dynamic stops",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "targets": [
+          {
+            "expr": "sum(karsa_perf_gate_dynamic_stop_active{job=\"karsa-crypto-bot\"})",
+            "legendFormat": "Active Stops",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": { "mode": "thresholds" },
+            "thresholds": {
+              "steps": [
+                { "value": 0, "color": "green" },
+                { "value": 1, "color": "yellow" },
+                { "value": 3, "color": "red" }
+              ]
+            }
+          }
+        },
+        "options": {
+          "colorMode": "background"
+        },
+        "gridPos": {
+          "h": 4,
+          "w": 6,
+          "x": 0,
+          "y": 25
+        }
+      },
+      {
+        "id": 17,
+        "type": "timeseries",
+        "title": "Drawdown-from-Peak Triggers",
+        "description": "Times AI judge was triggered due to drawdown from peak gain",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "targets": [
+          {
+            "expr": "sum by (ticker) (rate(karsa_perf_gate_drawdown_trigger_total{job=\"karsa-crypto-bot\"}[5m]))",
+            "legendFormat": "{{ticker}}"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": { "mode": "palette-classic" },
+            "custom": {
+              "drawStyle": "bars",
+              "fillOpacity": 50
+            }
+          }
+        },
+        "gridPos": {
+          "h": 4,
+          "w": 6,
+          "x": 6,
+          "y": 25
+        }
+      },
+      {
+        "id": 18,
+        "type": "timeseries",
+        "title": "Stale Price Skips",
+        "description": "Hard fail exits skipped due to stale price data (>2min old)",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "targets": [
+          {
+            "expr": "sum by (ticker) (rate(karsa_perf_gate_price_stale_skip_total{job=\"karsa-crypto-bot\"}[5m]))",
+            "legendFormat": "{{ticker}}"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": { "mode": "palette-classic" },
+            "custom": {
+              "drawStyle": "bars",
+              "fillOpacity": 50
+            }
+          }
+        },
+        "gridPos": {
+          "h": 4,
+          "w": 6,
+          "x": 12,
+          "y": 25
+        }
+      },
+      {
+        "id": 19,
+        "type": "stat",
+        "title": "Consecutive Holds",
+        "description": "Current consecutive AI hold count (force exit at >=3)",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "targets": [
+          {
+            "expr": "max(karsa_perf_gate_consecutive_holds{job=\"karsa-crypto-bot\"})",
+            "legendFormat": "Max Holds",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": { "mode": "thresholds" },
+            "thresholds": {
+              "steps": [
+                { "value": 0, "color": "green" },
+                { "value": 2, "color": "yellow" },
+                { "value": 3, "color": "red" }
+              ]
+            }
+          }
+        },
+        "options": {
+          "colorMode": "background"
+        },
+        "gridPos": {
+          "h": 4,
+          "w": 6,
+          "x": 18,
+          "y": 25
+        }
+      },
+      {
+        "id": 20,
+        "type": "piechart",
+        "title": "Gate Zone Distribution",
+        "description": "Zone classifications across all positions",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "targets": [
+          {
+            "expr": "sum by (zone) (increase(karsa_perf_gate_zone_total{job=\"karsa-crypto-bot\"}[1h]))",
+            "legendFormat": "{{zone}}"
+          }
+        ],
+        "gridPos": {
+          "h": 4,
+          "w": 8,
+          "x": 0,
+          "y": 29
+        }
+      },
+      {
+        "id": 21,
+        "type": "piechart",
+        "title": "Gate Exit Reasons",
+        "description": "Exit breakdown by reason type",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "targets": [
+          {
+            "expr": "sum by (reason_type) (increase(karsa_perf_gate_exit_total{job=\"karsa-crypto-bot\"}[1h]))",
+            "legendFormat": "{{reason_type}}"
+          }
+        ],
+        "gridPos": {
+          "h": 4,
+          "w": 8,
+          "x": 8,
+          "y": 29
+        }
       }
     ],
     "templating": {

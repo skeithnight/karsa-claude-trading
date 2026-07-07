@@ -20,6 +20,8 @@ Output schema:
    "reason": "...", "new_stop_pct": float|null}
 """
 
+import json
+import re
 from typing import Any
 
 from src.agents.base import BaseAgent
@@ -195,8 +197,22 @@ class PositionJudge(BaseAgent):
             ohlcv = await self.mcp.get_ohlcv(ticker, "CRYPTO", timeframe=interval, limit=limit)
             if not ohlcv:
                 return {"error": f"No OHLCV data for {ticker}"}
-            # Return condensed view — last 20 candles
-            return ohlcv[-20:]
+            # Phase 3B: Summarize OHLCV instead of returning raw candles
+            recent = ohlcv[-20:]
+            closes = [float(c["close"]) for c in recent]
+            highs = [float(c["high"]) for c in recent]
+            lows = [float(c["low"]) for c in recent]
+            start_price = closes[0]
+            end_price = closes[-1]
+            pct_change = ((end_price - start_price) / start_price) * 100 if start_price else 0
+            return {
+                "trend": "bearish" if pct_change < -1 else "bullish" if pct_change > 1 else "consolidating",
+                "change_pct": round(pct_change, 2),
+                "range_high": max(highs),
+                "range_low": min(lows),
+                "current_price": end_price,
+                "candles_analyzed": len(recent),
+            }
 
         elif tool_name == "get_volume_profile":
             ohlcv = await self.mcp.get_ohlcv(ticker, "CRYPTO", timeframe="1h", limit=24)
@@ -237,6 +253,22 @@ class PositionJudge(BaseAgent):
             f"Gate reason: {data.get('gate_reason', '?')}",
         ]
 
+        # Phase 3A: Add momentum/trend data for cheap pass
+        if not escalated:
+            consecutive_holds = data.get("consecutive_holds", 0)
+            if consecutive_holds > 0:
+                lines.append(f"Consecutive AI holds: {consecutive_holds} (if >=3 and negative, forced EXIT)")
+            # Gain change if available (from prior judgment tracking)
+            gain_change = data.get("gain_change_since_last_check")
+            if gain_change is not None:
+                if gain_change < -1.0:
+                    trend = "BLEEDING"
+                elif abs(gain_change) < 1.0:
+                    trend = "FLAT"
+                else:
+                    trend = "PUMPING"
+                lines.append(f"Momentum: {trend} ({gain_change:+.2f}% since last check)")
+
         if escalated and data.get("prior_judgment"):
             pj = data["prior_judgment"]
             lines.append(f"\nPRIOR JUDGE (cheap pass): {pj.get('action', '?')} "
@@ -247,6 +279,17 @@ class PositionJudge(BaseAgent):
 
     def _normalize_result(self, result: dict, position_data: dict) -> dict:
         """Normalize agent output to standard judgment schema."""
+        # Phase 1C: Strip markdown JSON blocks if LLM wrapped response
+        if isinstance(result, str):
+            match = re.search(r'\{.*\}', result, re.DOTALL)
+            if match:
+                try:
+                    result = json.loads(match.group(0))
+                except json.JSONDecodeError:
+                    result = {"error": "Failed to parse LLM JSON string"}
+            else:
+                result = {"error": "No JSON found in LLM response"}
+
         if "error" in result:
             logger.warning("judge_error", ticker=position_data.get("ticker"), error=result["error"])
             return {

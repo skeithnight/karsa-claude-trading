@@ -245,6 +245,7 @@ class CryptoPosition(Base):
     last_judgment: Mapped[dict | None] = mapped_column(JSON)
     last_judgment_at: Mapped[datetime | None] = mapped_column(DateTime)
     judge_escalated: Mapped[bool] = mapped_column(default=False)
+    dynamic_stop_pct: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
 
     __table_args__ = (
         CheckConstraint("side IN ('Buy', 'Sell')", name="ck_crypto_pos_side"),

@@ -1,0 +1,11 @@
+# Config Reference
+
+- **9Router**: Agents use `settings.LLM_BASE_URL` / `LLM_AUTH_TOKEN` / `LLM_MODEL` (resolved from `9ROUTER_*` env vars). Combo names: `karsa-critical` (orchestrator+risk), `karsa-routine` (analysts), `karsa-emergency` (kill switch, 8s timeout).
+- **Telegram**: Polling mode by default (no domain needed). Set `TELEGRAM_TOKEN` and `TELEGRAM_CHAT_ID` in `.env`. Set `TELEGRAM_WEBHOOK_URL` + `TELEGRAM_WEBHOOK_SECRET` for webhook mode.
+- **Database**: PostgreSQL via asyncpg + SQLAlchemy async. Schema in `db/init.sql` auto-applied on first start. Append-only rules on `audit_logs` and `closed_paper_trades`.
+- **Redis**: Authenticated via `REDIS_PASSWORD`. Emergency stop key: `karsa:emergency_stop`.
+- **Trading safety**: `TRADING_MODE` must be `paper` or `live`. `DB_PASSWORD` validated at startup (≥12 chars, no placeholders).
+- **Trading params**: `MAX_PORTFOLIO_RISK_PCT` (2%), `MAX_POSITION_SIZE_PCT` (15%), `DAILY_LOSS_LIMIT_PCT` (5%).
+- **Crypto Separation**: `CRYPTO_ONLY_MODE=true` skips IDX/US/ETF jobs in main orchestrator. Use `karsa-crypto-orchestrator` Docker service for dedicated crypto trading.
+- **Bybit (Crypto)**: `BYBIT_API_KEY`, `BYBIT_API_SECRET`, `BYBIT_TESTNET` (default True). `CRYPTO_TELEGRAM_TOKEN` for separate crypto bot. Risk params: `CRYPTO_MAX_RISK_PER_TRADE_PCT` (1%), `CRYPTO_MAX_POSITION_PCT` (10%), `CRYPTO_MAX_CONCURRENT_POSITIONS` (5), `CRYPTO_DAILY_LOSS_LIMIT_PCT` (3%), `CRYPTO_MAX_LEVERAGE` (10). Liquidation thresholds: `CRYPTO_LIQUIDATION_WARN_PCT` (20%), `CRYPTO_LIQUIDATION_ALERT_PCT` (10%), `CRYPTO_LIQUIDATION_FORCE_CLOSE_PCT` (5%). Funding: `CRYPTO_FUNDING_ALERT_THRESHOLD` (0.05%).
+- **AODE (Research Platform)**: `AODE_ENABLED=false` master switch. `COINGECKO_API_KEY`, `GITHUB_TOKEN`, `ETHERSCAN_API_KEY`, `SOLSCAN_API_KEY` (all optional, free tiers work). `AODE_DISCOVERY_INTERVAL_MIN` (60), `AODE_RESEARCH_BATCH_SIZE` (10). Feature flags: `aode_discovery_enabled`, `aode_research_enabled`, `aode_scoring_enabled`, `aode_monitoring_enabled` (all default off, set via Redis `karsa:feature_flags:<name>`). Scoring weights: Fundamental 25%, Narrative 15%, Smart Money 15%, On-chain 15%, Developer 10%, Community 8%, Market 7%, Technical 5%. Buckets: Core (>80), Growth (60-80), Speculative (40-60), Moonshot (<40).

@@ -661,3 +661,74 @@ def record_trade_close(pnl: float, result: str):
     """Record a closed trade. result: 'win' or 'loss'."""
     TRADE_CLOSED_TOTAL.labels(result=result).inc()
     TRADE_CLOSED_PNL.observe(pnl)
+
+
+# ============================================================
+# DOMAIN 8 — Performance Gate v2 Metrics
+# ============================================================
+
+PERF_GATE_DYNAMIC_STOP_ACTIVE = Gauge(
+    "karsa_perf_gate_dynamic_stop_active",
+    "1 if position has an active dynamic stop, 0 otherwise",
+    ["ticker"],
+)
+
+PERF_GATE_DRAWDOWN_TRIGGER_TOTAL = Counter(
+    "karsa_perf_gate_drawdown_trigger_total",
+    "Times drawdown-from-peak triggered AI judge",
+    ["ticker"],
+)
+
+PERF_GATE_PRICE_STALE_SKIP_TOTAL = Counter(
+    "karsa_perf_gate_price_stale_skip_total",
+    "Times hard fail was skipped due to stale price data",
+    ["ticker"],
+)
+
+PERF_GATE_CONSECUTIVE_HOLDS = Gauge(
+    "karsa_perf_gate_consecutive_holds",
+    "Current consecutive AI hold count per position",
+    ["ticker"],
+)
+
+PERF_GATE_ZONE_TOTAL = Counter(
+    "karsa_perf_gate_zone_total",
+    "Performance gate zone classifications",
+    ["zone", "bucket"],
+)
+
+PERF_GATE_EXIT_TOTAL = Counter(
+    "karsa_perf_gate_exit_total",
+    "Performance gate exits by reason type",
+    ["reason_type"],
+)
+
+
+def update_dynamic_stop_active(ticker: str, active: bool):
+    """Set dynamic stop gauge for a position."""
+    PERF_GATE_DYNAMIC_STOP_ACTIVE.labels(ticker=ticker).set(1 if active else 0)
+
+
+def record_drawdown_trigger(ticker: str):
+    """Record a drawdown-from-peak trigger."""
+    PERF_GATE_DRAWDOWN_TRIGGER_TOTAL.labels(ticker=ticker).inc()
+
+
+def record_price_stale_skip(ticker: str):
+    """Record a stale price skip."""
+    PERF_GATE_PRICE_STALE_SKIP_TOTAL.labels(ticker=ticker).inc()
+
+
+def update_consecutive_holds(ticker: str, count: int):
+    """Update consecutive hold count for a position."""
+    PERF_GATE_CONSECUTIVE_HOLDS.labels(ticker=ticker).set(count)
+
+
+def record_perf_gate_zone(zone: str, bucket: str):
+    """Record a zone classification."""
+    PERF_GATE_ZONE_TOTAL.labels(zone=zone, bucket=bucket).inc()
+
+
+def record_perf_gate_exit(reason_type: str):
+    """Record a performance gate exit by reason type."""
+    PERF_GATE_EXIT_TOTAL.labels(reason_type=reason_type).inc()

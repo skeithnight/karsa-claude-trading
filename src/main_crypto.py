@@ -733,6 +733,7 @@ class CryptoKarsaApp:
                             "hours_held": gr.hours_held,
                             "bucket": gr.bucket,
                             "gate_reason": gr.reason,
+                            "consecutive_holds": await gate._get_consecutive_holds(gr.position_id),
                         }
 
                         if gr.escalation:
@@ -755,7 +756,7 @@ class CryptoKarsaApp:
                             )
                             logger.warning("judge_exit", ticker=gr.ticker, judgment=judgment, gain_pct=gr.gain_pct)
                         elif judgment["action"] == "TIGHTEN_STOP":
-                            # Tighten stop loss
+                            # Tighten stop loss — save to DB and exchange
                             new_stop_pct = judgment.get("new_stop_pct")
                             if new_stop_pct and pos.current_price:
                                 from decimal import Decimal
@@ -764,16 +765,56 @@ class CryptoKarsaApp:
                                 else:
                                     new_sl = float(pos.current_price) * (1 - new_stop_pct / 100)
                                 await bybit.set_stop_loss(gr.ticker, new_sl, pos.side)
-                                logger.info("judge_tighten_stop", ticker=gr.ticker, new_sl=new_sl, reason=judgment["reason"])
+                                # Save dynamic_stop_pct to DB
+                                async with async_session() as db_session:
+                                    db_pos = await db_session.get(CryptoPosition, gr.position_id)
+                                    if db_pos:
+                                        db_pos.dynamic_stop_pct = Decimal(str(new_stop_pct))
+                                        await db_session.commit()
+                                logger.info("judge_tighten_stop", ticker=gr.ticker, new_sl=new_sl, new_stop_pct=new_stop_pct, reason=judgment["reason"])
                         else:
                             logger.info("judge_hold", ticker=gr.ticker, confidence=judgment["confidence"], reason=judgment["reason"])
 
                     elif gr.action == GateAction.HOLD:
-                        # Clear win — nothing to do
-                        pass
+                        # Clear win — save dynamic_stop_pct to DB if gate set one
+                        if gr.zone == "clear_win" and gr.reason and "dynamic stop set to" in gr.reason:
+                            pos = next((p for p in positions if p.id == gr.position_id), None)
+                            if pos:
+                                # Extract stop % from reason string
+                                import re
+                                from decimal import Decimal as D
+                                match = re.search(r"dynamic stop set to ([\d.]+)%", gr.reason)
+                                if match:
+                                    stop_pct = float(match.group(1))
+                                    async with async_session() as db_session:
+                                        db_pos = await db_session.get(CryptoPosition, gr.position_id)
+                                        if db_pos:
+                                            db_pos.dynamic_stop_pct = D(str(stop_pct))
+                                            await db_session.commit()
+                                    logger.info("clear_win_dynamic_stop", ticker=gr.ticker, dynamic_stop_pct=stop_pct)
 
                 except Exception as e:
                     logger.error("gate_result_failed", ticker=gr.ticker, error=str(e))
+
+            # Record performance gate metrics
+            try:
+                from src.metrics.crypto_metrics import (
+                    record_perf_gate_zone, record_perf_gate_exit,
+                    update_dynamic_stop_active, update_consecutive_holds,
+                )
+                for gr in gate_results:
+                    record_perf_gate_zone(gr.zone, gr.bucket)
+                    if gr.action == GateAction.EXIT:
+                        reason_type = "dynamic_stop" if "dynamic stop" in gr.reason else \
+                                      "hard_fail" if "hard fail" in gr.reason else \
+                                      "consecutive_holds" if "consecutive holds" in gr.reason else \
+                                      "judge_exit"
+                        record_perf_gate_exit(reason_type)
+                for pos in positions:
+                    has_dynamic = getattr(pos, 'dynamic_stop_pct', None) is not None
+                    update_dynamic_stop_active(pos.ticker, has_dynamic)
+            except Exception:
+                pass
 
             JOB_LAST_RUN.labels(job_id="perf_gate").set(time.time())
             JOB_DURATION.labels(job_id="perf_gate").observe(time.time() - start)
@@ -825,7 +866,7 @@ class CryptoKarsaApp:
             db_pos = db_result.scalar_one_or_none()
             if db_pos:
                 db_pos.status = "CLOSED"
-                db_pos.last_synced_at = datetime.now(timezone.utc)
+                db_pos.last_synced_at = datetime.utcnow()
                 await db_session.commit()
 
         # Record closed trade for PnL tracking
