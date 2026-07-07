@@ -4,7 +4,11 @@
 - **URL**: http://localhost:3000 (admin/admin)
 - **Dashboard 1**: "Karsa ASM & Trading Operations" (`/d/karsa-asm-ops`) — `monitoring/asm-dashboard.json`
 - **Dashboard 2**: "Karsa Trading Operations v2" (`/d/karsa-v2-dashboard`) — `monitoring/grafana-dashboard.json`
-- **Panels**: ASM active state, available cash, realized/unrealized PnL, kill switch status, portfolio equity chart, market regime timeline, open positions table (per-position: ticker, entry/mark price, size, leverage, uPnL with color coding), WS lag, order fill latency, signal rejections
+- **Dashboard 3**: "ASM - Core Operations" (`/d/asm-core-operations`) — `monitoring/asm-core-operations.json`
+  - Top stats: ASM Health, Realized PnL, Unrealized PnL, Cash & Equity, Active Positions
+  - Live tables: Open Positions, Trade History (24h)
+  - Analytics: Exit Reasons (donut), AI Actions (donut)
+  - 10s auto-refresh
 - **Refresh**: 10s auto-refresh
 
 ## Prometheus Metrics (port 8444)

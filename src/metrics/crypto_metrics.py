@@ -637,6 +637,11 @@ TRADE_CLOSED_PNL = Histogram(
     "Realized PnL per closed trade in USD",
     buckets=[-500, -200, -100, -50, -10, 0, 10, 50, 100, 200, 500])
 
+TRADE_DETAIL = Gauge(
+    "karsa_trade_detail",
+    "Detailed trade record for table display",
+    ["ticker", "exit_price", "result", "closed_time"])
+
 
 def update_wallet_metrics(total_equity: float, available: float, used_margin: float):
     """Update wallet gauges. Call from ASM loop or bot dashboard."""
@@ -657,10 +662,17 @@ def update_asm_next_scan(seconds: float):
     ASM_NEXT_SCAN_SECONDS.set(max(0, seconds))
 
 
-def record_trade_close(pnl: float, result: str):
+def record_trade_close(pnl: float, result: str, ticker: str = "", exit_price: float = 0.0, closed_time: str = ""):
     """Record a closed trade. result: 'win' or 'loss'."""
     TRADE_CLOSED_TOTAL.labels(result=result).inc()
     TRADE_CLOSED_PNL.observe(pnl)
+    if ticker:
+        TRADE_DETAIL.labels(
+            ticker=ticker,
+            exit_price=str(round(exit_price, 4)),
+            result=result,
+            closed_time=closed_time,
+        ).set(1)
 
 
 # ============================================================
@@ -755,6 +767,66 @@ def record_llm_tokens(agent: str, input_tokens: int, output_tokens: int):
     """Record LLM token usage. Call from base agent after LLM call."""
     LLM_TOKENS_INPUT.labels(agent=agent).inc(input_tokens)
     LLM_TOKENS_OUTPUT.labels(agent=agent).inc(output_tokens)
+
+
+# ============================================================
+# DOMAIN 9b — AI Judge Metrics
+# ============================================================
+
+AI_JUDGE_DECISIONS_TOTAL = Counter(
+    "karsa_ai_judge_decisions_total",
+    "AI judge decisions by action type",
+    ["action"],  # HOLD, EXIT, TIGHTEN_STOP
+)
+
+AI_JUDGE_TIER_USED = Counter(
+    "karsa_ai_judge_tier_used_total",
+    "AI judge tier usage",
+    ["tier"],  # cheap, escalated
+)
+
+AI_JUDGE_ESCALATION_TOTAL = Counter(
+    "karsa_ai_judge_escalation_total",
+    "Times AI judge escalated from Tier 1 to Tier 2",
+)
+
+AI_JUDGE_CONFIDENCE_SCORE = Histogram(
+    "karsa_ai_judge_confidence_score",
+    "AI judge confidence score distribution",
+    buckets=[10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+)
+
+AI_JUDGE_LATENCY_SECONDS = Histogram(
+    "karsa_ai_judge_latency_seconds",
+    "AI judge LLM API latency",
+    ["tier"],  # cheap, escalated
+    buckets=[0.5, 1, 2, 5, 10, 15, 20, 30],
+)
+
+
+def record_ai_decision(action: str):
+    """Record an AI judge decision. Call from position_judge.py."""
+    AI_JUDGE_DECISIONS_TOTAL.labels(action=action).inc()
+
+
+def record_tier_used(tier: str):
+    """Record which tier was used. Call from position_judge.py."""
+    AI_JUDGE_TIER_USED.labels(tier=tier).inc()
+
+
+def record_escalation():
+    """Record an escalation from Tier 1 to Tier 2. Call from position_judge.py."""
+    AI_JUDGE_ESCALATION_TOTAL.inc()
+
+
+def record_confidence_score(score: int):
+    """Record AI judge confidence score. Call from position_judge.py."""
+    AI_JUDGE_CONFIDENCE_SCORE.observe(score)
+
+
+def record_judge_latency(tier: str, seconds: float):
+    """Record AI judge LLM latency. Call from position_judge.py."""
+    AI_JUDGE_LATENCY_SECONDS.labels(tier=tier).observe(seconds)
 
 
 # ============================================================

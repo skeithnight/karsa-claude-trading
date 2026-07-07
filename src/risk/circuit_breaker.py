@@ -68,7 +68,18 @@ class CircuitBreakerManager:
         """Check if daily realized loss exceeds limit.
 
         Refactored from _job_kill_switch in main.py.
+        Includes retry for transient event-loop mismatch errors.
         """
+        for attempt in range(3):
+            try:
+                return await self._check_daily_drawdown_inner()
+            except Exception as e:
+                if "different loop" in str(e) and attempt < 2:
+                    await asyncio.sleep(0.5)
+                    continue
+                raise
+
+    async def _check_daily_drawdown_inner(self) -> dict | None:
         try:
             async with async_session() as session:
                 today = datetime.now(timezone.utc).date()

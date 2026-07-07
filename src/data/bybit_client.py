@@ -744,6 +744,7 @@ class BybitClient:
                     "take_profit": _safe_float(p.get("takeProfit", 0)) or None,
                     "funding_fee": _safe_float(p.get("curRealisedPnl", 0)),
                     "position_idx": p.get("positionIdx", 0),
+                    "opened_at": p.get("createdTime"),
                 })
 
             return positions

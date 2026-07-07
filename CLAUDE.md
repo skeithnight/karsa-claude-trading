@@ -61,13 +61,19 @@ Full gotchas list (Redis auth, IDX lot sizing, 9router port mapping, etc.): `doc
 
 Grafana: http://localhost:3000 (admin/admin). Dashboards + Prometheus metric names: `docs/reference/MONITORING.md`.
 
+### Dashboards
+- **ASM & Trading Operations** — legacy ops view
+- **Trading Operations v2** — full metrics dashboard
+- **ASM - Core Operations** (`monitoring/asm-core-operations.json`) — new 9-panel dashboard with live tables and AI Judge analytics
+
 ### Prometheus Metrics
 
-80+ metrics defined in `src/metrics/crypto_metrics.py` across 10 domains:
+80+ metrics defined in `src/metrics/crypto_metrics.py` across 11 domains:
 
 | Domain | Key Metrics | Wired In |
 |--------|-------------|----------|
 | Performance Gate v2 | `karsa_perf_gate_zone`, `karsa_perf_gate_exit`, `karsa_perf_gate_dynamic_stop_active` | `performance_gate.py` |
+| AI Judge | `karsa_ai_judge_decisions_total`, `karsa_ai_judge_tier_used_total`, `karsa_ai_judge_confidence_score`, `karsa_ai_judge_latency_seconds` | `position_judge.py` |
 | Regime/Intelligence | `karsa_scan_duration_seconds`, `karsa_crypto_regime`, `karsa_btc_dominance_pct` | `orchestrator.py` |
 | Session Performance | `karsa_session_return_pct`, `karsa_profit_factor`, `karsa_total_trades_count` | `autonomous_session.py` |
 | Position-Level | `karsa_position_age_hours`, `karsa_funding_cost_8h_usd` | `autonomous_session.py` |

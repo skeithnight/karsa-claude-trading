@@ -22,6 +22,30 @@ from src.utils.rate_limit import RateLimiter
 
 logger = get_logger("main")
 
+
+def _snapshot_position(db_pos):
+    """Extract all needed columns from a CryptoPosition ORM object into a
+    plain namespace, so the object can be used after the session closes
+    without triggering lazy loads or event-loop-mismatch errors."""
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        id=db_pos.id,
+        ticker=db_pos.ticker,
+        side=db_pos.side,
+        status=db_pos.status,
+        size=db_pos.size,
+        entry_price=db_pos.entry_price,
+        current_price=db_pos.current_price,
+        stop_loss=db_pos.stop_loss,
+        trailing_stop_price=db_pos.trailing_stop_price,
+        highest_price=db_pos.highest_price,
+        leverage=db_pos.leverage,
+        regime_at_entry=db_pos.regime_at_entry,
+        signal_source=db_pos.signal_source,
+        opened_at=db_pos.opened_at,
+    )
+
+
 # FastAPI app for health endpoints
 app = FastAPI(title="Karsa Orchestrator", version="0.1.0")
 
@@ -812,7 +836,10 @@ class KarsaApp:
                 result = await session.execute(
                     select(CryptoPosition).where(CryptoPosition.status == "OPEN")
                 )
-                positions = list(result.scalars().all())
+                # Snapshot columns inside session to avoid lazy-load errors
+                positions = [
+                    _snapshot_position(p) for p in result.scalars().all()
+                ]
 
             if positions:
                 # Exit Engine evaluates FIRST (Phase 4 — primary exit authority)
@@ -1143,10 +1170,19 @@ class KarsaApp:
 
         logger.info("scheduler_running", jobs=len(self.scheduler.get_jobs()))
 
-        # Run uvicorn in background task
+        # Run uvicorn in a dedicated thread so APScheduler/LLM jobs
+        # cannot starve the HTTP server of event-loop time.
+        import threading
+
         config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="warning")
         server = uvicorn.Server(config)
-        loop.create_task(server.serve())
+
+        def _run_uvicorn():
+            asyncio.run(server.serve())
+
+        uvicorn_thread = threading.Thread(target=_run_uvicorn, daemon=True, name="uvicorn-server")
+        uvicorn_thread.start()
+        logger.info("uvicorn_thread_started", port=8000)
 
         # Listen for profile changes to auto-refresh universe
         if self.universe_engine:
@@ -1160,7 +1196,7 @@ class KarsaApp:
 
         # Keep running until shutdown signal
         await self._shutdown.wait()
-        await server.shutdown()
+        # uvicorn is daemon thread — will die with the process
         await self.shutdown()
 
 
