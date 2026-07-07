@@ -87,6 +87,13 @@ class PositionReconciler:
                     if drift:
                         drifts.append(drift)
 
+            # 4. Detect STALE_CLOSED: CLOSED in DB but still active on exchange
+            for ticker, exch_pos in exchange_by_ticker.items():
+                if ticker in db_by_ticker and db_by_ticker[ticker].status == "CLOSED":
+                    drift = await self._handle_stale_closed(exch_pos, db_by_ticker[ticker])
+                    if drift:
+                        drifts.append(drift)
+
             if drifts:
                 logger.warning("reconciliation_drifts_detected", count=len(drifts))
                 for d in drifts:
@@ -161,7 +168,7 @@ class PositionReconciler:
                             session.add(ClosedPaperTrade(
                                 ticker=pos.ticker,
                                 market="CRYPTO",
-                                side=pos.side,
+                                side="LONG" if pos.side == "Buy" else "SHORT",
                                 quantity=pos.size,
                                 entry_price=pos.entry_price,
                                 exit_price=exit_price,
@@ -202,13 +209,24 @@ class PositionReconciler:
         return None
 
     async def _handle_missing(self, exch_pos: dict) -> Optional[dict]:
-        """Handle missing position: on exchange but not in DB."""
+        """Handle missing position: on exchange but not in DB.
+
+        Pulls SL/TP from Bybit position data so trailing stop and
+        profit lock can manage the position immediately.
+        """
         try:
             symbol = exch_pos.get("symbol", "")
             side = exch_pos.get("side", "")
             size = Decimal(str(exch_pos.get("size", 0)))
             entry_price = Decimal(str(exch_pos.get("avgPrice", 0)))
             leverage = int(exch_pos.get("leverage", 1))
+            mark_price = Decimal(str(exch_pos.get("markPrice", 0)))
+
+            # Pull SL/TP from Bybit (already in position response)
+            sl_raw = exch_pos.get("stopLoss", "")
+            tp_raw = exch_pos.get("takeProfit", "")
+            sl_price = Decimal(str(sl_raw)) if sl_raw and float(sl_raw) > 0 else None
+            tp_price = Decimal(str(tp_raw)) if tp_raw and float(tp_raw) > 0 else None
 
             async with async_session() as session:
                 session.add(CryptoPosition(
@@ -216,11 +234,15 @@ class PositionReconciler:
                     side=side,
                     size=size,
                     entry_price=entry_price,
-                    current_price=Decimal(str(exch_pos.get("markPrice", 0))),
+                    current_price=mark_price,
                     leverage=leverage,
                     margin_mode=exch_pos.get("marginMode", "isolated"),
                     liquidation_price=Decimal(str(exch_pos.get("liqPrice", 0))) if exch_pos.get("liqPrice") else None,
                     unrealized_pnl=Decimal(str(exch_pos.get("unrealisedPnl", 0))),
+                    stop_loss=sl_price,
+                    take_profit=tp_price,
+                    trailing_stop_price=sl_price,  # SL = initial trailing baseline
+                    highest_price=max(entry_price, mark_price),
                     status="OPEN",
                     opened_at=datetime.utcnow(),
                     last_synced_at=datetime.utcnow(),
@@ -247,6 +269,64 @@ class PositionReconciler:
             }
         except Exception as e:
             logger.error("missing_handle_failed", error=str(e))
+        return None
+
+    async def _handle_stale_closed(self, exch_pos: dict, db_pos: CryptoPosition) -> Optional[dict]:
+        """Handle stale closed: position CLOSED in DB but still active on exchange.
+
+        Creates a fresh OPEN record with current exchange state so trailing
+        stop, profit lock, and perf gate can manage it.
+        """
+        try:
+            symbol = exch_pos.get("symbol", "")
+            side = exch_pos.get("side", "")
+            size = Decimal(str(exch_pos.get("size", 0)))
+            entry_price = Decimal(str(exch_pos.get("avgPrice", 0)))
+            leverage = int(exch_pos.get("leverage", 1))
+            mark_price = Decimal(str(exch_pos.get("markPrice", 0)))
+
+            sl_raw = exch_pos.get("stopLoss", "")
+            tp_raw = exch_pos.get("takeProfit", "")
+            sl_price = Decimal(str(sl_raw)) if sl_raw and float(sl_raw) > 0 else None
+            tp_price = Decimal(str(tp_raw)) if tp_raw and float(tp_raw) > 0 else None
+
+            async with async_session() as session:
+                session.add(CryptoPosition(
+                    ticker=symbol,
+                    side=side,
+                    size=size,
+                    entry_price=entry_price,
+                    current_price=mark_price,
+                    leverage=leverage,
+                    margin_mode=exch_pos.get("marginMode", "isolated"),
+                    unrealized_pnl=Decimal(str(exch_pos.get("unrealisedPnl", 0))),
+                    stop_loss=sl_price,
+                    take_profit=tp_price,
+                    trailing_stop_price=sl_price,
+                    highest_price=max(entry_price, mark_price),
+                    status="OPEN",
+                    opened_at=datetime.utcnow(),
+                    last_synced_at=datetime.utcnow(),
+                ))
+
+                session.add(CryptoReconciliationLog(
+                    position_id=db_pos.id,
+                    drift_type="MISSING",
+                    exchange_state={"symbol": symbol, "side": side, "size": str(size)},
+                    db_state={"status": db_pos.status, "id": db_pos.id},
+                    resolution="reopened_from_exchange",
+                ))
+                await session.commit()
+
+            logger.warning("stale_closed_reopened", ticker=symbol, old_id=db_pos.id, side=side, size=str(size))
+            return {
+                "drift_type": "STALE_CLOSED",
+                "ticker": symbol,
+                "old_id": db_pos.id,
+                "resolution": "reopened_from_exchange",
+            }
+        except Exception as e:
+            logger.error("stale_closed_handle_failed", error=str(e))
         return None
 
     async def _handle_size_drift(self, db_pos: CryptoPosition, exch_pos: dict) -> Optional[dict]:

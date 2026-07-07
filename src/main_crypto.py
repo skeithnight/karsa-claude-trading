@@ -288,6 +288,8 @@ class CryptoKarsaApp:
                   id="crypto_partial_exits", name="Crypto Partial Exit Check", replace_existing=True, misfire_grace_time=60)
         s.add_job(self._job_check_time_exits, "cron", hour="*", minute=30,
                   id="crypto_time_exits", name="Crypto Time-Based Exit Check", replace_existing=True, misfire_grace_time=300)
+        s.add_job(self._job_check_performance_gate, "cron", minute="*/5",
+                  id="crypto_perf_gate", name="Performance Gate + AI Judge", replace_existing=True, misfire_grace_time=120, max_instances=1, coalesce=True)
         s.add_job(self._job_check_circuit_breakers, "cron", minute="*/1",
                   id="crypto_circuit_breakers", name="Crypto Circuit Breaker Check", replace_existing=True, misfire_grace_time=60)
         s.add_job(self._job_enforce_funding_limit, "cron", hour="*", minute=20,
@@ -674,6 +676,186 @@ class CryptoKarsaApp:
             JOB_ERRORS.labels(job_id="crypto_time_exits").inc()
             logger.error("time_exit_job_failed", error=str(e))
 
+    async def _job_check_performance_gate(self):
+        """Performance Gate: mechanical checkpoints + AI judge for ambiguous positions.
+
+        Layer 1 (mechanical): hard fail → instant exit, clear win → hold.
+        Layer 2 (AI judge): ambiguous → cheap LLM pass → still bad → escalated pass → exit.
+        Runs every 5 min. Replaces the old single-threshold time-exit logic.
+        """
+        start = time.time()
+        try:
+            from src.risk.performance_gate import PerformanceGate, GateAction
+            from src.agents.position_judge import PositionJudge
+            from src.risk.sor import SmartOrderRouter
+            from src.models.tables import CryptoPosition
+            from src.models.database import async_session
+            from sqlalchemy import select
+
+            bybit = self.mcp._get_bybit()
+            gate = PerformanceGate(self.redis_client)
+            judge = PositionJudge(self.mcp, self.rate_limiter)
+            sor = SmartOrderRouter(bybit)
+
+            # Get open positions from DB (need full ORM objects with opened_at, signal_source, etc.)
+            async with async_session() as session:
+                result = await session.execute(
+                    select(CryptoPosition).where(CryptoPosition.status == "OPEN")
+                )
+                positions = list(result.scalars().all())
+
+            if not positions:
+                JOB_LAST_RUN.labels(job_id="perf_gate").set(time.time())
+                return
+
+            # Layer 1: mechanical checkpoint evaluation
+            gate_results = await gate.evaluate_all(positions)
+
+            for gr in gate_results:
+                try:
+                    if gr.action == GateAction.EXIT:
+                        # Hard fail — instant exit, no LLM
+                        await self._execute_gate_exit(sor, bybit, gr.ticker, gr.reason, gr.gain_pct, gr.position_id)
+                        logger.warning("gate_exit", ticker=gr.ticker, reason=gr.reason, gain_pct=gr.gain_pct)
+
+                    elif gr.action == GateAction.JUDGE:
+                        # Ambiguous — fire AI judge
+                        pos = next((p for p in positions if p.id == gr.position_id), None)
+                        if not pos:
+                            continue
+
+                        position_data = {
+                            "ticker": gr.ticker,
+                            "side": pos.side,
+                            "entry_price": float(pos.entry_price),
+                            "current_price": float(pos.current_price or 0),
+                            "gain_pct": gr.gain_pct,
+                            "hours_held": gr.hours_held,
+                            "bucket": gr.bucket,
+                            "gate_reason": gr.reason,
+                        }
+
+                        if gr.escalation:
+                            # Escalated pass: prior judge said HOLD, still bad
+                            prior = await gate._get_prior_judgment(gr.position_id)
+                            position_data["prior_judgment"] = prior
+                            judgment = await judge.escalated_pass(position_data)
+                        else:
+                            # Cheap pass: first AI evaluation
+                            judgment = await judge.cheap_pass(position_data)
+
+                        # Record judgment for escalation tracking
+                        await gate.record_judgment(gr.position_id, judgment)
+
+                        if judgment["action"] == "EXIT":
+                            await self._execute_gate_exit(
+                                sor, bybit, gr.ticker,
+                                f"AI judge ({'escalated' if gr.escalation else 'cheap'}): {judgment['reason']}",
+                                gr.gain_pct, gr.position_id,
+                            )
+                            logger.warning("judge_exit", ticker=gr.ticker, judgment=judgment, gain_pct=gr.gain_pct)
+                        elif judgment["action"] == "TIGHTEN_STOP":
+                            # Tighten stop loss
+                            new_stop_pct = judgment.get("new_stop_pct")
+                            if new_stop_pct and pos.current_price:
+                                from decimal import Decimal
+                                if pos.side == "Buy":
+                                    new_sl = float(pos.current_price) * (1 + new_stop_pct / 100)
+                                else:
+                                    new_sl = float(pos.current_price) * (1 - new_stop_pct / 100)
+                                await bybit.set_stop_loss(gr.ticker, new_sl, pos.side)
+                                logger.info("judge_tighten_stop", ticker=gr.ticker, new_sl=new_sl, reason=judgment["reason"])
+                        else:
+                            logger.info("judge_hold", ticker=gr.ticker, confidence=judgment["confidence"], reason=judgment["reason"])
+
+                    elif gr.action == GateAction.HOLD:
+                        # Clear win — nothing to do
+                        pass
+
+                except Exception as e:
+                    logger.error("gate_result_failed", ticker=gr.ticker, error=str(e))
+
+            JOB_LAST_RUN.labels(job_id="perf_gate").set(time.time())
+            JOB_DURATION.labels(job_id="perf_gate").observe(time.time() - start)
+            if gate_results:
+                logger.info("perf_gate_done", evaluated=len(positions), actions=len(gate_results))
+
+        except Exception as e:
+            JOB_ERRORS.labels(job_id="perf_gate").inc()
+            logger.error("perf_gate_job_failed", error=str(e))
+
+    async def _execute_gate_exit(self, sor, bybit, ticker: str, reason: str, gain_pct: float, position_id: int):
+        """Execute a performance gate exit: close position via SOR, update DB."""
+        from src.models.tables import CryptoPosition, ClosedPaperTrade
+        from src.models.database import async_session as _async_session
+        from sqlalchemy import select
+        from datetime import datetime, timezone
+        from decimal import Decimal
+
+        # Get current position from Bybit
+        positions = await bybit.get_positions()
+        pos_data = next((p for p in positions if p.get("symbol") == ticker and float(p.get("size", 0) or 0) > 0), None)
+
+        if not pos_data:
+            logger.warning("gate_exit_no_position", ticker=ticker)
+            return
+
+        size = float(pos_data.get("size", 0))
+        side = pos_data.get("side", "Buy")
+        close_side = "Sell" if side == "Buy" else "Buy"
+        current_price = float(pos_data.get("markPrice", 0) or pos_data.get("lastPrice", 0) or 0)
+
+        # Close via SOR
+        result = await bybit.place_order(
+            symbol=ticker, side=close_side, qty=size, order_type="Market", reduce_only=True,
+        )
+
+        if result.get("error"):
+            logger.error("gate_exit_failed", ticker=ticker, error=result["error"])
+            return
+
+        # Update DB — mark position closed
+        async with _async_session() as db_session:
+            db_result = await db_session.execute(
+                select(CryptoPosition).where(
+                    CryptoPosition.id == position_id,
+                    CryptoPosition.status == "OPEN",
+                )
+            )
+            db_pos = db_result.scalar_one_or_none()
+            if db_pos:
+                db_pos.status = "CLOSED"
+                db_pos.last_synced_at = datetime.now(timezone.utc)
+                await db_session.commit()
+
+        # Record closed trade for PnL tracking
+        try:
+            async with _async_session() as db_session:
+                entry_price = float(pos_data.get("avgPrice", 0) or 0)
+                pnl_pct = gain_pct
+                closed_trade = ClosedPaperTrade(
+                    ticker=ticker,
+                    market="CRYPTO",
+                    side="LONG" if side == "Buy" else "SHORT",
+                    quantity=Decimal(str(size)),
+                    entry_price=Decimal(str(entry_price)),
+                    exit_price=Decimal(str(current_price)),
+                    realized_pnl=Decimal(str(float(pos_data.get("unrealisedPnl", 0) or 0))),
+                    realized_pnl_pct=Decimal(str(round(pnl_pct, 4))),
+                    exit_reason=f"performance_gate: {reason}",
+                )
+                db_session.add(closed_trade)
+                await db_session.commit()
+        except Exception as e:
+            logger.warning("gate_exit_trade_record_failed", ticker=ticker, error=str(e))
+
+        # Clean up gate tracking data
+        from src.risk.performance_gate import PerformanceGate
+        gate = PerformanceGate(self.redis_client)
+        await gate.mark_position_closed(position_id)
+
+        logger.info("gate_exit_executed", ticker=ticker, size=size, reason=reason, gain_pct=gain_pct)
+
     async def _job_check_circuit_breakers(self):
         start = time.time()
         try:
@@ -730,7 +912,7 @@ class CryptoKarsaApp:
             universe = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
             if self.universe_engine:
                 try:
-                    universe = await self.universe_engine.get_universe()
+                    universe = await self.universe_engine.get_current()
                 except Exception as e:
                     logger.warning("liquidity_universe_fetch_failed", error=str(e))
             

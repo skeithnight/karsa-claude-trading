@@ -1,10 +1,10 @@
 """Karsa Trading System - SQLAlchemy ORM Models"""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import String, Integer, BigInteger, Numeric, DateTime, Text, JSON, ForeignKey, CheckConstraint, UniqueConstraint
+from sqlalchemy import String, Integer, BigInteger, Numeric, DateTime, Interval, Text, JSON, ForeignKey, CheckConstraint, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -123,7 +123,7 @@ class ClosedPaperTrade(Base):
     realized_pnl_pct: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
     entry_date: Mapped[datetime | None] = mapped_column(DateTime)
     exit_date: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    hold_duration: Mapped[datetime | None] = mapped_column(DateTime)  # Interval not supported well in SQLAlchemy
+    hold_duration: Mapped[timedelta | None] = mapped_column(Interval)
     exit_reason: Mapped[str | None] = mapped_column(String(50))
     strategy: Mapped[str | None] = mapped_column(String(50))
     notes: Mapped[str | None] = mapped_column(Text)
@@ -240,10 +240,17 @@ class CryptoPosition(Base):
     partial_exits_taken: Mapped[int] = mapped_column(Integer, default=0)
     last_management_check: Mapped[datetime | None] = mapped_column(DateTime)
 
+    # --- Performance Gate fields ---
+    bucket: Mapped[str] = mapped_column(String(20), default="standard")
+    last_judgment: Mapped[dict | None] = mapped_column(JSON)
+    last_judgment_at: Mapped[datetime | None] = mapped_column(DateTime)
+    judge_escalated: Mapped[bool] = mapped_column(default=False)
+
     __table_args__ = (
         CheckConstraint("side IN ('Buy', 'Sell')", name="ck_crypto_pos_side"),
         CheckConstraint("status IN ('OPEN', 'CLOSED', 'LIQUIDATED')", name="ck_crypto_pos_status"),
         CheckConstraint("leverage >= 1 AND leverage <= 100", name="ck_crypto_pos_leverage"),
+        CheckConstraint("bucket IN ('meme', 'standard', 'core')", name="ck_crypto_pos_bucket"),
     )
 
 
