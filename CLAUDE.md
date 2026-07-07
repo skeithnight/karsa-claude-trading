@@ -60,3 +60,24 @@ Full gotchas list (Redis auth, IDX lot sizing, 9router port mapping, etc.): `doc
 ## Monitoring
 
 Grafana: http://localhost:3000 (admin/admin). Dashboards + Prometheus metric names: `docs/reference/MONITORING.md`.
+
+### Prometheus Metrics
+
+80+ metrics defined in `src/metrics/crypto_metrics.py` across 10 domains:
+
+| Domain | Key Metrics | Wired In |
+|--------|-------------|----------|
+| Performance Gate v2 | `karsa_perf_gate_zone`, `karsa_perf_gate_exit`, `karsa_perf_gate_dynamic_stop_active` | `performance_gate.py` |
+| Regime/Intelligence | `karsa_scan_duration_seconds`, `karsa_crypto_regime`, `karsa_btc_dominance_pct` | `orchestrator.py` |
+| Session Performance | `karsa_session_return_pct`, `karsa_profit_factor`, `karsa_total_trades_count` | `autonomous_session.py` |
+| Position-Level | `karsa_position_age_hours`, `karsa_funding_cost_8h_usd` | `autonomous_session.py` |
+| Risk Safety | `karsa_kill_switch_active`, `karsa_circuit_breaker_active`, `karsa_daily_loss_pct` | `emergency.py`, `circuit_breaker.py` |
+| Order Execution | `karsa_order_fill_total`, `karsa_order_slippage_bps`, `karsa_order_fill_latency_seconds` | `sor.py` |
+| Infrastructure | `karsa_job_duration_seconds`, `karsa_bybit_api_latency_seconds`, `karsa_redis_connected` | `main.py` |
+| LLM & Tokens | `karsa_llm_tokens_input_total`, `karsa_llm_tokens_output_total` | Defined, call `record_llm_tokens()` |
+| Signal Outcomes | `karsa_signal_outcome_total` | Defined, call `record_signal_outcome()` |
+| Daily Trade Count | `karsa_daily_trade_count` | Defined, call `update_daily_trade_count()` |
+
+Metrics endpoint: `curl http://localhost:8001/metrics` (crypto) or `http://localhost:8000/metrics` (main).
+
+Full wiring status: `docs/METRIC_WIRED.md`. Implementation summary: `docs/METRICS_IMPLEMENTATION_SUMMARY.md`.
