@@ -16,6 +16,12 @@ from src.data.cache import CacheManager
 from src.utils.rate_limit import RateLimiter
 from src.utils.logging import get_logger
 from src.config import settings
+from src.metrics.crypto_metrics import (
+    SCAN_DURATION,
+    CRYPTO_REGIME,
+    REGIME_SIZE_MULT,
+    DOMINANCE,
+)
 
 logger = get_logger("orchestrator")
 
@@ -175,8 +181,18 @@ class Orchestrator:
                 crypto_regime = await crypto_regime_filter.get_current_regime()
                 logger.info("crypto_global_regime", btc_dom=crypto_regime.get("btc_dominance"), season=crypto_regime.get("market_season"))
 
+                # Record regime metrics
+                btc_dom = crypto_regime.get("btc_dominance")
+                if btc_dom is not None:
+                    DOMINANCE.set(float(btc_dom))
+                regime_state = crypto_regime.get("market_season", "UNKNOWN")
+                regime_map = {"BULL": 3, "BEAR": 2, "MEAN_REVERT": 1, "CHOP": 0}
+                CRYPTO_REGIME.set(regime_map.get(regime_state, 0))
+
                 # Parallel scanning: scan each pair concurrently using per-coin regimes
+                scan_start = time.time()
                 scan_result = await self._scan_crypto_parallel(crypto_regime)
+                SCAN_DURATION.labels(market="crypto").observe(time.time() - scan_start)
                 # Auto-execute: risk check → SOR → save
                 if scan_result:
                     crypto_signals = await self._auto_execute_crypto(scan_result, crypto_regime)
