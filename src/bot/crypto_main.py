@@ -83,6 +83,10 @@ async def lifespan(app: FastAPI):
 
     telegram_app.bot_data["orchestrator"] = orch
     telegram_app.bot_data["redis_client"] = redis_client
+    # Expose on app.state for API routes (avoids __main__ vs module import issue)
+    app.state.orchestrator = orch
+    app.state.redis_client = redis_client
+    app.state.telegram_app = telegram_app
 
     await telegram_app.initialize()
     await telegram_app.start()
@@ -152,6 +156,15 @@ app.include_router(crypto_control_router)
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "service": "crypto-bot"}
+
+@app.get("/debug/telegram_app")
+async def debug_telegram_app():
+    return {
+        "telegram_app_is_none": telegram_app is None,
+        "telegram_app_type": str(type(telegram_app)) if telegram_app else None,
+        "has_bot_data": hasattr(telegram_app, "bot_data") if telegram_app else False,
+        "bot_data_keys": list(telegram_app.bot_data.keys()) if telegram_app and hasattr(telegram_app, "bot_data") else [],
+    }
 
 @app.get("/metrics")
 async def metrics():

@@ -4,10 +4,30 @@ REST endpoints for ASM lifecycle + emergency controls.
 Mounted on crypto bot FastAPI app (port 8444).
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/v1/crypto", tags=["asm", "emergency"])
+
+
+def _get_app_state(request: Request):
+    """Get orchestrator and redis from app.state (set during lifespan)."""
+    orch = getattr(request.app.state, "orchestrator", None)
+    redis_client = getattr(request.app.state, "redis_client", None)
+    if not orch or not redis_client:
+        raise HTTPException(503, "Crypto bot not initialized — lifespan hasn't run yet")
+    return orch, redis_client
+
+
+def _make_asm(request: Request):
+    """Create ASM instance with all dependencies."""
+    orch, redis_client = _get_app_state(request)
+    from src.data.cache import CacheManager
+    from src.data.bybit_client import BybitClient
+    from src.agents.autonomous_session import AutonomousSessionManager
+    cache = CacheManager(redis_client)
+    bybit = BybitClient(cache)
+    return AutonomousSessionManager(orch, redis_client, bybit)
 
 
 # --- ASM Endpoints ---
@@ -48,19 +68,9 @@ class ASMStartRequest(BaseModel):
 
 
 @router.post("/asm/start")
-async def asm_start(req: ASMStartRequest):
+async def asm_start(req: ASMStartRequest, request: Request):
     """Start ASM with given config. Fails if already active."""
-    from src.bot.crypto_main import telegram_app
-    if not telegram_app or not telegram_app.bot_data.get("orchestrator"):
-        raise HTTPException(503, "Crypto bot not initialized")
-
-    orch = telegram_app.bot_data["orchestrator"]
-    redis_client = telegram_app.bot_data["redis_client"]
-    from src.data.bybit_client import BybitClient
-    bybit = BybitClient()
-    from src.agents.autonomous_session import AutonomousSessionManager
-    asm = AutonomousSessionManager(orch, redis_client, bybit)
-
+    asm = _make_asm(request)
     result = await asm.start(0, {
         "risk_pct": req.risk_pct,
         "max_pos": req.max_pos,
@@ -73,37 +83,17 @@ async def asm_start(req: ASMStartRequest):
 
 
 @router.post("/asm/stop")
-async def asm_stop():
+async def asm_stop(request: Request):
     """Stop ASM. Returns final report."""
-    from src.bot.crypto_main import telegram_app
-    if not telegram_app or not telegram_app.bot_data.get("orchestrator"):
-        raise HTTPException(503, "Crypto bot not initialized")
-
-    orch = telegram_app.bot_data["orchestrator"]
-    redis_client = telegram_app.bot_data["redis_client"]
-    from src.data.bybit_client import BybitClient
-    bybit = BybitClient()
-    from src.agents.autonomous_session import AutonomousSessionManager
-    asm = AutonomousSessionManager(orch, redis_client, bybit)
-
+    asm = _make_asm(request)
     result = await asm.stop()
     return {"status": "stopped", "message": result}
 
 
 @router.post("/asm/resume")
-async def asm_resume():
+async def asm_resume(request: Request):
     """Resume paused ASM."""
-    from src.bot.crypto_main import telegram_app
-    if not telegram_app or not telegram_app.bot_data.get("orchestrator"):
-        raise HTTPException(503, "Crypto bot not initialized")
-
-    orch = telegram_app.bot_data["orchestrator"]
-    redis_client = telegram_app.bot_data["redis_client"]
-    from src.data.bybit_client import BybitClient
-    bybit = BybitClient()
-    from src.agents.autonomous_session import AutonomousSessionManager
-    asm = AutonomousSessionManager(orch, redis_client, bybit)
-
+    asm = _make_asm(request)
     result = await asm.resume()
     return {"status": "resumed", "message": result}
 
