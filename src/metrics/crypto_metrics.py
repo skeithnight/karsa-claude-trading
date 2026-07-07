@@ -732,3 +732,57 @@ def record_perf_gate_zone(zone: str, bucket: str):
 def record_perf_gate_exit(reason_type: str):
     """Record a performance gate exit by reason type."""
     PERF_GATE_EXIT_TOTAL.labels(reason_type=reason_type).inc()
+
+
+# ============================================================
+# DOMAIN 9 — LLM & Token Usage
+# ============================================================
+
+LLM_TOKENS_INPUT = Counter(
+    "karsa_llm_tokens_input_total",
+    "Total input tokens consumed by LLM calls",
+    ["agent"]
+)
+
+LLM_TOKENS_OUTPUT = Counter(
+    "karsa_llm_tokens_output_total",
+    "Total output tokens consumed by LLM calls",
+    ["agent"]
+)
+
+
+def record_llm_tokens(agent: str, input_tokens: int, output_tokens: int):
+    """Record LLM token usage. Call from base agent after LLM call."""
+    LLM_TOKENS_INPUT.labels(agent=agent).inc(input_tokens)
+    LLM_TOKENS_OUTPUT.labels(agent=agent).inc(output_tokens)
+
+
+# ============================================================
+# DOMAIN 10 — Signal Outcomes
+# ============================================================
+
+SIGNAL_OUTCOME_TOTAL = Counter(
+    "karsa_signal_outcome_total",
+    "Signal outcomes by type",
+    ["outcome"]  # win, loss, breakeven
+)
+
+
+def record_signal_outcome(outcome: str):
+    """Record a signal outcome. Call when trade closes."""
+    SIGNAL_OUTCOME_TOTAL.labels(outcome=outcome).inc()
+
+
+# ============================================================
+# DOMAIN 11 — Daily Trade Count
+# ============================================================
+
+DAILY_TRADE_COUNT = Gauge(
+    "karsa_daily_trade_count",
+    "Number of trades executed today"
+)
+
+
+def update_daily_trade_count(count: int):
+    """Update daily trade count gauge."""
+    DAILY_TRADE_COUNT.set(count)

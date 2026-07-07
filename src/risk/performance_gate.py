@@ -48,6 +48,14 @@ from enum import Enum
 from typing import Any
 
 from src.utils.logging import get_logger
+from src.metrics.crypto_metrics import (
+    update_dynamic_stop_active,
+    record_drawdown_trigger,
+    record_price_stale_skip,
+    update_consecutive_holds,
+    record_perf_gate_zone,
+    record_perf_gate_exit,
+)
 
 logger = get_logger("performance_gate")
 
@@ -252,7 +260,10 @@ class PerformanceGate:
 
         # --- Phase 1A: Dynamic stop check ---
         dynamic_stop = getattr(pos, 'dynamic_stop_pct', None)
-        if dynamic_stop is not None:
+        has_dynamic_stop = dynamic_stop is not None
+        update_dynamic_stop_active(ticker, has_dynamic_stop)
+
+        if has_dynamic_stop:
             dynamic_stop_float = float(dynamic_stop)
             if gain_pct <= dynamic_stop_float:
                 logger.warning(
@@ -269,6 +280,8 @@ class PerformanceGate:
 
         # --- Phase 1D: Consecutive holds check ---
         hold_count = await self._get_consecutive_holds(pos.id)
+        update_consecutive_holds(ticker, hold_count)
+
         if hold_count >= CONSECUTIVE_HOLDS_LIMIT and gain_pct < 0:
             logger.warning(
                 "consecutive_holds_exit",
@@ -307,6 +320,7 @@ class PerformanceGate:
         if peak_gain is not None and peak_gain > gain_pct:
             drawdown = peak_gain - gain_pct
             if drawdown >= DRAWDOWN_TRIGGER_PCT:
+                record_drawdown_trigger(ticker)
                 logger.warning(
                     "drawdown_from_peak",
                     ticker=ticker, peak=round(peak_gain, 2),
@@ -331,6 +345,7 @@ class PerformanceGate:
                 if isinstance(price_at, datetime):
                     age_sec = (datetime.now(timezone.utc) - price_at.replace(tzinfo=timezone.utc)).total_seconds()
                     if age_sec > PRICE_STALE_SEC:
+                        record_price_stale_skip(ticker)
                         logger.warning(
                             "price_stale_skip_hard_fail",
                             ticker=ticker, age_sec=round(age_sec),
@@ -352,10 +367,13 @@ class PerformanceGate:
             zone = Zone.HARD_FAIL
             action = GateAction.EXIT
             reason = f"{active_checkpoint.reason}: gain {gain_pct:+.1f}% <= {HARD_FAIL_THRESHOLD}% hard fail"
+            record_perf_gate_zone(zone.value, bucket.value)
+            record_perf_gate_exit("hard_fail")
         elif gain_pct >= CLEAR_WIN_THRESHOLD:
             zone = Zone.CLEAR_WIN
             action = GateAction.HOLD
             reason = f"clear win: gain {gain_pct:+.1f}% >= {CLEAR_WIN_THRESHOLD}%"
+            record_perf_gate_zone(zone.value, bucket.value)
             await self._mark_checkpoint_passed(pos.id, active_checkpoint.after_minutes)
             # Phase 1B: Set dynamic stop to lock in profit
             stop_pct = max(CLEAR_WIN_STOP_FLOOR, gain_pct * CLEAR_WIN_STOP_RATIO)
@@ -369,6 +387,7 @@ class PerformanceGate:
                 f"ambiguous: gain {gain_pct:+.1f}% >= min {active_checkpoint.min_gain_pct}% "
                 f"but < {CLEAR_WIN_THRESHOLD}% clear win"
             )
+            record_perf_gate_zone(zone.value, bucket.value)
         else:
             # Below minimum — ambiguous, judge it
             zone = Zone.AMBIGUOUS
@@ -377,6 +396,7 @@ class PerformanceGate:
                 f"below checkpoint: gain {gain_pct:+.1f}% < min {active_checkpoint.min_gain_pct}% "
                 f"for {active_checkpoint.reason}"
             )
+            record_perf_gate_zone(zone.value, bucket.value)
 
         # Check for escalation (prior judge said HOLD, still bad)
         escalation = False

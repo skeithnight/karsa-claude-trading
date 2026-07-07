@@ -192,6 +192,10 @@ class CircuitBreakerManager:
                              if float(p.get("unrealized_pnl", 0)) < 0)
                 loss_ratio = losing / len(tier_pos_list)
 
+                # Update correlation loss ratio metric
+                from src.metrics.crypto_metrics import CORRELATION_LOSS_RATIO
+                CORRELATION_LOSS_RATIO.labels(tier=tier_name).set(round(loss_ratio, 2))
+
                 if loss_ratio >= CORRELATION_CASCADE_PCT:
                     await self._activate_breaker("CORRELATION", "WARNING", {
                         "tier": tier_name,

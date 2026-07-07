@@ -314,7 +314,7 @@ class AutonomousSessionManager:
                     from src.metrics.crypto_metrics import (
                         POSITION_PNL, POSITION_ENTRY_PRICE, POSITION_MARK_PRICE,
                         POSITION_SIZE, POSITION_LEVERAGE, OPEN_POSITIONS,
-                        POSITION_DATA,
+                        POSITION_DATA, POSITION_AGE_HOURS, FUNDING_COST,
                     )
                     OPEN_POSITIONS.set(len(positions))
                     # Session performance metrics
@@ -343,6 +343,23 @@ class AutonomousSessionManager:
                             float(pos.get("size", 0)))
                         POSITION_DATA.labels(ticker=t, side=s, field="leverage").set(
                             float(pos.get("leverage", 1)))
+                        # Position age
+                        opened_at = pos.get("opened_at")
+                        if opened_at:
+                            try:
+                                from datetime import datetime, timezone
+                                if isinstance(opened_at, str):
+                                    opened_at = datetime.fromisoformat(opened_at.replace("Z", "+00:00"))
+                                age_hours = (datetime.now(timezone.utc) - opened_at).total_seconds() / 3600
+                                POSITION_AGE_HOURS.labels(ticker=t).set(round(age_hours, 1))
+                            except Exception:
+                                pass
+                        # Funding cost estimate
+                        funding_rate = float(pos.get("funding_rate", 0) or 0)
+                        if funding_rate != 0:
+                            position_value = float(pos.get("size", 0)) * float(pos.get("current_price", 0))
+                            funding_cost_usd = position_value * abs(funding_rate)
+                            FUNDING_COST.labels(ticker=t).set(round(funding_cost_usd, 4))
                 except Exception as e:
                     logger.debug("asm_metrics_update_skipped", error=str(e))
 
