@@ -124,7 +124,7 @@ class ClosedPaperTrade(Base):
     entry_date: Mapped[datetime | None] = mapped_column(DateTime)
     exit_date: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     hold_duration: Mapped[timedelta | None] = mapped_column(Interval)
-    exit_reason: Mapped[str | None] = mapped_column(String(50))
+    exit_reason: Mapped[str | None] = mapped_column(String(500))
     strategy: Mapped[str | None] = mapped_column(String(50))
     notes: Mapped[str | None] = mapped_column(Text)
 
