@@ -1,0 +1,779 @@
+{
+  "id": null,
+  "uid": "karsa-command-center",
+  "title": "Karsa Crypto ASM - Command Center",
+  "description": "World-class trading telemetry: Prometheus metrics + PostgreSQL live state",
+  "tags": [
+    "crypto",
+    "asm",
+    "command-center",
+    "karsa"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Row 1: ASM Cockpit & System Health",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "ASM Uptime",
+      "description": "Current ASM session uptime",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "karsa_asm_uptime_seconds{job=\"karsa-crypto-orchestrator\"}",
+          "legendFormat": "Uptime",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 0,
+          "thresholds": {
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 3600
+              },
+              {
+                "color": "red",
+                "value": 86400
+              }
+            ]
+          }
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 1
+      }
+    },
+    {
+      "id": 3,
+      "type": "gauge",
+      "title": "Next Scan",
+      "description": "Seconds until next ASM scan",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "karsa_asm_next_scan_seconds{job=\"karsa-crypto-orchestrator\"}",
+          "legendFormat": "Next Scan",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 0,
+          "min": 0,
+          "max": 600,
+          "thresholds": {
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 10
+              },
+              {
+                "color": "green",
+                "value": 60
+              }
+            ]
+          }
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 1
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Total Equity",
+      "description": "Total account equity in USDT",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "karsa_wallet_total_equity_usd{job=\"karsa-crypto-orchestrator\"}",
+          "legendFormat": "Equity",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 2
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 1
+      }
+    },
+    {
+      "id": 5,
+      "type": "bargauge",
+      "title": "Cash vs Margin",
+      "description": "Available cash vs margin used",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "karsa_wallet_available_usd{job=\"karsa-crypto-orchestrator\"}",
+          "legendFormat": "Cash",
+          "instant": true
+        },
+        {
+          "expr": "karsa_wallet_used_margin_usd{job=\"karsa-crypto-orchestrator\"}",
+          "legendFormat": "Margin",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 2
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 1
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "WS Health",
+      "description": "WebSocket health (time since last tick). >10s = Red = WS dead",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "time() - karsa_ws_last_message_timestamp_seconds{job=\"karsa-crypto-orchestrator\"}",
+          "legendFormat": "WS Age",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 1,
+          "thresholds": {
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 5
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
+            ]
+          }
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 1
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Bybit API Latency",
+      "description": "95th percentile API latency",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(karsa_bybit_api_latency_seconds_bucket{job=\"karsa-crypto-orchestrator\"}[5m])) by (le))",
+          "legendFormat": "p95 Latency"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 2
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 1
+      }
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "Row 2: Realized PnL & Strategy Alpha",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Cumulative Realized PnL",
+      "description": "Total realized PnL across all closed trades (Counter)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(karsa_realized_pnl_total{job=\"karsa-crypto-orchestrator\"})",
+          "legendFormat": "Cumulative PnL"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 2,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "gradientMode": "scheme"
+          }
+        }
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 6
+      }
+    },
+    {
+      "id": 12,
+      "type": "barchart",
+      "title": "Daily Realized PnL",
+      "description": "PnL per day over last 24h",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(karsa_realized_pnl_total{job=\"karsa-crypto-orchestrator\"}[24h]))",
+          "legendFormat": "24h PnL"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 2
+        }
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 6
+      }
+    },
+    {
+      "id": 13,
+      "type": "piechart",
+      "title": "Win / Loss Ratio",
+      "description": "Signal outcomes distribution",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (karsa_signal_outcome_total{job=\"karsa-crypto-orchestrator\"})",
+          "legendFormat": "{{outcome}}"
+        }
+      ],
+      "gridPos": {
+        "h": 6,
+        "w": 4,
+        "x": 12,
+        "y": 6
+      }
+    },
+    {
+      "id": 14,
+      "type": "piechart",
+      "title": "AI Judge Actions",
+      "description": "AI judge decision distribution",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (action) (karsa_ai_judge_decisions_total{job=\"karsa-crypto-orchestrator\"})",
+          "legendFormat": "{{action}}"
+        }
+      ],
+      "gridPos": {
+        "h": 6,
+        "w": 4,
+        "x": 16,
+        "y": 6
+      }
+    },
+    {
+      "id": 15,
+      "type": "stat",
+      "title": "LLM Token Cost",
+      "description": "Estimated LLM cost (output tokens * $0.000015)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(karsa_llm_tokens_output_total{job=\"karsa-crypto-orchestrator\"}) * 0.000015",
+          "legendFormat": "Cost",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4
+        }
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 4,
+        "x": 20,
+        "y": 6
+      }
+    },
+    {
+      "id": 20,
+      "type": "row",
+      "title": "Row 3: Live State - Open & Active Positions (PostgreSQL)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 12
+      }
+    },
+    {
+      "id": 21,
+      "type": "stat",
+      "title": "Total Unrealized PnL",
+      "description": "Sum of unrealized PnL across all open positions",
+      "datasource": {
+        "type": "postgres",
+        "uid": "postgres"
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT COALESCE(SUM(unrealized_pnl), 0) AS value FROM open_positions;",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 2,
+          "thresholds": {
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 13
+      }
+    },
+    {
+      "id": 22,
+      "type": "table",
+      "title": "Active Positions",
+      "description": "All currently open positions",
+      "datasource": {
+        "type": "postgres",
+        "uid": "postgres"
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT symbol, side, size, entry_price, leverage, unrealized_pnl, opened_at FROM open_positions;",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "unrealized_pnl"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "color-background"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 4,
+        "y": 13
+      }
+    },
+    {
+      "id": 23,
+      "type": "piechart",
+      "title": "Exposure by Side",
+      "description": "Notional exposure split by LONG vs SHORT",
+      "datasource": {
+        "type": "postgres",
+        "uid": "postgres"
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT side AS metric, SUM(size * entry_price) AS value FROM open_positions GROUP BY side;",
+          "format": "table"
+        }
+      ],
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 17
+      }
+    },
+    {
+      "id": 24,
+      "type": "stat",
+      "title": "Avg Leverage",
+      "description": "Average leverage across open positions",
+      "datasource": {
+        "type": "postgres",
+        "uid": "postgres"
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT COALESCE(AVG(leverage), 0) AS value FROM open_positions;",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 1
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 21
+      }
+    },
+    {
+      "id": 30,
+      "type": "row",
+      "title": "Row 4: Trade History & Execution Quality",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      }
+    },
+    {
+      "id": 31,
+      "type": "table",
+      "title": "Recent Trade History",
+      "description": "Last 50 closed trades from PostgreSQL",
+      "datasource": {
+        "type": "postgres",
+        "uid": "postgres"
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT symbol, side, net_pnl, roi_pct, exit_reason, closed_at FROM closed_trades_view LIMIT 50;",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "net_pnl"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "color-text"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "roi_pct"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 26
+      }
+    },
+    {
+      "id": 32,
+      "type": "timeseries",
+      "title": "Execution Slippage",
+      "description": "95th percentile slippage in basis points",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(karsa_order_slippage_bps_bucket{job=\"karsa-crypto-orchestrator\"}[5m])) by (le))",
+          "legendFormat": "p95 Slippage (bps)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "decimals": 1
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 26
+      }
+    },
+    {
+      "id": 33,
+      "type": "stat",
+      "title": "Limit Fallback Rate",
+      "description": "Percentage of orders that fell back to market. >20% = pricing too tight",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "(sum(karsa_limit_order_fallback_total{job=\"karsa-crypto-orchestrator\"}) / sum(karsa_order_fill_total{job=\"karsa-crypto-orchestrator\"})) * 100",
+          "legendFormat": "Fallback %",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "thresholds": {
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 10
+              },
+              {
+                "color": "red",
+                "value": 20
+              }
+            ]
+          }
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 26
+      }
+    },
+    {
+      "id": 34,
+      "type": "timeseries",
+      "title": "Stop Loss Activity",
+      "description": "SL breaches vs executions over time",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(karsa_sl_breach_total{job=\"karsa-crypto-orchestrator\"}[5m]))",
+          "legendFormat": "Breaches"
+        },
+        {
+          "expr": "sum(increase(karsa_sl_execution_total{job=\"karsa-crypto-orchestrator\"}[5m]))",
+          "legendFormat": "Executions"
+        }
+      ],
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 30
+      }
+    }
+  ],
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  }
+}

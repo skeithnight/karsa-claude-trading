@@ -637,6 +637,12 @@ TRADE_CLOSED_PNL = Histogram(
     "Realized PnL per closed trade in USD",
     buckets=[-500, -200, -100, -50, -10, 0, 10, 50, 100, 200, 500])
 
+REALIZED_PNL_TOTAL = Counter(
+    "karsa_realized_pnl_total",
+    "Cumulative realized PnL in USD across all closed trades",
+    ["symbol"],
+)
+
 TRADE_DETAIL = Gauge(
     "karsa_trade_detail",
     "Detailed trade record for table display",
@@ -667,6 +673,7 @@ def record_trade_close(pnl: float, result: str, ticker: str = "", exit_price: fl
     TRADE_CLOSED_TOTAL.labels(result=result).inc()
     TRADE_CLOSED_PNL.observe(pnl)
     if ticker:
+        REALIZED_PNL_TOTAL.labels(symbol=ticker).inc(pnl)
         TRADE_DETAIL.labels(
             ticker=ticker,
             exit_price=str(round(exit_price, 4)),
