@@ -20,7 +20,7 @@ Roster only — for tools, strategies, thresholds, and formulas on a specific ag
 
 **Metrics** (`src/metrics/`): `crypto_metrics.py` — 80+ Prometheus metrics across 10 domains (Performance Gate, Regime, Session, Position, Risk, Order Execution, Infrastructure, LLM Tokens, Signal Outcomes, Daily Trade Count). Helper functions: `record_*()`, `update_*()`. Endpoint: `/metrics`.
 
-**Advisory** (`src/advisory/`): `regime.py` (BULL/BEAR/NEUTRAL), `idx_intelligence.py` (composite scoring), `sizing.py` (ATR position sizing), `crypto_regime.py` (Hurst+ADX macro regime), `coin_regime.py` (per-coin regime), `crypto_technicals.py` (RSI/BB/EMA/MACD/ATR), `crypto_universe.py` (pair config source of truth), `crypto_audit.py`, `crypto_market_watch.py`, `performance_tracker.py`, `strategy_selector.py`.
+**Advisory** (`src/advisory/`): `regime.py` (BULL/BEAR/NEUTRAL), `idx_intelligence.py` (composite scoring), `sizing.py` (ATR position sizing), `crypto_regime.py` (Hurst+ADX macro regime), `coin_regime.py` (per-coin regime), `crypto_technicals.py` (RSI/BB/EMA/MACD/ATR), `crypto_universe.py` (pair config source of truth), `universe_scorer.py` (early breakout detection, overextension penalty, short squeeze multiplier), `crypto_audit.py`, `crypto_market_watch.py`, `performance_tracker.py`, `strategy_selector.py`.
 
 **Utilities**: `mcp_client.py` (market data, 3-tier fallback), `bybit_client.py` (Bybit REST), `_approval.py` (HITL Telegram flow), `format.py`, `validation.py`, `market_hours.py`, `feature_flags.py`.
 
