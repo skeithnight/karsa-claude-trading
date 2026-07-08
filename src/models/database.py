@@ -64,7 +64,7 @@ async def _pool_recycle_loop():
     connection count (via a direct query). If either exceeds the limit,
     disposes the engine to flush leaked connections.
     """
-    global _session_factory
+    global _engine, _session_factory
     while True:
         await asyncio.sleep(120)  # every 2 minutes
         try:
@@ -96,6 +96,7 @@ async def _pool_recycle_loop():
                         # The old code refused to dispose when checkedout > 0, creating an
                         # infinite deadlock where the bot is permanently starved of connections
                         await engine.dispose()
+                        _engine = None
                         _session_factory = None
             except Exception:
                 pass  # Postgres might be unreachable during recycle

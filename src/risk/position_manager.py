@@ -193,7 +193,7 @@ class PositionManager:
                                 exit_date=datetime.now(timezone.utc),
                                 exit_reason=reason
                             ))
-                            from src.metrics.crypto_metrics import record_trade_close
+                            from src.metrics.crypto_metrics import record_trade_close, record_signal_outcome
                             record_trade_close(
                                 float(pnl_usdt),
                                 "win" if pnl_usdt > 0 else "loss",
@@ -201,6 +201,13 @@ class PositionManager:
                                 exit_price=float(exit_price),
                                 closed_time=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
                             )
+                            # Wire signal outcome for ML evaluation
+                            if pnl_usdt > 0:
+                                record_signal_outcome("WIN")
+                            elif pnl_usdt < 0:
+                                record_signal_outcome("LOSS")
+                            else:
+                                record_signal_outcome("BREAKEVEN")
                         except Exception as e:
                             logger.error("closed_paper_trade_insert_failed", error=str(e))
 
