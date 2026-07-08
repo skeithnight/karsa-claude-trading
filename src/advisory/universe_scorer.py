@@ -1,9 +1,13 @@
 """Karsa Trading System - Universe Scorer & Ranker
 
-Pure functions for scoring and ranking crypto candidates.
-No I/O, no Redis, no LLM — just math.
+Upgraded scoring logic focusing on early breakouts, penalizing exhaustion,
+and rewarding short-squeeze mechanics.
 
-Scoring weights: volume 40% + momentum 30% + trend 30%.
+Scoring breakdown:
+- Volume Score: 0-30 points (liquidity tiers)
+- Early Momentum Score: 0-40 points (1h breakout detection + 24h fallback)
+- Overextension Penalty: -40 to -10 points (penalize >30% 24h moves)
+- Short Squeeze Detector: 0-30 points (negative funding + price up)
 """
 
 from src.utils.logging import get_logger
@@ -14,28 +18,85 @@ logger = get_logger("universe_scorer")
 def score_candidate(candidate: dict) -> float:
     """Score a single candidate on 0-100 scale.
 
+    Upgraded scoring logic: Focuses on early breakouts, penalizes exhaustion,
+    and rewards short-squeeze mechanics.
+
     Expected keys in candidate dict:
         - volume_24h_usd: float  (24h trading volume in USD)
-        - price_change_pct: float  (24h price change %)
+        - price_change_pct: float  (24h price change as decimal, e.g., 0.15 = 15%)
+        - price_change_1h_pct: float  (1h price change as decimal, e.g., 0.06 = 6%)
+        - funding_rate: float  (current funding rate, e.g., -0.0005)
         - turnover_ratio: float  (volume / open interest, measures activity)
     """
-    volume = candidate.get("volume_24h_usd", 0)
-    price_change = abs(candidate.get("price_change_pct", 0))
-    turnover = candidate.get("turnover_ratio", 0)
-
-    # Volume score (0-40): log scale, $100M+ = 40
     import math
-    vol_score = min(40, (math.log10(max(volume, 1)) / 8) * 40)
 
-    # Momentum score (0-30): higher absolute change = more momentum
-    # 5%+ change = full score
-    mom_score = min(30, (price_change / 5.0) * 30)
+    # Extract data with defaults
+    vol_24h = candidate.get("volume_24h_usd", 0)
+    price_change_24h = candidate.get("price_change_pct", 0) * 100  # Convert to percentage
+    # Use absolute value for 24h change (negative drops are still momentum)
+    price_change_24h_abs = abs(price_change_24h)
+    price_change_1h = candidate.get("price_change_1h_pct", 0) * 100 if "price_change_1h_pct" in candidate else 0.0
+    funding_rate = candidate.get("funding_rate", 0)
 
-    # Trend/turnover score (0-30): higher turnover = more active
-    # turnover_ratio > 1.0 = full score
-    trend_score = min(30, turnover * 30)
+    # Base Volume Filter (Hard floor to ensure liquidity)
+    if vol_24h < 250_000:
+        return 0.0
 
-    return round(vol_score + mom_score + trend_score, 2)
+    score = 0.0
+
+    # ==========================================
+    # A. VOLUME SCORE (Max 30 points)
+    # ==========================================
+    if vol_24h >= 100_000_000:
+        score += 30
+    elif vol_24h >= 50_000_000:
+        score += 25
+    elif vol_24h >= 10_000_000:
+        score += 20
+    elif vol_24h >= 2_000_000:
+        score += 10
+    else:
+        score += 5
+
+    # ==========================================
+    # B. EARLY MOMENTUM SCORE (Max 40 points)
+    # ==========================================
+    # 1. The "Early Breakout" Bonus (The real alpha)
+    if price_change_1h > 5.0 and price_change_24h_abs < 30.0:
+        score += 40  # Catching the start of the move
+    elif price_change_1h > 3.0 and price_change_24h_abs < 20.0:
+        score += 30
+    elif price_change_1h > 1.5:
+        score += 20
+    # 2. Standard 24h Momentum (Fallback) - use absolute value
+    elif price_change_24h_abs > 10.0:
+        score += 25
+    elif price_change_24h_abs > 5.0:
+        score += 15
+
+    # ==========================================
+    # C. THE "OVEREXTENSION" PENALTY
+    # ==========================================
+    if price_change_24h_abs > 80.0:
+        score -= 40  # Severe penalty: DO NOT BUY THE TOP
+    elif price_change_24h_abs > 50.0:
+        score -= 25  # Heavy penalty
+    elif price_change_24h_abs > 30.0:
+        score -= 10  # Mild penalty
+
+    # ==========================================
+    # D. SHORT SQUEEZE DETECTOR (Max 30 points)
+    # ==========================================
+    if price_change_1h > 2.0 and funding_rate < -0.0001:
+        score += 30  # Massive bonus: Short squeeze in progress
+    elif price_change_24h_abs > 5.0 and funding_rate < 0:
+        score += 15  # Mild bonus
+
+    # Penalize extreme long-funding (overheated longs)
+    if funding_rate > 0.0005:
+        score -= 15
+
+    return max(0.0, score)
 
 
 def rank_candidates(
