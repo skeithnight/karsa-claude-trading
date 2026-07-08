@@ -21,6 +21,7 @@ dependencies = [
     "pysocks>=1.7.1",
     "python-socks[asyncio]>=2.0.0",
     "prometheus-client>=0.21.0",
+    "sentence-transformers>=2.2.0",
 ]
 
 [project.optional-dependencies]

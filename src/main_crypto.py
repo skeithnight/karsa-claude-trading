@@ -58,6 +58,7 @@ def _snapshot_position(db_pos):
         regime_at_entry=db_pos.regime_at_entry,
         signal_source=db_pos.signal_source,
         opened_at=db_pos.opened_at,
+        partial_exits_taken=db_pos.partial_exits_taken,
     )
 
 

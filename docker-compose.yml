@@ -67,6 +67,12 @@ services:
     networks: [trading-net]
     command: ["python", "-m", "src.main"]
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
   # 5. TELEGRAM BOT
   karsa-telegram-bot:
@@ -88,6 +94,12 @@ services:
     networks: [trading-net]
     command: ["python", "-m", "src.bot.main"]
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8443/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   # 6. VPN GATEWAY (Cloudflare WARP - free, routes crypto bot traffic)
   warp:
@@ -143,6 +155,12 @@ services:
     networks: [trading-net]
     command: ["python", "-m", "src.bot.crypto_main"]
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8444/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   # 8. CRYPTO-ONLY ORCHESTRATOR (dedicated crypto scheduler)
   karsa-crypto-orchestrator:
