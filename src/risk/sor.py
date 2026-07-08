@@ -28,17 +28,19 @@ MAX_REPRICE_ATTEMPTS = 3
 class SmartOrderRouter:
     """Places orders on Bybit with smart routing for best fill."""
 
-    def __init__(self, bybit: BybitClient):
+    def __init__(self, bybit: BybitClient, oms=None):
         self.bybit = bybit
+        self.oms = oms
 
     async def execute_order(self, signal: dict, risk_params: dict) -> dict:
         """Execute a risk-approved signal on Bybit."""
         ticker = signal["ticker"]
         direction = signal["direction"]
         qty = risk_params["qty"]
-        stop_loss = risk_params["stop_loss"]
-        take_profit = risk_params["take_profit"]
+        stop_loss = risk_params.get("stop_loss")
+        take_profit = risk_params.get("take_profit")
         leverage = risk_params.get("leverage", 1)
+        reduce_only = risk_params.get("reduce_only", False)
 
         if qty <= 0:
             return {"success": False, "error": "Zero quantity"}
@@ -92,7 +94,7 @@ class SmartOrderRouter:
         # Get bid/ask for limit pricing
         orderbook = await self.bybit.get_orderbook(ticker, limit=5)
         if orderbook.get("error"):
-            return await self._market_order(ticker, direction, qty, stop_loss, take_profit)
+            return await self._market_order(ticker, direction, qty, stop_loss, take_profit, reduce_only)
 
         if direction == "LONG":
             limit_price = orderbook["bids"][0][0] if orderbook.get("bids") else None
@@ -102,7 +104,7 @@ class SmartOrderRouter:
             bybit_side = "Sell"
 
         if not limit_price:
-            return await self._market_order(ticker, direction, qty, stop_loss, take_profit)
+            return await self._market_order(ticker, direction, qty, stop_loss, take_profit, reduce_only)
 
         # Place Post-Only Limit with re-price loop
         for attempt in range(MAX_REPRICE_ATTEMPTS):
@@ -113,12 +115,13 @@ class SmartOrderRouter:
                 order_type="Limit",
                 price=limit_price,
                 time_in_force="PostOnly",
+                reduce_only=reduce_only,
             )
 
             if result.get("error"):
                 logger.warning("limit_order_failed", attempt=attempt, error=result["error"])
                 if "too late" in str(result.get("error", "")).lower() or result.get("retCode") == 10001:
-                    return await self._market_order(ticker, direction, qty, stop_loss, take_profit)
+                    return await self._market_order(ticker, direction, qty, stop_loss, take_profit, reduce_only)
                 await asyncio.sleep(1)
                 orderbook = await self.bybit.get_orderbook(ticker, limit=5)
                 if direction == "LONG":
@@ -131,11 +134,15 @@ class SmartOrderRouter:
             fill_result = await self._wait_for_fill(ticker, order_id, LIMIT_TIMEOUT_SEC)
 
             if fill_result.get("filled"):
-                sl_tp = await self._place_sl_tp(ticker, bybit_side, qty, stop_loss, take_profit)
+                sl_tp = {}
+                if stop_loss and take_profit:
+                    sl_tp = await self._place_sl_tp(ticker, bybit_side, qty, stop_loss, take_profit)
                 logger.info("sor_order_filled", ticker=ticker, side=direction, qty=qty,
                             fill_price=fill_result.get("fill_price"))
                 record_order_fill(ticker, "limit", direction)
                 record_fill_latency(time.time() - _start_time)
+                await self._track_order(order_id, ticker, direction, qty,
+                                        fill_result.get("fill_price", limit_price), "Filled")
                 return {
                     "success": True, "order_id": order_id,
                     "fill_price": fill_result.get("fill_price", limit_price),
@@ -150,11 +157,11 @@ class SmartOrderRouter:
                 limit_price = orderbook["asks"][0][0] if orderbook.get("asks") else limit_price
 
         record_limit_fallback(ticker, "max_reprice")
-        return await self._market_order(ticker, direction, qty, stop_loss, take_profit)
+        return await self._market_order(ticker, direction, qty, stop_loss, take_profit, reduce_only)
 
-    async def _market_order(self, ticker: str, direction: str, qty: float, stop_loss: float, take_profit: float) -> dict:
+    async def _market_order(self, ticker: str, direction: str, qty: float, stop_loss: float, take_profit: float, reduce_only: bool = False) -> dict:
         bybit_side = "Buy" if direction == "LONG" else "Sell"
-        result = await self.bybit.place_order(symbol=ticker, side=bybit_side, qty=qty, order_type="Market")
+        result = await self.bybit.place_order(symbol=ticker, side=bybit_side, qty=qty, order_type="Market", reduce_only=reduce_only)
 
         if result.get("error"):
             logger.error("market_order_failed", ticker=ticker, error=result["error"])
@@ -178,8 +185,11 @@ class SmartOrderRouter:
                     fill_price = p.get("entry_price", 0)
                     break
 
-        sl_tp = await self._place_sl_tp(ticker, bybit_side, qty, stop_loss, take_profit)
+        sl_tp = {}
+        if stop_loss and take_profit:
+            sl_tp = await self._place_sl_tp(ticker, bybit_side, qty, stop_loss, take_profit)
         record_order_fill(ticker, "market", direction)
+        await self._track_order(order_id, ticker, direction, qty, fill_price, "Filled")
         return {"success": True, "order_id": order_id,
                 "fill_price": fill_price, "qty": qty, "order_type": "market", **sl_tp}
 
@@ -206,6 +216,26 @@ class SmartOrderRouter:
                 continue
         return {"filled": False}
 
+    async def _track_order(self, order_id: str, ticker: str, direction: str,
+                            qty: float, fill_price: float, status: str) -> None:
+        """Track order in OMS if available."""
+        if not self.oms or not order_id:
+            return
+        try:
+            await self.oms.track_order(
+                order_id=order_id,
+                ticker=ticker,
+                side="Buy" if direction == "LONG" else "Sell",
+                quantity=qty,
+                order_type="market",
+                avg_fill_price=fill_price,
+            )
+            if status == "Filled":
+                await self.oms.update_status(order_id, "FILLED",
+                                             filled_qty=qty, avg_price=fill_price)
+        except Exception as e:
+            logger.warning("oms_track_failed", order_id=order_id, error=str(e))
+
     async def _round_qty(self, ticker: str, qty: float) -> float:
         """Round qty to valid Bybit lot size step."""
         try:
@@ -225,6 +255,31 @@ class SmartOrderRouter:
         except Exception as e:
             logger.warning("round_qty_failed", ticker=ticker, error=str(e))
             return qty  # fallback: pass through
+
+    async def verify_close_filled(self, symbol: str, order_id: str, timeout: int = 30) -> dict:
+        """Verify a close order actually filled before recording PnL.
+
+        Polls Bybit order status until FILLED/CANCELLED/REJECTED.
+        Returns {"filled": True, "fill_price": float, "fill_qty": float} or {"filled": False, "reason": str}.
+        """
+        for _ in range(timeout // 2):
+            await asyncio.sleep(2)
+            try:
+                status = await self.bybit.get_order_status(symbol, order_id)
+                if status.get("error"):
+                    continue
+                order_status = status.get("status", "")
+                if order_status == "Filled":
+                    return {
+                        "filled": True,
+                        "fill_price": status.get("avg_price", 0),
+                        "fill_qty": status.get("filled_qty", 0),
+                    }
+                if order_status in ("Cancelled", "Rejected", "Deactivated"):
+                    return {"filled": False, "reason": order_status}
+            except Exception:
+                continue
+        return {"filled": False, "reason": "timeout"}
 
     async def close_position(self, symbol: str, position: dict) -> dict:
         """Close a single position (used for counter-trade flips)."""

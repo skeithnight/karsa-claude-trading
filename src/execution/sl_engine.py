@@ -162,6 +162,7 @@ class StopLossEngine:
                     "stop_loss": sl_price,
                     "side": p.get("side", ""),
                     "size": size,
+                    "entry_price": float(p.get("entry_price", 0) or p.get("avgPrice", 0) or 0),
                 }
             self._last_sync = time.time()
         except Exception as e:
@@ -178,6 +179,104 @@ class StopLossEngine:
         except Exception:
             pass
         return 0.0
+
+    async def _record_sl_pnl(self, ticker: str, side: str, size: float,
+                              trigger_price: float, order_id: str) -> None:
+        """Record PnL for a stop-loss close in ClosedPaperTrade."""
+        try:
+            from datetime import datetime, timezone
+            from decimal import Decimal
+            from src.models.database import async_session
+            from src.models.tables import ClosedPaperTrade, CryptoPosition
+            from sqlalchemy import select
+
+            # Get actual fill price from Bybit
+            fill_price = trigger_price
+            try:
+                status = await self._bybit.get_order_status(ticker, order_id)
+                if status and status.get("avg_price"):
+                    fill_price = float(status["avg_price"])
+            except Exception:
+                pass  # use trigger_price as fallback
+
+            # Get entry price from cache or DB
+            cached = self._position_cache.get(ticker, {})
+            entry_price = cached.get("entry_price", 0)
+
+            if not entry_price:
+                # Fallback: fetch from DB
+                try:
+                    async with async_session() as session:
+                        result = await session.execute(
+                            select(CryptoPosition).where(
+                                CryptoPosition.ticker == ticker,
+                                CryptoPosition.status == "OPEN",
+                            ).order_by(CryptoPosition.id.desc()).limit(1)
+                        )
+                        db_pos = result.scalar_one_or_none()
+                        if db_pos:
+                            entry_price = float(db_pos.entry_price)
+                            # Update DB position status
+                            db_pos.status = "CLOSED"
+                            db_pos.last_synced_at = datetime.now(timezone.utc)
+                            await session.commit()
+                except Exception:
+                    pass
+
+            if not entry_price:
+                logger.warning("sl_pnl_no_entry_price", ticker=ticker)
+                return
+
+            # Calculate PnL
+            from src.models.database import async_session as _session
+            async with _session() as session:
+                # Update position status if still open
+                result = await session.execute(
+                    select(CryptoPosition).where(
+                        CryptoPosition.ticker == ticker,
+                        CryptoPosition.status == "OPEN",
+                    )
+                )
+                db_pos = result.scalar_one_or_none()
+                if db_pos:
+                    db_pos.status = "CLOSED"
+                    db_pos.last_synced_at = datetime.now(timezone.utc)
+
+                pnl_per_unit = (fill_price - entry_price) if side == "Buy" else (entry_price - fill_price)
+                pnl_usdt = pnl_per_unit * size
+                pnl_pct = (pnl_per_unit / entry_price * 100) if entry_price else 0
+
+                session.add(ClosedPaperTrade(
+                    ticker=ticker,
+                    market="CRYPTO",
+                    side="LONG" if side == "Buy" else "SHORT",
+                    quantity=Decimal(str(size)),
+                    entry_price=Decimal(str(entry_price)),
+                    exit_price=Decimal(str(fill_price)),
+                    realized_pnl=Decimal(str(pnl_usdt)),
+                    realized_pnl_pct=Decimal(str(round(pnl_pct, 4))),
+                    exit_reason=f"stop_loss:{order_id}",
+                ))
+                await session.commit()
+
+                from src.metrics.crypto_metrics import record_trade_close
+                record_trade_close(
+                    pnl_usdt,
+                    "win" if pnl_usdt > 0 else "loss",
+                    ticker=ticker,
+                    exit_price=fill_price,
+                    closed_time=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
+                )
+
+                logger.info("sl_pnl_recorded",
+                            ticker=ticker,
+                            entry_price=entry_price,
+                            exit_price=fill_price,
+                            pnl=round(pnl_usdt, 4),
+                            pnl_pct=round(pnl_pct, 2))
+
+        except Exception as e:
+            logger.error("sl_pnl_record_failed", ticker=ticker, error=str(e))
 
     async def _execute_close(self, ticker: str, side: str, size: float,
                               price: float, stop_loss: float) -> None:
@@ -197,14 +296,19 @@ class StopLossEngine:
                     reduce_only=True,
                 )
 
-            if result and result.get("orderId"):
-                logger.info("sl_executed", ticker=ticker, order_id=result["orderId"])
+            order_id = result.get("orderId") or result.get("order_id")
+            if result and order_id:
+                logger.info("sl_executed", ticker=ticker, order_id=order_id)
                 record_sl_execution(ticker, True)
                 await self._redis.publish("karsa:events:sl_triggered", json.dumps({
                     "ticker": ticker, "trigger_price": price,
                     "stop_loss": stop_loss, "side": side,
-                    "size": size, "order_id": result["orderId"],
+                    "size": size, "order_id": order_id,
                 }))
+
+                # Record PnL in DB
+                await self._record_sl_pnl(ticker, side, size, price, order_id)
+
                 self._position_cache.pop(ticker, None)
 
                 # Publish business event (shadow mode)
@@ -219,7 +323,7 @@ class StopLossEngine:
                         "stop_loss": stop_loss,
                         "side": side,
                         "size": size,
-                        "order_id": result["orderId"],
+                        "order_id": order_id,
                     },
                     publisher="StopLossEngine",
                 )

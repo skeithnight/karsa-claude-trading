@@ -33,6 +33,7 @@ CB_TTL_SEC = 1800  # 30 min auto-expiry
 VOL_SPIKE_PCT = 5.0        # 5% in 15 min
 VOL_SPIKE_LOOKBACK = 15     # minutes
 CORRELATION_CASCADE_PCT = 0.6  # 60% of correlated positions losing
+PEAK_EQUITY_KEY = "karsa:circuit_breaker:peak_equity"
 
 
 class CircuitBreakerManager:
@@ -61,6 +62,11 @@ class CircuitBreakerManager:
         corr_event = await self.check_correlation_cascade()
         if corr_event:
             events.append(corr_event)
+
+        # 4. Max equity drawdown (cumulative from peak)
+        dd_event = await self.check_max_drawdown()
+        if dd_event:
+            events.append(dd_event)
 
         return events
 
@@ -226,6 +232,72 @@ class CircuitBreakerManager:
                     }
         except Exception as e:
             logger.error("correlation_check_failed", error=str(e))
+        return None
+
+    async def check_max_drawdown(self) -> dict | None:
+        """Check cumulative equity drawdown from all-time peak.
+
+        Tracks peak wallet balance in Redis (no TTL — persists across restarts).
+        Triggers HALT when current equity drops >CRYPTO_MAX_EQUITY_DD_PCT from peak.
+        Different from daily DD: this is cumulative, not limited to today's losses.
+        """
+        try:
+            already_active = await self._is_breaker_active("MAX_DD")
+            if already_active:
+                return None
+
+            # Get current wallet balance
+            resp = await asyncio.to_thread(
+                self.bybit._http_client.get_wallet_balance,
+                accountType="UNIFIED",
+                coin="USDT",
+            )
+            if resp.get("retCode") != 0:
+                return None
+
+            accounts = resp.get("result", {}).get("list", [])
+            if not accounts:
+                return None
+
+            equity = float(accounts[0].get("totalEquity", 0))
+            if equity <= 0:
+                return None
+
+            # Update peak equity (ratchet up only)
+            peak_raw = await self._redis.get(PEAK_EQUITY_KEY)
+            peak = float(peak_raw) if peak_raw else 0.0
+
+            if equity > peak:
+                await self._redis.set(PEAK_EQUITY_KEY, str(equity))
+                peak = equity
+
+            if peak <= 0:
+                return None
+
+            # Compute drawdown from peak
+            dd_pct = ((peak - equity) / peak) * 100
+
+            from src.config import settings
+            limit = settings.CRYPTO_MAX_EQUITY_DD_PCT
+
+            if dd_pct >= limit:
+                await self._activate_breaker("MAX_DD", "HALT", {
+                    "peak_equity": round(peak, 2),
+                    "current_equity": round(equity, 2),
+                    "drawdown_pct": round(dd_pct, 2),
+                    "limit_pct": limit,
+                })
+                logger.warning("max_drawdown_halt",
+                             peak=round(peak, 2),
+                             equity=round(equity, 2),
+                             dd_pct=round(dd_pct, 2))
+                return {
+                    "breaker": "MAX_DD",
+                    "severity": "HALT",
+                    "drawdown_pct": round(dd_pct, 2),
+                }
+        except Exception as e:
+            logger.error("max_dd_check_failed", error=str(e))
         return None
 
     async def _activate_breaker(self, breaker_type: str, severity: str, details: dict) -> None:
