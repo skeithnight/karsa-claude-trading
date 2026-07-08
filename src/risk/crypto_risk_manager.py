@@ -84,16 +84,17 @@ class CryptoRiskManager:
         self.max_concurrent = settings.CRYPTO_MAX_CONCURRENT_POSITIONS    # 5
         self.daily_loss_limit = settings.CRYPTO_DAILY_LOSS_LIMIT_PCT / 100  # 0.03
 
-        # Liquidation proximity thresholds
-        self.liq_warn_pct = settings.CRYPTO_LIQUIDATION_WARN_PCT / 100
-        self.liq_alert_pct = settings.CRYPTO_LIQUIDATION_ALERT_PCT / 100
-        self.liq_force_pct = settings.CRYPTO_LIQUIDATION_FORCE_CLOSE_PCT / 100
+        # Liquidation proximity — dynamic buffer (Phase 2)
+        self._liq_buffer_cache: dict[str, tuple[float, float]] = {}  # ticker -> (buffer_pct, timestamp)
 
         # Kill switch state
         self._kill_switch_active = False
         self._kill_switch_reason = ""
         self._last_kill_check = 0.0
         self._kill_check_interval = 60
+
+        # Slippage estimator for cost gate (Phase 1A)
+        self._slippage_estimator = None
 
     # --- Kill Switch ---
 
@@ -185,17 +186,102 @@ class CryptoRiskManager:
             logger.error("kill_switch_check_failed", error=str(e))
             return {"triggered": False, "error": str(e)}
 
-    # --- Liquidation Proximity ---
+    # --- Kelly-Capped Sizing (Phase 3.2) ---
 
-    def check_liquidation_proximity(self, position: dict) -> dict:
-        """Check how close a position is to liquidation."""
+    async def get_kelly_fraction(self, lookback_days: int = 30) -> float:
+        """Compute quarter-Kelly fraction from recent trade history.
+
+        Kelly: f* = (p*b - q) / b
+          p = win rate, b = avg_win/avg_loss, q = 1-p
+        Returns quarter-Kelly (f*/4) capped at max_risk_pct.
+        Returns max_risk_pct if insufficient history (<10 trades).
+        """
+        try:
+            from src.models.database import async_session
+            from src.models.tables import ClosedPaperTrade
+            from sqlalchemy import select, func
+            from datetime import datetime, timezone, timedelta
+
+            cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+            async with async_session() as session:
+                result = await session.execute(
+                    select(
+                        func.count(ClosedPaperTrade.id).label("total"),
+                        func.sum(func.cast(ClosedPaperTrade.realized_pnl > 0, int)).label("wins"),
+                        func.avg(ClosedPaperTrade.realized_pnl).filter(
+                            ClosedPaperTrade.realized_pnl > 0
+                        ).label("avg_win"),
+                        func.avg(func.abs(ClosedPaperTrade.realized_pnl)).filter(
+                            ClosedPaperTrade.realized_pnl < 0
+                        ).label("avg_loss"),
+                    ).where(ClosedPaperTrade.exit_date >= cutoff)
+                )
+                row = result.one_or_none()
+
+                if not row or (row.total or 0) < 10:
+                    return self.max_risk_pct  # insufficient data
+
+                total = row.total
+                wins = row.wins or 0
+                avg_win = float(row.avg_win or 0)
+                avg_loss = float(row.avg_loss or 0)
+
+                if avg_loss <= 0 or avg_win <= 0:
+                    return self.max_risk_pct
+
+                p = wins / total
+                q = 1 - p
+                b = avg_win / avg_loss
+                kelly = (p * b - q) / b if b > 0 else 0
+
+                # Quarter-Kelly for safety
+                quarter_kelly = max(0, kelly / 4)
+
+                # Cap at configured max
+                effective = min(quarter_kelly, self.max_risk_pct)
+
+                logger.info("kelly_sizing",
+                           trades=total, win_rate=round(p, 3),
+                           payoff_ratio=round(b, 2), kelly=round(kelly, 4),
+                           quarter_kelly=round(quarter_kelly, 4),
+                           effective=round(effective, 4))
+                return effective
+
+        except Exception as e:
+            logger.error("kelly_fraction_failed", error=str(e))
+            return self.max_risk_pct  # fallback to static
+
+    # --- Liquidation Proximity (Dynamic Buffer) ---
+
+    def compute_dynamic_liq_buffer(self, atr_1h_pct: float) -> float:
+        """Compute dynamic liquidation buffer from 1h ATR.
+
+        Formula: max(3.0, min(15.0, 3.0 + 1.5 * atr_1h_pct))
+        Floor: 3% (minimum buffer for any asset)
+        Ceiling: 15% (above this, asset is too volatile to trade)
+        """
+        buffer = 3.0 + 1.5 * atr_1h_pct
+        return max(3.0, min(15.0, buffer))
+
+    def check_liquidation_proximity(self, position: dict, atr_1h_pct: float | None = None) -> dict:
+        """Check how close a position is to liquidation using dynamic buffer.
+
+        Args:
+            position: dict with liquidation_price, current_price, entry_price, side
+            atr_1h_pct: 1h ATR as percentage of price (e.g. 2.5 for 2.5%).
+                       If None, falls back to a conservative 5% default.
+
+        Returns:
+            dict with level, distance_pct, buffer_pct, should_close, asset_tradeable
+        """
         liq_price = position.get("liquidation_price")
         current_price = position.get("current_price")
         entry_price = position.get("entry_price")
         side = position.get("side", "Buy")
 
         if not liq_price or not current_price or not entry_price:
-            return {"level": "unknown", "distance_pct": 0, "should_close": False}
+            return {"level": "unknown", "distance_pct": 0, "buffer_pct": 0,
+                    "should_close": False, "asset_tradeable": True}
 
         if side == "Buy":
             distance_pct = (current_price - liq_price) / entry_price * 100
@@ -204,24 +290,65 @@ class CryptoRiskManager:
 
         distance_pct = max(0, distance_pct)
 
-        if distance_pct <= self.liq_force_pct * 100:
-            level, should_close = "force_close", True
-        elif distance_pct <= self.liq_alert_pct * 100:
-            level, should_close = "danger", False
-        elif distance_pct <= self.liq_warn_pct * 100:
-            level, should_close = "warning", False
+        # Dynamic buffer from ATR
+        if atr_1h_pct is not None:
+            buffer_pct = self.compute_dynamic_liq_buffer(atr_1h_pct)
         else:
-            level, should_close = "safe", False
+            buffer_pct = 5.0  # conservative fallback
+
+        # Check if asset is too volatile to trade
+        asset_tradeable = buffer_pct < 15.0
+
+        if distance_pct <= buffer_pct:
+            level = "force_close"
+            should_close = True
+        elif distance_pct <= buffer_pct * 2:
+            level = "danger"
+            should_close = False
+        else:
+            level = "safe"
+            should_close = False
 
         return {
             "level": level,
             "distance_pct": round(distance_pct, 2),
+            "buffer_pct": round(buffer_pct, 2),
             "liquidation_price": liq_price,
             "should_close": should_close,
+            "asset_tradeable": asset_tradeable,
         }
 
+    async def get_1h_atr_pct(self, ticker: str) -> float | None:
+        """Fetch 1h ATR as percentage of current price for dynamic liq buffer."""
+        if not self.mcp:
+            return None
+        try:
+            ohlcv = await self.mcp.get_ohlcv(ticker, "CRYPTO", timeframe="1h", limit=15)
+            if not ohlcv or len(ohlcv) < 2:
+                return None
+            highs = [c["high"] for c in ohlcv[-14:]]
+            lows = [c["low"] for c in ohlcv[-14:]]
+            closes = [c["close"] for c in ohlcv[-14:]]
+            tr_list = []
+            for i in range(1, len(highs)):
+                tr_list.append(max(
+                    highs[i] - lows[i],
+                    abs(highs[i] - closes[i - 1]),
+                    abs(lows[i] - closes[i - 1]),
+                ))
+            atr = sum(tr_list) / len(tr_list) if tr_list else 0
+            current_price = closes[-1] if closes else 0
+            if current_price > 0 and atr > 0:
+                return (atr / current_price) * 100
+        except Exception as e:
+            logger.warning("atr_1h_fetch_failed", ticker=ticker, error=str(e))
+        return None
+
     async def check_all_positions_health(self, bybit_client) -> list[dict]:
-        """Scan all positions for liquidation proximity and excessive loss."""
+        """Scan all positions for liquidation proximity and excessive loss.
+
+        Uses dynamic ATR-based buffer for each position.
+        """
         try:
             positions = await bybit_client.get_positions()
             OPEN_POSITIONS.set(len(positions) if positions else 0)
@@ -230,7 +357,10 @@ class CryptoRiskManager:
             for pos in positions:
                 symbol = pos.get("symbol", "")
                 side = pos.get("side", "Buy")
-                liq_check = self.check_liquidation_proximity(pos)
+
+                # Fetch 1h ATR for dynamic buffer
+                atr_1h_pct = await self.get_1h_atr_pct(symbol)
+                liq_check = self.check_liquidation_proximity(pos, atr_1h_pct)
 
                 # Update Prometheus gauges per position
                 LIQ_DISTANCE_PCT.labels(ticker=symbol, side=side).set(liq_check["distance_pct"])
@@ -241,7 +371,7 @@ class CryptoRiskManager:
                 position_value = entry_price * size if entry_price and size else 1
                 loss_pct = abs(unrealized) / position_value * 100 if unrealized < 0 and position_value > 0 else 0
 
-                if liq_check["level"] != "safe" or loss_pct > 10:
+                if liq_check["level"] != "safe" or loss_pct > 10 or not liq_check.get("asset_tradeable", True):
                     alerts.append({
                         "symbol": symbol,
                         "side": side,
@@ -367,10 +497,31 @@ class CryptoRiskManager:
         if existing:
             return self._reject(f"Already have open position in {ticker}")
 
-        # --- Gate 3b: Correlation tier limits ---
+        # --- Gate 3b: Correlation limits (static tiers + downside correlation) ---
         corr = self.check_correlation_limits(ticker, open_positions, wallet_balance)
         if not corr.get("allowed"):
             return self._reject(corr["reason"])
+
+        # Downside correlation check (expensive — only if static check passes)
+        if open_positions and self.mcp:
+            try:
+                from src.risk.correlation import DownsideCorrelationCalculator
+                bybit = self.mcp._get_bybit()
+                if bybit:
+                    calc = DownsideCorrelationCalculator(bybit)
+                    downside = await calc.get_downside_correlation(
+                        ticker, open_positions, wallet_balance,
+                    )
+                    if not downside.get("allowed"):
+                        return self._reject(downside["reason"])
+                    if downside.get("highly_correlated"):
+                        logger.info("downside_correlation_pass",
+                                    ticker=ticker,
+                                    highly_correlated=downside["highly_correlated"],
+                                    exposure_pct=downside["correlated_exposure_pct"])
+            except Exception as e:
+                logger.warning("downside_correlation_check_failed", ticker=ticker, error=str(e))
+                # non-fatal — static tier check already passed
 
         # --- Gate 4: Cooldown check ---
         try:
@@ -477,7 +628,10 @@ class CryptoRiskManager:
         stop_pct = stop_distance / entry_price
 
         # Position size: risk_amount / stop_distance_per_unit
-        risk_amount = wallet_balance * max_risk_pct * size_multiplier
+        # Kelly cap: use quarter-Kelly if less than profile max
+        kelly_cap = await self.get_kelly_fraction()
+        effective_risk_pct = min(max_risk_pct, kelly_cap)
+        risk_amount = wallet_balance * effective_risk_pct * size_multiplier
         qty = risk_amount / stop_distance if stop_distance > 0 else 0
 
         # --- Gate 5: Max position cap ---
@@ -512,10 +666,15 @@ class CryptoRiskManager:
             # If margin doesn't fit, keep the original qty (will be rejected by Bybit)
 
         # --- Gate 7: Funding rate check (prevent entering crowded trades) ---
+        funding_rate = 0.0
+        daily_funding_cost_pct = 0.0
+        conservative_target_pct = 0.0
+
         if self.mcp:
             try:
                 funding = await self.mcp.get_funding_rate(ticker)
                 rate = funding.get("funding_rate", 0)
+                funding_rate = rate
                 hard_pct = settings.CRYPTO_FUNDING_HARD_REJECT_PCT / 100  # config in %, compare as decimal
 
                 # Hard reject: extreme funding
@@ -563,6 +722,60 @@ class CryptoRiskManager:
                     )
             except Exception:
                 pass  # non-fatal — proceed without funding check
+
+        # --- Gate 8: Cost-aware risk gate ---
+        # Total cost = taker_fee_roundtrip + slippage + funding_drag
+        # Must be less than expected edge (ATR-based target)
+
+        # Lazy-init slippage estimator
+        if self._slippage_estimator is None and self.mcp:
+            try:
+                from src.risk.liquidity import SlippageEstimator
+                bybit = self.mcp._get_bybit()
+                if bybit:
+                    self._slippage_estimator = SlippageEstimator(bybit)
+            except Exception:
+                pass
+
+        if conservative_target_pct > 0:
+            TAKER_FEE_PCT = 0.055  # Bybit taker fee %
+            taker_fee_roundtrip = 2 * TAKER_FEE_PCT  # entry + exit
+
+            # Estimate slippage from orderbook
+            expected_slippage_pct = 0.0
+            if self._slippage_estimator and position_value > 0:
+                try:
+                    slip_result = await self._slippage_estimator.estimate_slippage(
+                        ticker, "BUY" if direction == "LONG" else "SELL", position_value,
+                    )
+                    expected_slippage_pct = slip_result.get("slippage_pct", 0) * 100  # convert to %
+                except Exception:
+                    pass  # non-fatal — use 0 slippage
+
+            # Funding drag over estimated hold period
+            # Conservative: assume hold = ATR target / daily move, capped at 7 days
+            if daily_funding_cost_pct > 0 and atr > 0:
+                daily_move_pct = (atr / entry_price) * 100
+                estimated_hold_days = min(conservative_target_pct / daily_move_pct, 7) if daily_move_pct > 0 else 1
+                expected_funding_drag = daily_funding_cost_pct * estimated_hold_days
+            else:
+                expected_funding_drag = 0.0
+
+            total_cost = taker_fee_roundtrip + expected_slippage_pct + expected_funding_drag
+
+            logger.info("cost_gate_analysis",
+                        ticker=ticker,
+                        edge=f"{conservative_target_pct:.2f}%",
+                        taker_fee=f"{taker_fee_roundtrip:.3f}%",
+                        slippage=f"{expected_slippage_pct:.3f}%",
+                        funding_drag=f"{expected_funding_drag:.3f}%",
+                        total_cost=f"{total_cost:.3f}%")
+
+            if conservative_target_pct <= total_cost:
+                return self._reject(
+                    f"Cost gate: edge {conservative_target_pct:.2f}% <= total cost {total_cost:.3f}% "
+                    f"(fee {taker_fee_roundtrip:.3f}% + slip {expected_slippage_pct:.3f}% + fund {expected_funding_drag:.3f}%)"
+                )
 
         # --- Take profit: profile-aware R/R ---
         rr_ratio = tp_mult

@@ -832,6 +832,44 @@ class BybitClient:
             logger.error("bybit_order_status_failed", symbol=symbol, order_id=order_id, error=str(e))
             return {"error": str(e)}
 
+    async def get_closed_pnl(self, symbol: str | None = None, limit: int = 20) -> list[dict]:
+        """Get closed PnL history from Bybit. Used for accurate PnL recording on phantom closes."""
+        try:
+            params = {"category": "linear", "limit": limit}
+            if symbol:
+                params["symbol"] = symbol
+
+            async with self._semaphore:
+                await self._throttle()
+                resp = await asyncio.to_thread(
+                    self._http_client.get_closed_pnl,
+                    **params,
+                )
+
+            if resp.get("retCode") != 0:
+                logger.warning("bybit_closed_pnl_failed", retMsg=resp.get("retMsg"))
+                return []
+
+            results = []
+            for item in resp.get("result", {}).get("list", []):
+                results.append({
+                    "symbol": item.get("symbol"),
+                    "side": item.get("side"),
+                    "qty": _safe_float(item.get("qty", 0)),
+                    "entry_price": _safe_float(item.get("avgEntryPrice", 0)),
+                    "exit_price": _safe_float(item.get("avgExitPrice", 0)),
+                    "closed_pnl": _safe_float(item.get("closedPnl", 0)),
+                    "fill_count": item.get("fillCount", 0),
+                    "leverage": _safe_float(item.get("leverage", 1)),
+                    "created_time": item.get("createdTime"),
+                    "updated_time": item.get("updatedTime"),
+                })
+            return results
+
+        except Exception as e:
+            logger.error("bybit_closed_pnl_failed", symbol=symbol, error=str(e))
+            return []
+
     async def get_wallet_balance(self, coin: str | None = None) -> dict:
         """Get wallet balance. coin=None fetches all coins; pass 'USDT' for USDT-only."""
         try:

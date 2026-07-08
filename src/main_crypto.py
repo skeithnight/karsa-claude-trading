@@ -332,6 +332,10 @@ class CryptoKarsaApp:
         s.add_job(self._job_metrics_sync, "interval", seconds=60,
                   id="crypto_metrics_sync", name="Crypto Metrics Sync", replace_existing=True, misfire_grace_time=30, max_instances=1, coalesce=True)
 
+        # Funding capture strategy (aligned with funding settlement epochs)
+        s.add_job(self._job_scan_funding, "cron", hour="1,5,9,13,17,21", minute=10,
+                  id="funding_capture", name="Funding Capture Scan", replace_existing=True, misfire_grace_time=300, max_instances=1, coalesce=True)
+
         # AODE Research Jobs (feature-flagged inside each job)
         s.add_job(self._job_aode_discovery, "cron", hour="*/1",
                   id="aode_discovery", name="AODE Token Discovery", replace_existing=True, misfire_grace_time=300, max_instances=1, coalesce=True)
@@ -651,31 +655,31 @@ class CryptoKarsaApp:
         start = time.time()
         try:
             from src.risk.position_manager import PositionManager
+            from src.models.tables import CryptoPosition
+            from src.models.database import async_session
+            from sqlalchemy import select
+
             bybit = self.mcp._get_bybit()
             pm = PositionManager(bybit, self.redis_client)
-            positions = await bybit.get_positions()
-            if not positions:
+
+            # Fetch from DB to get actual position IDs and current state
+            async with async_session() as session:
+                result = await session.execute(
+                    select(CryptoPosition).where(CryptoPosition.status == "OPEN")
+                )
+                crypto_positions = list(result.scalars().all())
+
+            if not crypto_positions:
                 JOB_LAST_RUN.labels(job_id="crypto_partial_exits").set(time.time())
                 return
-            from src.models.tables import CryptoPosition
-            crypto_positions = []
-            for p in positions:
-                if float(p.get("size", 0) or 0) > 0:
-                    crypto_positions.append(CryptoPosition(
-                        ticker=p.get("ticker"),
-                        side=p.get("side"),
-                        size=p.get("size"),
-                        entry_price=p.get("entry_price"),
-                        current_price=p.get("current_price"),
-                        leverage=int(p.get("leverage", 1)),
-                        liquidation_price=p.get("liquidation_price"),
-                        unrealized_pnl=p.get("unrealized_pnl"),
-                        stop_loss=p.get("stop_loss"),
-                        take_profit=p.get("take_profit"),
-                    ))
+
             actions = await pm.check_partial_exits(crypto_positions)
             for action in actions:
-                await pm.execute_partial_exit(action)
+                await pm.execute_partial_exit(
+                    position_id=action["position_id"],
+                    exit_pct=action["exit_pct"],
+                    reason=action["reason"],
+                )
             JOB_LAST_RUN.labels(job_id="crypto_partial_exits").set(time.time())
             JOB_DURATION.labels(job_id="crypto_partial_exits").observe(time.time() - start)
             if actions:
@@ -688,17 +692,32 @@ class CryptoKarsaApp:
         start = time.time()
         try:
             from src.risk.position_manager import PositionManager
+            from src.models.tables import CryptoPosition
+            from src.models.database import async_session
+            from sqlalchemy import select
+
             bybit = self.mcp._get_bybit()
             pm = PositionManager(bybit, self.redis_client)
-            positions = await bybit.get_positions()
-            if not positions:
+
+            # Fetch from DB to get actual position IDs with opened_at
+            async with async_session() as session:
+                result = await session.execute(
+                    select(CryptoPosition).where(CryptoPosition.status == "OPEN")
+                )
+                crypto_positions = list(result.scalars().all())
+
+            if not crypto_positions:
                 JOB_LAST_RUN.labels(job_id="crypto_time_exits").set(time.time())
                 return
-            from src.models.tables import CryptoPosition
-            crypto_positions = [CryptoPosition(**p) for p in positions if float(p.get("size", 0) or 0) > 0]
+
             actions = await pm.check_time_exits(crypto_positions)
             for action in actions:
-                await pm.execute_partial_exit(action)
+                # Time exits are full closes — use exit_pct=100
+                await pm.execute_partial_exit(
+                    position_id=action["position_id"],
+                    exit_pct=100,
+                    reason=action["reason"],
+                )
             JOB_LAST_RUN.labels(job_id="crypto_time_exits").set(time.time())
             JOB_DURATION.labels(job_id="crypto_time_exits").observe(time.time() - start)
             if actions:
@@ -726,7 +745,7 @@ class CryptoKarsaApp:
             bybit = self.mcp._get_bybit()
             gate = PerformanceGate(self.redis_client)
             judge = PositionJudge(self.mcp, self.rate_limiter)
-            sor = SmartOrderRouter(bybit)
+            sor = SmartOrderRouter(bybit, oms=self.oms)
 
             # Get open positions from DB (need full ORM objects with opened_at, signal_source, etc.)
             async with async_session() as session:
@@ -875,7 +894,6 @@ class CryptoKarsaApp:
         size = float(pos_data.get("size", 0))
         side = pos_data.get("side", "Buy")
         close_side = "Sell" if side == "Buy" else "Buy"
-        current_price = float(pos_data.get("markPrice", 0) or pos_data.get("lastPrice", 0) or 0)
 
         # Close via SOR
         result = await bybit.place_order(
@@ -885,6 +903,20 @@ class CryptoKarsaApp:
         if result.get("error"):
             logger.error("gate_exit_failed", ticker=ticker, error=result["error"])
             return
+
+        # Verify fill before recording PnL
+        order_id = result.get("order_id") or result.get("orderId")
+        fill_price = float(pos_data.get("markPrice", 0) or pos_data.get("lastPrice", 0) or 0)
+        if order_id and sor:
+            try:
+                verification = await sor.verify_close_filled(ticker, order_id, timeout=15)
+                if verification.get("filled") and verification.get("fill_price"):
+                    fill_price = float(verification["fill_price"])
+                else:
+                    logger.warning("gate_exit_fill_not_verified", ticker=ticker,
+                                   order_id=order_id, reason=verification.get("reason"))
+            except Exception as e:
+                logger.warning("gate_exit_verify_failed", ticker=ticker, error=str(e))
 
         # Update DB — mark position closed
         async with _async_session() as db_session:
@@ -904,20 +936,33 @@ class CryptoKarsaApp:
         try:
             async with _async_session() as db_session:
                 entry_price = float(pos_data.get("avgPrice", 0) or 0)
-                pnl_pct = gain_pct
+                # Calculate actual realized PnL from fill price, not unrealized proxy
+                pnl_per_unit = (fill_price - entry_price) if side == "Buy" else (entry_price - fill_price)
+                realized_pnl = pnl_per_unit * size
+                pnl_pct = (pnl_per_unit / entry_price * 100) if entry_price else gain_pct
+
                 closed_trade = ClosedPaperTrade(
                     ticker=ticker,
                     market="CRYPTO",
                     side="LONG" if side == "Buy" else "SHORT",
                     quantity=Decimal(str(size)),
                     entry_price=Decimal(str(entry_price)),
-                    exit_price=Decimal(str(current_price)),
-                    realized_pnl=Decimal(str(float(pos_data.get("unrealisedPnl", 0) or 0))),
+                    exit_price=Decimal(str(fill_price)),
+                    realized_pnl=Decimal(str(round(realized_pnl, 4))),
                     realized_pnl_pct=Decimal(str(round(pnl_pct, 4))),
                     exit_reason=f"performance_gate: {reason}",
                 )
                 db_session.add(closed_trade)
                 await db_session.commit()
+
+                from src.metrics.crypto_metrics import record_trade_close
+                record_trade_close(
+                    realized_pnl,
+                    "win" if realized_pnl > 0 else "loss",
+                    ticker=ticker,
+                    exit_price=fill_price,
+                    closed_time=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
+                )
         except Exception as e:
             logger.warning("gate_exit_trade_record_failed", ticker=ticker, error=str(e))
 
@@ -942,6 +987,73 @@ class CryptoKarsaApp:
         except Exception as e:
             JOB_ERRORS.labels(job_id="crypto_circuit_breakers").inc()
             logger.error("circuit_breaker_job_failed", error=str(e))
+
+    async def _job_scan_funding(self):
+        """Funding capture strategy: scan for extreme funding rates and generate signals."""
+        start = time.time()
+        try:
+            from src.strategies.funding_capture import FundingCaptureStrategy
+            from src.risk.funding_tracker import FundingTracker
+            from src.risk.sor import SmartOrderRouter
+
+            bybit = self.mcp._get_bybit()
+            tracker = FundingTracker(bybit)
+            strategy = FundingCaptureStrategy(tracker, bybit)
+            sor = SmartOrderRouter(bybit, oms=self.oms)
+
+            # Get open positions for concurrency check
+            positions = await bybit.get_positions()
+            open_positions = positions if positions else []
+
+            # Scan for funding opportunities
+            signals = await strategy.scan(open_positions)
+
+            for signal in signals:
+                try:
+                    # Emergency check
+                    from src.risk import emergency
+                    if await emergency.is_active():
+                        break
+
+                    # Evaluate through risk gate
+                    from src.risk.crypto_risk_manager import CryptoRiskManager
+                    risk_mgr = CryptoRiskManager(mcp=self.mcp, redis_client=self.redis_client)
+                    risk_result = await risk_mgr.evaluate(
+                        signal=signal,
+                        open_positions=open_positions,
+                        wallet_balance=0,  # will be fetched by risk manager if needed
+                    )
+
+                    if not risk_result.get("approved"):
+                        logger.info("funding_signal_rejected",
+                                    ticker=signal["ticker"],
+                                    reason=risk_result.get("reason"))
+                        continue
+
+                    # Execute via SOR
+                    result = await sor.execute_order(signal, risk_result)
+                    if result.get("success"):
+                        logger.info("funding_position_opened",
+                                    ticker=signal["ticker"],
+                                    direction=signal["direction"],
+                                    rate=signal.get("_funding_annualized"))
+                    else:
+                        logger.warning("funding_execute_failed",
+                                       ticker=signal["ticker"],
+                                       error=result.get("error"))
+
+                except Exception as e:
+                    logger.error("funding_signal_failed",
+                                 ticker=signal.get("ticker"), error=str(e))
+
+            JOB_LAST_RUN.labels(job_id="funding_capture").set(time.time())
+            JOB_DURATION.labels(job_id="funding_capture").observe(time.time() - start)
+            if signals:
+                logger.info("funding_scan_done", signals=len(signals))
+
+        except Exception as e:
+            JOB_ERRORS.labels(job_id="funding_capture").inc()
+            logger.error("funding_scan_job_failed", error=str(e))
 
     async def _job_enforce_funding_limit(self):
         start = time.time()
@@ -1004,10 +1116,13 @@ class CryptoKarsaApp:
         try:
             if self.oms:
                 stuck = await self.oms.cleanup_stuck_orders()
+                partial = await self.oms.handle_partial_fills()
                 await self.oms.sync_from_exchange()
                 JOB_LAST_RUN.labels(job_id="oms_cleanup").set(time.time())
                 JOB_DURATION.labels(job_id="oms_cleanup").observe(time.time() - start)
-                logger.info("oms_cleanup_done", stuck_cancelled=len(stuck))
+                logger.info("oms_cleanup_done",
+                          stuck_cancelled=len(stuck),
+                          partial_cancelled=len(partial))
         except Exception as e:
             JOB_ERRORS.labels(job_id="oms_cleanup").inc()
             logger.error("oms_cleanup_failed", error=str(e))

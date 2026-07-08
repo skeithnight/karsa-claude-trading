@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     CRYPTO_MAX_POSITION_PCT: float = 10.0
     CRYPTO_MAX_CONCURRENT_POSITIONS: int = 5
     CRYPTO_DAILY_LOSS_LIMIT_PCT: float = 3.0
+    CRYPTO_MAX_EQUITY_DD_PCT: float = 15.0  # cumulative equity drawdown from peak
     CRYPTO_MAX_LEVERAGE: int = 10
     CRYPTO_FUNDING_ALERT_THRESHOLD: float = 0.05
     CRYPTO_FUNDING_HARD_REJECT_PCT: float = 0.05  # Gate 7: hard reject if funding > 0.05% per 8h

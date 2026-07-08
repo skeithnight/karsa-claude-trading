@@ -22,6 +22,7 @@ logger = get_logger("oms")
 REDIS_ORDER_PREFIX = "karsa:oms:order"
 REDIS_ORDER_SET = "karsa:oms:active_orders"
 ORDER_STALE_SEC = 15 * 60  # 15 minutes
+PARTIAL_CANCEL_PRICE_MOVE_PCT = 1.0  # cancel remaining if price moves >1% from order
 
 VALID_TRANSITIONS = {
     "NEW": {"SUBMITTED", "CANCELLED", "REJECTED"},
@@ -148,6 +149,70 @@ class OrderManagementSystem:
         if stuck:
             logger.info("stuck_orders_cleanup", count=len(stuck))
         return stuck
+
+    async def handle_partial_fills(self) -> list[dict]:
+        """Cancel remaining quantity on partial fills when price moves away.
+
+        For PARTIAL orders: if current price has moved >1% from order price,
+        cancel the unfilled remainder. This prevents stale partial limit orders
+        from filling at unfavorable prices after momentum has passed.
+        """
+        now = int(time.time())
+        cancelled = []
+
+        orders = await self.get_active_orders()
+        for order in orders:
+            if order.get("status") != "PARTIAL":
+                continue
+
+            order_id = order["order_id"]
+            ticker = order.get("ticker", "")
+            order_price = order.get("avg_fill_price", 0) or order.get("price", 0)
+            filled_qty = order.get("filled_qty", 0)
+            total_qty = order.get("quantity", 0)
+
+            if not order_price or filled_qty <= 0 or filled_qty >= total_qty:
+                continue
+
+            try:
+                # Get current market price
+                resp = await self._bybit.get_ticker(symbol=ticker)
+                if not resp:
+                    continue
+
+                current_price = float(resp.get("price", 0))
+                if current_price <= 0:
+                    continue
+
+                # Check price deviation
+                price_move_pct = abs(current_price - order_price) / order_price * 100
+
+                if price_move_pct >= PARTIAL_CANCEL_PRICE_MOVE_PCT:
+                    result = await self._bybit.cancel_order(
+                        symbol=ticker, order_id=order_id,
+                    )
+                    if result:
+                        await self.update_status(order_id, "CANCELLED")
+                        cancelled.append({
+                            "order_id": order_id,
+                            "ticker": ticker,
+                            "filled_qty": filled_qty,
+                            "remaining_qty": total_qty - filled_qty,
+                            "order_price": order_price,
+                            "current_price": current_price,
+                            "price_move_pct": round(price_move_pct, 2),
+                        })
+                        logger.info("partial_fill_cancelled",
+                                  order_id=order_id, ticker=ticker,
+                                  filled=filled_qty, total=total_qty,
+                                  price_move=f"{price_move_pct:.1f}%")
+            except Exception as e:
+                logger.error("partial_fill_cancel_failed",
+                           order_id=order_id, error=str(e))
+
+        if cancelled:
+            logger.info("partial_fills_cleanup", count=len(cancelled))
+        return cancelled
 
     async def sync_from_exchange(self) -> None:
         """Reconcile OMS state with exchange orders."""
