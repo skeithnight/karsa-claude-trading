@@ -415,6 +415,8 @@ CREATE OR REPLACE VIEW closed_trades_view AS
 SELECT
     ticker AS symbol,
     side,
+    entry_price,
+    exit_price,
     realized_pnl AS net_pnl,
     ROUND((exit_price - entry_price) / entry_price * 100, 2) AS roi_pct,
     exit_reason,

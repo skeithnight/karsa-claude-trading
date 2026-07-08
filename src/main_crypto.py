@@ -362,7 +362,8 @@ class CryptoKarsaApp:
         start = time.time()
         from src.metrics.crypto_metrics import (
             PORTFOLIO_EQUITY_USD, REDIS_CONNECTED, WARP_CONNECTED,
-            OPEN_POSITIONS, UNREALIZED_PNL_USD
+            OPEN_POSITIONS, UNREALIZED_PNL_USD,
+            WALLET_TOTAL_EQUITY, WALLET_AVAILABLE, WALLET_USED_MARGIN
         )
         # ponytail: each metric section isolated — one failure shouldn't kill others
 
@@ -380,8 +381,13 @@ class CryptoKarsaApp:
             wallet = await bybit.get_wallet_balance()
             if not wallet.get("error"):
                 WARP_CONNECTED.set(1)
-                equity = wallet.get("equity", wallet.get("balance", 0))
-                PORTFOLIO_EQUITY_USD.set(float(equity))
+                equity = float(wallet.get("equity", wallet.get("balance", 0)))
+                available = float(wallet.get("available", 0))
+                used_margin = equity - available
+                PORTFOLIO_EQUITY_USD.set(equity)
+                WALLET_TOTAL_EQUITY.set(equity)
+                WALLET_AVAILABLE.set(available)
+                WALLET_USED_MARGIN.set(max(0, used_margin))
             else:
                 WARP_CONNECTED.set(0)
         except Exception as e:
@@ -392,9 +398,22 @@ class CryptoKarsaApp:
         try:
             positions = await bybit.get_positions()
             if not isinstance(positions, dict) or not positions.get("error"):
-                OPEN_POSITIONS.set(len(positions))
-                unrealized = sum(float(p.get("unrealized_pnl", 0)) for p in positions)
+                from src.metrics.crypto_metrics import (
+                    POSITION_PNL, POSITION_ENTRY_PRICE, POSITION_MARK_PRICE, POSITION_SIZE
+                )
+                # Count only non-zero size positions
+                active = [p for p in positions if float(p.get("size", 0)) > 0]
+                OPEN_POSITIONS.set(len(active))
+                unrealized = sum(float(p.get("unrealisedPnl", 0)) for p in active)
                 UNREALIZED_PNL_USD.set(unrealized)
+                # Update per-position metrics
+                for p in active:
+                    t = p.get("symbol", "")
+                    s = p.get("side", "")
+                    POSITION_PNL.labels(ticker=t, side=s).set(float(p.get("unrealisedPnl", 0)))
+                    POSITION_ENTRY_PRICE.labels(ticker=t, side=s).set(float(p.get("avgPrice", 0)))
+                    POSITION_MARK_PRICE.labels(ticker=t, side=s).set(float(p.get("markPrice", 0)))
+                    POSITION_SIZE.labels(ticker=t, side=s).set(float(p.get("size", 0)))
         except Exception as e:
             logger.warning("metrics_positions_check_failed", error=str(e))
 
