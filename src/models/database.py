@@ -23,18 +23,24 @@ logger = logging.getLogger("database")
 
 
 def _patch_asyncpg_terminate():
-    """Monkey-patch asyncpg connection terminate() to skip the broken
-    asyncio.shield() path that causes event loop mismatches."""
+    """Monkey-patch asyncpg connection terminate() to skip the broken graceful close.
+
+    The bug: terminate() calls self.await_(asyncio.shield(self._terminate_graceful_close()))
+    which creates a Future on one event loop but the coroutine runs on another.
+
+    Fix: patch terminate() to use force close instead of the broken shield() path.
+    """
     try:
-        from sqlalchemy.connectors.asyncio import AsyncAdapt_terminate
-        original_terminate = AsyncAdapt_terminate.terminate
+        # Correct import path for SQLAlchemy 2.0+ asyncpg dialect
+        from sqlalchemy.dialects.postgresql.asyncpg import AsyncAdapt_asyncpg_connection
 
         def _fixed_terminate(self):
-            # Always use force close — avoids the asyncio.shield() bug
-            # where Future is created on one loop but runs on another
-            self._terminate_force_close()
+            # Force close the underlying asyncpg connection to avoid asyncio.shield() bugs
+            if self._connection:
+                self._connection.terminate()
+            self._started = False
 
-        AsyncAdapt_terminate.terminate = _fixed_terminate
+        AsyncAdapt_asyncpg_connection.terminate = _fixed_terminate
         logger.info("asyncpg_terminate_patched")
     except Exception as e:
         logger.warning("asyncpg_terminate_patch_failed error=%s", str(e))
@@ -65,39 +71,32 @@ async def _pool_recycle_loop():
             engine = get_engine()
             pool = engine.pool
 
-            # Check 1: SQLAlchemy pool counters — only recycle if no active ops
-            checked_out = pool.checkedout()
-            if checked_out > pool.size() and checked_out == 0:
-                # This condition is impossible but guards against future logic
-                pass
-
-            # Check 2: Actual Postgres connection count
-            # Only recycle when pool has idle connections (checked_out == 0)
-            # to avoid killing mid-operation connections
+            # Check actual Postgres connection count (looking for 'idle' connections,
+            # not just 'idle in transaction' - leaked connections end up in 'idle' state
+            # because SQLAlchemy's async with blocks commit or rollback immediately)
             try:
                 async with engine.connect() as conn:
                     result = await conn.execute(
                         text(
                             "SELECT count(*) FROM pg_stat_activity "
                             "WHERE datname = current_database() "
-                            "AND state = 'idle in transaction'"
+                            "AND state IN ('idle', 'idle in transaction')"
                         )
                     )
-                    idle_tx = result.scalar() or 0
-                    if idle_tx > 15:  # more than pool_size(10) + overflow(5)
+                    idle_conns = result.scalar() or 0
+
+                    # If there are way more idle connections than our pool size, we have a leak
+                    # pool_size(10) + overflow(5) = 15, so 25+ idle connections indicates a leak
+                    if idle_conns > 25:
                         logger.warning(
-                            "pg_idle_in_transaction_high count=%d — recycling pool",
-                            idle_tx,
+                            "pg_idle_connections_high count=%d — forcing pool dispose",
+                            idle_conns,
                         )
-                        # Only dispose if nothing is actively checked out
-                        if pool.checkedout() == 0:
-                            await engine.dispose()
-                            _session_factory = None
-                        else:
-                            logger.info(
-                                "pool_recycle_deferred checked_out=%d",
-                                pool.checkedout(),
-                            )
+                        # Force dispose regardless of checkedout status to break the deadlock
+                        # The old code refused to dispose when checkedout > 0, creating an
+                        # infinite deadlock where the bot is permanently starved of connections
+                        await engine.dispose()
+                        _session_factory = None
             except Exception:
                 pass  # Postgres might be unreachable during recycle
 

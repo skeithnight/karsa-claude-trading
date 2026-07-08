@@ -297,13 +297,13 @@ class CryptoKarsaApp:
         s.add_job(self._job_refresh_universe, "cron", minute="*/15",
                   id="refresh_universe", name="Crypto Universe Refresh (every 15m)", replace_existing=True, misfire_grace_time=600, max_instances=1, coalesce=True)
         s.add_job(self._job_monitor_crypto_positions, "cron", minute="*/15",
-                  id="crypto_monitor", name="Crypto Position Monitor", replace_existing=True, misfire_grace_time=120)
+                  id="crypto_monitor", name="Crypto Position Monitor", replace_existing=True, misfire_grace_time=120, max_instances=1, coalesce=True)
         s.add_job(self._job_sync_crypto_funding, "cron", hour="0,8,16", minute=5,
-                  id="crypto_funding", name="Crypto Funding Rate Sync", replace_existing=True, misfire_grace_time=300)
+                  id="crypto_funding", name="Crypto Funding Rate Sync", replace_existing=True, misfire_grace_time=300, max_instances=1, coalesce=True)
         s.add_job(self._job_crypto_pnl_snapshot, "cron", hour=0, minute=0,
-                  id="crypto_pnl_snapshot", name="Crypto Daily PnL Snapshot", replace_existing=True, misfire_grace_time=600)
+                  id="crypto_pnl_snapshot", name="Crypto Daily PnL Snapshot", replace_existing=True, misfire_grace_time=600, max_instances=1, coalesce=True)
         s.add_job(self._job_sync_crypto_positions, "cron", minute="*/5",
-                  id="crypto_position_sync", name="Crypto Position Sync", replace_existing=True, misfire_grace_time=120)
+                  id="crypto_position_sync", name="Crypto Position Sync", replace_existing=True, misfire_grace_time=120, max_instances=1, coalesce=True)
 
         # Lifecycle management — DB-heavy jobs get max_instances=1 to prevent
         # connection pool exhaustion from concurrent runs.
@@ -324,21 +324,21 @@ class CryptoKarsaApp:
         s.add_job(self._job_reconcile_positions, "interval", seconds=60,
                   id="crypto_reconciliation", name="Crypto Position Reconciliation", replace_existing=True, misfire_grace_time=30, max_instances=1, coalesce=True)
         s.add_job(self._job_liquidity_check, "cron", minute="*/15",
-                  id="crypto_liquidity", name="Crypto Liquidity Check", replace_existing=True, misfire_grace_time=120)
+                  id="crypto_liquidity", name="Crypto Liquidity Check", replace_existing=True, misfire_grace_time=120, max_instances=1, coalesce=True)
         s.add_job(self._job_oms_cleanup, "interval", minutes=2,
-                  id="oms_cleanup", name="OMS Stuck Order Cleanup", replace_existing=True, misfire_grace_time=60)
+                  id="oms_cleanup", name="OMS Stuck Order Cleanup", replace_existing=True, misfire_grace_time=60, max_instances=1, coalesce=True)
         s.add_job(self._job_kill_switch, "cron", minute="*/5",
-                  id="kill_switch", name="Crypto Kill Switch", replace_existing=True, misfire_grace_time=60)
+                  id="kill_switch", name="Crypto Kill Switch", replace_existing=True, misfire_grace_time=60, max_instances=1, coalesce=True)
         s.add_job(self._job_metrics_sync, "interval", seconds=60,
-                  id="crypto_metrics_sync", name="Crypto Metrics Sync", replace_existing=True, misfire_grace_time=30)
+                  id="crypto_metrics_sync", name="Crypto Metrics Sync", replace_existing=True, misfire_grace_time=30, max_instances=1, coalesce=True)
 
         # AODE Research Jobs (feature-flagged inside each job)
         s.add_job(self._job_aode_discovery, "cron", hour="*/1",
-                  id="aode_discovery", name="AODE Token Discovery", replace_existing=True, misfire_grace_time=300)
+                  id="aode_discovery", name="AODE Token Discovery", replace_existing=True, misfire_grace_time=300, max_instances=1, coalesce=True)
         s.add_job(self._job_aode_research, "cron", hour="*/4",
-                  id="aode_research", name="AODE Research Scoring", replace_existing=True, misfire_grace_time=600)
+                  id="aode_research", name="AODE Research Scoring", replace_existing=True, misfire_grace_time=600, max_instances=1, coalesce=True)
         s.add_job(self._job_aode_monitoring, "cron", minute="*/30",
-                  id="aode_monitoring", name="AODE Monitoring Cycle", replace_existing=True, misfire_grace_time=120)
+                  id="aode_monitoring", name="AODE Monitoring Cycle", replace_existing=True, misfire_grace_time=120, max_instances=1, coalesce=True)
 
         logger.info("crypto_jobs_registered", count=len(self.scheduler.get_jobs()))
 

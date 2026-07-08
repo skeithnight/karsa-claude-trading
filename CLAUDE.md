@@ -54,6 +54,9 @@ Testing/debug one-liners (IDX intelligence, earnings calendar checks): `docs/ref
 - APScheduler uses `MemoryJobStore` — jobs don't survive container restarts.
 - `/kill` sets both `karsa:global_halt` and `karsa:emergency_stop` Redis keys.
 - Postgres image must be `pgvector/pgvector:pg15`, not `postgres:15-alpine` (needed for `trade_memory` vector column).
+- **Database Pool**: All scheduler jobs must have `max_instances=1, coalesce=True` to prevent connection pool exhaustion from overlapping instances. See `docs/FIX_DATABASE_LEAK.md`.
+- **Universe Scorer**: Uses early breakout detection (1h vs 24h), overextension penalty (>30% 24h), and short squeeze multiplier (negative funding). See `docs/OPTIMIZE_UNIVERSE.md`.
+- **Asyncpg Patch**: Monkey-patch applied to fix `asyncio.shield()` bug in connection terminate method. Import path: `sqlalchemy.dialects.postgresql.asyncpg.AsyncAdapt_asyncpg_connection`.
 
 Full gotchas list (Redis auth, IDX lot sizing, 9router port mapping, etc.): `docs/reference/GOTCHAS.md`.
 
