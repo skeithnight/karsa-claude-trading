@@ -179,12 +179,9 @@ class KarsaApp:
         from src.execution.websocket_manager import WebSocketManager
         from src.execution.sl_engine import StopLossEngine
         from src.execution.oms import OrderManagementSystem
-        from src.risk.portfolio_allocator import PortfolioAllocator
         self.ws_manager = WebSocketManager(self.redis_client, bybit)
         self.sl_engine = StopLossEngine(self.redis_client, bybit)
         self.oms = OrderManagementSystem(self.redis_client, bybit)
-        self.portfolio_allocator = PortfolioAllocator(self.redis_client)
-        self.orchestrator.portfolio_allocator = self.portfolio_allocator
 
         # Confidence calibration
         from src.risk.calibration_engine import ConfidenceCalibrator

@@ -141,6 +141,12 @@ class SmartOrderRouter:
                             fill_price=fill_result.get("fill_price"))
                 record_order_fill(ticker, "limit", direction)
                 record_fill_latency(time.time() - _start_time)
+
+                # Wire slippage tracking to Prometheus
+                actual_fill = float(fill_result.get("fill_price", limit_price))
+                if limit_price and limit_price > 0:
+                    slippage_bps = abs(actual_fill - limit_price) / limit_price * 10000
+                    record_slippage(ticker, direction, slippage_bps)
                 await self._track_order(order_id, ticker, direction, qty,
                                         fill_result.get("fill_price", limit_price), "Filled")
                 return {
