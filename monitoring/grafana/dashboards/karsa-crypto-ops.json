@@ -1,0 +1,645 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "karsa-crypto-ops",
+    "title": "Karsa Crypto-Only Operations",
+    "description": "Operational dashboard for crypto-only autonomous trading stack",
+    "tags": ["crypto", "operations", "karsa"],
+    "timezone": "browser",
+    "schemaVersion": 38,
+    "version": 1,
+    "refresh": "10s",
+    "time": {
+      "from": "now-24h",
+      "to": "now"
+    },
+    "panels": [
+      {
+        "id": 1,
+        "type": "row",
+        "title": "System Health",
+        "collapsed": false,
+        "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+      },
+      {
+        "id": 2,
+        "type": "stat",
+        "title": "Risk Status",
+        "description": "0=Normal, 1=Warning, 2=Critical",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_risk_status{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "Risk Status",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              { "type": "value", "options": { "0": { "text": "NORMAL", "color": "green" } } },
+              { "type": "value", "options": { "1": { "text": "WARNING", "color": "yellow" } } },
+              { "type": "value", "options": { "2": { "text": "CRITICAL", "color": "red" } } }
+            ],
+            "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 2 }] }
+          }
+        },
+        "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 }
+      },
+      {
+        "id": 3,
+        "type": "stat",
+        "title": "Kill Switch",
+        "description": "Emergency stop status",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_kill_switch_active{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "Kill Switch",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              { "type": "value", "options": { "0": { "text": "INACTIVE", "color": "green" } } },
+              { "type": "value", "options": { "1": { "text": "ACTIVE", "color": "red" } } }
+            ],
+            "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
+          }
+        },
+        "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 }
+      },
+      {
+        "id": 4,
+        "type": "stat",
+        "title": "ASM State",
+        "description": "Autonomous session state",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_asm_state{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "ASM State",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              { "type": "value", "options": { "0": { "text": "DISABLED", "color": "red" } } },
+              { "type": "value", "options": { "1": { "text": "IDLE", "color": "blue" } } },
+              { "type": "value", "options": { "2": { "text": "TRADING", "color": "green" } } }
+            ],
+            "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "blue", "value": 1 }, { "color": "green", "value": 2 }] }
+          }
+        },
+        "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 }
+      },
+      {
+        "id": 5,
+        "type": "stat",
+        "title": "Bybit WS",
+        "description": "WebSocket connection status",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_bybit_ws_connected{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "WS Connected",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              { "type": "value", "options": { "0": { "text": "DISCONNECTED", "color": "red" } } },
+              { "type": "value", "options": { "1": { "text": "CONNECTED", "color": "green" } } }
+            ],
+            "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+          }
+        },
+        "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 }
+      },
+      {
+        "id": 6,
+        "type": "stat",
+        "title": "Redis",
+        "description": "Redis connection status",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_redis_connected{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "Redis",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" } } },
+              { "type": "value", "options": { "1": { "text": "UP", "color": "green" } } }
+            ],
+            "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+          }
+        },
+        "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 }
+      },
+      {
+        "id": 7,
+        "type": "stat",
+        "title": "WARP Proxy",
+        "description": "Cloudflare WARP status",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_warp_connected{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "WARP",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" } } },
+              { "type": "value", "options": { "1": { "text": "UP", "color": "green" } } }
+            ],
+            "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+          }
+        },
+        "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 }
+      },
+      {
+        "id": 10,
+        "type": "row",
+        "title": "Portfolio & P&L",
+        "collapsed": false,
+        "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 }
+      },
+      {
+        "id": 11,
+        "type": "stat",
+        "title": "Total Equity",
+        "description": "Total account equity in USDT",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_wallet_total_equity_usd{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "Equity",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "decimals": 2
+          }
+        },
+        "gridPos": { "h": 4, "w": 4, "x": 0, "y": 6 }
+      },
+      {
+        "id": 12,
+        "type": "stat",
+        "title": "Available Cash",
+        "description": "Available balance excluding margin",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_wallet_available_usd{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "Available",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "decimals": 2
+          }
+        },
+        "gridPos": { "h": 4, "w": 4, "x": 4, "y": 6 }
+      },
+      {
+        "id": 13,
+        "type": "stat",
+        "title": "Daily P&L",
+        "description": "Today's realized P&L",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_pnl_daily_usd{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "Daily P&L",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "decimals": 2,
+            "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0 }] }
+          }
+        },
+        "gridPos": { "h": 4, "w": 4, "x": 8, "y": 6 }
+      },
+      {
+        "id": 14,
+        "type": "stat",
+        "title": "Unrealized P&L",
+        "description": "Current unrealized P&L across all positions",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_pnl_unrealized_usd{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "Unrealized",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "decimals": 2,
+            "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0 }] }
+          }
+        },
+        "gridPos": { "h": 4, "w": 4, "x": 12, "y": 6 }
+      },
+      {
+        "id": 15,
+        "type": "stat",
+        "title": "Drawdown",
+        "description": "Current drawdown from peak",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_drawdown_pct{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "Drawdown",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "decimals": 2,
+            "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 5 }, { "color": "red", "value": 10 }] }
+          }
+        },
+        "gridPos": { "h": 4, "w": 4, "x": 16, "y": 6 }
+      },
+      {
+        "id": 16,
+        "type": "stat",
+        "title": "Win Rate (7d)",
+        "description": "7-day rolling win rate",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_win_rate_7d{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "Win Rate",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percentunit",
+            "decimals": 1,
+            "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 0.4 }, { "color": "green", "value": 0.6 }] }
+          }
+        },
+        "gridPos": { "h": 4, "w": 4, "x": 20, "y": 6 }
+      },
+      {
+        "id": 20,
+        "type": "row",
+        "title": "Circuit Breakers",
+        "collapsed": false,
+        "gridPos": { "h": 1, "w": 24, "x": 0, "y": 10 }
+      },
+      {
+        "id": 21,
+        "type": "stat",
+        "title": "Daily DD Breaker",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_circuit_breaker_active{job=\"karsa-crypto-orchestrator\", breaker_type=\"DAILY_DD\"}",
+            "legendFormat": "Daily DD",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              { "type": "value", "options": { "0": { "text": "OK", "color": "green" } } },
+              { "type": "value", "options": { "1": { "text": "HALT", "color": "red" } } }
+            ],
+            "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
+          }
+        },
+        "gridPos": { "h": 4, "w": 6, "x": 0, "y": 11 }
+      },
+      {
+        "id": 22,
+        "type": "stat",
+        "title": "Volatility Breaker",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_circuit_breaker_active{job=\"karsa-crypto-orchestrator\", breaker_type=\"VOLATILITY\"}",
+            "legendFormat": "Volatility",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              { "type": "value", "options": { "0": { "text": "OK", "color": "green" } } },
+              { "type": "value", "options": { "1": { "text": "WARNING", "color": "yellow" } } }
+            ],
+            "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }] }
+          }
+        },
+        "gridPos": { "h": 4, "w": 6, "x": 6, "y": 11 }
+      },
+      {
+        "id": 23,
+        "type": "stat",
+        "title": "Correlation Breaker",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_circuit_breaker_active{job=\"karsa-crypto-orchestrator\", breaker_type=\"CORRELATION\"}",
+            "legendFormat": "Correlation",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              { "type": "value", "options": { "0": { "text": "OK", "color": "green" } } },
+              { "type": "value", "options": { "1": { "text": "WARNING", "color": "yellow" } } }
+            ],
+            "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }] }
+          }
+        },
+        "gridPos": { "h": 4, "w": 6, "x": 12, "y": 11 }
+      },
+      {
+        "id": 24,
+        "type": "stat",
+        "title": "Max DD Breaker",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_circuit_breaker_active{job=\"karsa-crypto-orchestrator\", breaker_type=\"MAX_DD\"}",
+            "legendFormat": "Max DD",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              { "type": "value", "options": { "0": { "text": "OK", "color": "green" } } },
+              { "type": "value", "options": { "1": { "text": "HALT", "color": "red" } } }
+            ],
+            "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
+          }
+        },
+        "gridPos": { "h": 4, "w": 6, "x": 18, "y": 11 }
+      },
+      {
+        "id": 30,
+        "type": "row",
+        "title": "Positions",
+        "collapsed": false,
+        "gridPos": { "h": 1, "w": 24, "x": 0, "y": 15 }
+      },
+      {
+        "id": 31,
+        "type": "stat",
+        "title": "Open Positions",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_open_positions_count{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "Open",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 4 }, { "color": "red", "value": 5 }] }
+          }
+        },
+        "gridPos": { "h": 4, "w": 4, "x": 0, "y": 16 }
+      },
+      {
+        "id": 32,
+        "type": "stat",
+        "title": "Daily Trades",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_daily_trade_count{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "Trades Today",
+            "instant": true
+          }
+        ],
+        "gridPos": { "h": 4, "w": 4, "x": 4, "y": 16 }
+      },
+      {
+        "id": 33,
+        "type": "stat",
+        "title": "Profit Factor",
+        "description": "Gross profit / gross loss ratio",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_profit_factor{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "Profit Factor",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "decimals": 2,
+            "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 1 }, { "color": "green", "value": 1.5 }] }
+          }
+        },
+        "gridPos": { "h": 4, "w": 4, "x": 8, "y": 16 }
+      },
+      {
+        "id": 34,
+        "type": "stat",
+        "title": "Session Return",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_session_return_pct{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "Return",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "decimals": 2,
+            "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0 }] }
+          }
+        },
+        "gridPos": { "h": 4, "w": 4, "x": 12, "y": 16 }
+      },
+      {
+        "id": 40,
+        "type": "row",
+        "title": "Regime & Market",
+        "collapsed": false,
+        "gridPos": { "h": 1, "w": 24, "x": 0, "y": 20 }
+      },
+      {
+        "id": 41,
+        "type": "stat",
+        "title": "Crypto Regime",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_crypto_regime{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "Regime",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              { "type": "value", "options": { "0": { "text": "CHOP", "color": "red" } } },
+              { "type": "value", "options": { "1": { "text": "MEAN_REVERT", "color": "yellow" } } },
+              { "type": "value", "options": { "2": { "text": "TREND_BEAR", "color": "orange" } } },
+              { "type": "value", "options": { "3": { "text": "TREND_BULL", "color": "green" } } }
+            ]
+          }
+        },
+        "gridPos": { "h": 4, "w": 6, "x": 0, "y": 21 }
+      },
+      {
+        "id": 42,
+        "type": "stat",
+        "title": "BTC Dominance",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_btc_dominance_pct{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "BTC Dom",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "decimals": 1
+          }
+        },
+        "gridPos": { "h": 4, "w": 6, "x": 6, "y": 21 }
+      },
+      {
+        "id": 43,
+        "type": "stat",
+        "title": "Regime Size Mult",
+        "description": "Position size multiplier from regime",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_regime_size_multiplier{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "Size Mult",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "decimals": 1,
+            "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 0.5 }, { "color": "green", "value": 0.8 }] }
+          }
+        },
+        "gridPos": { "h": 4, "w": 6, "x": 12, "y": 21 }
+      },
+      {
+        "id": 44,
+        "type": "stat",
+        "title": "Universe Size",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_universe_size{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "Coins",
+            "instant": true
+          }
+        ],
+        "gridPos": { "h": 4, "w": 6, "x": 18, "y": 21 }
+      },
+      {
+        "id": 50,
+        "type": "row",
+        "title": "AI Judge",
+        "collapsed": false,
+        "gridPos": { "h": 1, "w": 24, "x": 0, "y": 25 }
+      },
+      {
+        "id": 51,
+        "type": "stat",
+        "title": "AI Decisions (24h)",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "sum(increase(karsa_ai_judge_decisions_total{job=\"karsa-crypto-orchestrator\"}[24h]))",
+            "legendFormat": "Total",
+            "instant": true
+          }
+        ],
+        "gridPos": { "h": 4, "w": 6, "x": 0, "y": 26 }
+      },
+      {
+        "id": 52,
+        "type": "piechart",
+        "title": "AI Decision Distribution",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "sum by (action) (increase(karsa_ai_judge_decisions_total{job=\"karsa-crypto-orchestrator\"}[24h]))",
+            "legendFormat": "{{action}}"
+          }
+        ],
+        "gridPos": { "h": 8, "w": 6, "x": 6, "y": 26 }
+      },
+      {
+        "id": 53,
+        "type": "stat",
+        "title": "Avg Confidence",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "karsa_ai_judge_confidence_score_sum{job=\"karsa-crypto-orchestrator\"} / karsa_ai_judge_confidence_score_count{job=\"karsa-crypto-orchestrator\"}",
+            "legendFormat": "Avg Confidence",
+            "instant": true
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "decimals": 0,
+            "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 40 }, { "color": "green", "value": 60 }] }
+          }
+        },
+        "gridPos": { "h": 4, "w": 6, "x": 12, "y": 26 }
+      },
+      {
+        "id": 54,
+        "type": "stat",
+        "title": "Escalations (24h)",
+        "description": "Tier 1 → Tier 2 escalations",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "targets": [
+          {
+            "expr": "sum(increase(karsa_ai_judge_escalation_total{job=\"karsa-crypto-orchestrator\"}[24h]))",
+            "legendFormat": "Escalations",
+            "instant": true
+          }
+        ],
+        "gridPos": { "h": 4, "w": 6, "x": 18, "y": 26 }
+      }
+    ]
+  }
+}

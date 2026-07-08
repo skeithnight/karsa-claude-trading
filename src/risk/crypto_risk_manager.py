@@ -199,7 +199,7 @@ class CryptoRiskManager:
         try:
             from src.models.database import async_session
             from src.models.tables import ClosedPaperTrade
-            from sqlalchemy import select, func
+            from sqlalchemy import select, func, case
             from datetime import datetime, timezone, timedelta
 
             cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
@@ -207,7 +207,7 @@ class CryptoRiskManager:
                 result = await session.execute(
                     select(
                         func.count(ClosedPaperTrade.id).label("total"),
-                        func.sum(func.cast(ClosedPaperTrade.realized_pnl > 0, int)).label("wins"),
+                        func.sum(case((ClosedPaperTrade.realized_pnl > 0, 1), else_=0)).label("wins"),
                         func.avg(ClosedPaperTrade.realized_pnl).filter(
                             ClosedPaperTrade.realized_pnl > 0
                         ).label("avg_win"),

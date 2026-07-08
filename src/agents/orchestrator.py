@@ -771,7 +771,25 @@ class Orchestrator:
             entry_price = Decimal(str(fill_result.get("fill_price", signal.get("entry_price", 0))))
 
             from src.models.database import async_session
+            from sqlalchemy import select
+            ticker = signal.get("ticker", "")
+            side = "Buy" if signal.get("direction") == "LONG" else "Sell"
+
             async with async_session() as session:
+                # FIX: Check for existing OPEN position in DB before inserting
+                existing = await session.execute(
+                    select(CryptoPosition).where(
+                        CryptoPosition.ticker == ticker,
+                        CryptoPosition.side == side,
+                        CryptoPosition.status == "OPEN",
+                    )
+                )
+                if existing.scalar_one_or_none():
+                    logger.warning("crypto_position_duplicate_skipped",
+                                   ticker=ticker, side=side,
+                                   reason="OPEN position already exists in DB")
+                    return  # skip creating duplicate
+
                 session.add(CryptoPosition(
                     ticker=signal.get("ticker", ""),
                     side="Buy" if signal.get("direction") == "LONG" else "Sell",
