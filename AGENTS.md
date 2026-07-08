@@ -13,15 +13,29 @@ Roster only — for tools, strategies, thresholds, and formulas on a specific ag
 | `crypto_analyst` | Scans 10 Bybit perp pairs — trend + sentiment convergence | `src/agents/crypto_analyst.py` |
 | `crypto_auditor` | Reviews crypto performance, pre-filtered before LLM call | `src/agents/crypto_auditor.py` |
 | `asm` (Autonomous Session Manager) | Fully autonomous crypto loop: scan → filter → risk gate → execute → notify | `src/agents/autonomous_session.py` |
+| `position_judge` | AI Judge: evaluates open positions for hold/close/tighten decisions | `src/agents/position_judge.py` |
+| `memory_retriever` | RAG-based trade memory retrieval for context enrichment | `src/agents/memory_retriever.py` |
 
 ## Deterministic Modules (not LLM agents)
 
-**Risk** (`src/risk/`): `emergency.py` (kill switch), `idx_limits.py` (IDX compliance/ARA-ARB), `crypto_risk_manager.py` (8 gates), `sor.py` (Smart Order Router), `funding_tracker.py`, `circuit_breaker.py`, `liquidity.py`, `position_manager.py` (partial/time exits), `position_sync.py` (reconciliation), `trailing_stop.py`, `profit_lock.py`, `distributed_lock.py`, `performance_gate.py` (v2 mechanical checkpoint evaluator with AI judge escalation).
+**Risk** (`src/risk/`): `emergency.py` (kill switch), `idx_limits.py` (IDX compliance/ARA-ARB), `crypto_risk_manager.py` (10 gates), `sor.py` (Smart Order Router), `funding_tracker.py`, `circuit_breaker.py`, `liquidity.py`, `position_manager.py` (partial/time exits), `position_sync.py` (reconciliation), `trailing_stop.py`, `profit_lock.py`, `distributed_lock.py`, `performance_gate.py` (v2 with AI judge escalation), `correlation.py`, `calibration_engine.py`, `portfolio_allocator.py`, `profile_manager.py`.
 
-**Metrics** (`src/metrics/`): `crypto_metrics.py` — 80+ Prometheus metrics across 10 domains (Performance Gate, Regime, Session, Position, Risk, Order Execution, Infrastructure, LLM Tokens, Signal Outcomes, Daily Trade Count). Helper functions: `record_*()`, `update_*()`. Endpoint: `/metrics`.
+**Execution** (`src/execution/`): `oms.py` (Order Management System), `sl_engine.py` (stop-loss engine), `websocket_manager.py` (Bybit WS).
 
-**Advisory** (`src/advisory/`): `regime.py` (BULL/BEAR/NEUTRAL), `idx_intelligence.py` (composite scoring), `sizing.py` (ATR position sizing), `crypto_regime.py` (Hurst+ADX macro regime), `coin_regime.py` (per-coin regime), `crypto_technicals.py` (RSI/BB/EMA/MACD/ATR), `crypto_universe.py` (pair config source of truth), `crypto_audit.py`, `crypto_market_watch.py`, `performance_tracker.py`, `strategy_selector.py`.
+**Metrics** (`src/metrics/`): `crypto_metrics.py` — 80+ Prometheus metrics across 11 domains. Helper functions: `record_*()`, `update_*()`. Endpoint: `/metrics`.
 
-**Utilities**: `mcp_client.py` (market data, 3-tier fallback), `bybit_client.py` (Bybit REST), `_approval.py` (HITL Telegram flow), `format.py`, `validation.py`, `market_hours.py`, `feature_flags.py`.
+**Advisory** (`src/advisory/`): `regime.py`, `idx_intelligence.py`, `sizing.py`, `crypto_regime.py`, `coin_regime.py`, `crypto_technicals.py`, `crypto_universe.py`, `crypto_audit.py`, `crypto_market_watch.py`, `performance_tracker.py`, `strategy_selector.py`, `universe_scorer.py`.
+
+**Strategies** (`src/strategies/`): `funding_capture.py` (funding rate arbitrage).
+
+**Research** (`src/research/`): `research_orchestrator.py`, `discovery_engine.py`, `opportunity_scorer.py`, `learning_engine.py`, `monitoring_engine.py`, `portfolio_bucker.py`, `risk_intel.py`, `smart_money_intel.py`, `community_intel.py`, `developer_intel.py`, `fundamental_intel.py`, `narrative_intel.py`, `onchain_intel.py`.
+
+**Architecture** (`src/architecture/`): Event-driven framework — `events/` (Redis bus), `decision/`, `position/`, `exit/`, `policy/`, `workflow/`, `agent_runtime/`, `feature_flags.py`.
+
+**AODE** (`src/aode/`): Asymmetric Opportunity Discovery Engine — `discovery/`, `scoring/`, `risk/`, `onchain/`, `narrative/`, `community/`, `smart_money/`, `fundamentals/`, `learning/`, `monitoring/`.
+
+**Utilities**: `mcp_client.py`, `bybit_client.py`, `_approval.py`, `format.py`, `validation.py`, `market_hours.py`, `feature_flags.py`, `logging.py`, `rate_limit.py`, `telegram_helpers.py`, `trader_format.py`.
+
+**Bot Handlers** (`src/bot/`): `handlers.py`, `crypto_handlers.py`, `crypto_main.py`, `aode_handlers.py`, `_approval.py`.
 
 Full detail: `docs/reference/AGENTS_DETAIL.md`

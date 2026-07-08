@@ -26,13 +26,19 @@ Full setup/command reference: `docs/reference/TOOLING.md`.
 ## Build & Run
 
 ```bash
-docker compose up -d --build karsa-orchestrator      # rebuild after code changes (restart alone won't pick up new code)
-docker compose restart karsa-orchestrator             # config-only changes
-docker compose ps                                     # status
-docker logs -f karsa-orchestrator                     # follow logs
-curl http://localhost:8000/health/scheduler           # scheduler health
+# Crypto-only stack (primary)
+docker compose up -d --build karsa-crypto-orchestrator  # rebuild after code changes
+docker compose restart karsa-crypto-orchestrator         # config-only changes
+docker compose ps                                        # status
+docker logs -f karsa-crypto-orchestrator                 # follow logs
+curl http://localhost:8001/health                        # crypto orchestrator health
+curl http://localhost:8444/health                        # crypto bot health
+
+# IDX/US/ETF stack (if enabled)
+docker compose up -d --build karsa-orchestrator
+curl http://localhost:8000/health/scheduler
 ```
-Testing/debug one-liners (IDX intelligence, earnings calendar checks): `docs/reference/TOOLING.md`.
+Testing/debug one-liners: `docs/reference/TOOLING.md`.
 
 ## Key Config (env vars that matter daily)
 
@@ -50,13 +56,14 @@ Testing/debug one-liners (IDX intelligence, earnings calendar checks): `docs/ref
 - `FundingTracker.__init__` takes `(bybit_client)` only — no `(bybit, redis)`, no `check_limits()`/`sync_all()` methods.
 - `TrailingStopManager.update_trailing_stops(positions)` requires a `list[CryptoPosition]`.
 - `BaseAgent.run()` returns `dict` — if LLM returns a JSON array it's parsed as one object; orchestrator handles via `batch_result.get("signals", [batch_result])`.
-- `sentence-transformers` isn't in the Dockerfile — RAG memory silently degrades to empty string unless added.
+- `sentence-transformers` is now in `pyproject.toml` — RAG memory works with full embedding support.
 - APScheduler uses `MemoryJobStore` — jobs don't survive container restarts.
 - `/kill` sets both `karsa:global_halt` and `karsa:emergency_stop` Redis keys.
 - Postgres image must be `pgvector/pgvector:pg15`, not `postgres:15-alpine` (needed for `trade_memory` vector column).
 - **Database Pool**: All scheduler jobs must have `max_instances=1, coalesce=True` to prevent connection pool exhaustion from overlapping instances. See `docs/FIX_DATABASE_LEAK.md`.
 - **Universe Scorer**: Uses early breakout detection (1h vs 24h), overextension penalty (>30% 24h), and short squeeze multiplier (negative funding). See `docs/OPTIMIZE_UNIVERSE.md`.
 - **Asyncpg Patch**: Monkey-patch applied to fix `asyncio.shield()` bug in connection terminate method. Import path: `sqlalchemy.dialects.postgresql.asyncpg.AsyncAdapt_asyncpg_connection`.
+- **Position Deduplication**: Unique index `idx_crypto_positions_ticker_side_open` prevents duplicate OPEN positions per ticker+side. Code check in `orchestrator.py:_save_crypto_position()`.
 
 Full gotchas list (Redis auth, IDX lot sizing, 9router port mapping, etc.): `docs/reference/GOTCHAS.md`.
 
@@ -67,7 +74,8 @@ Grafana: http://localhost:3000 (admin/admin). Dashboards + Prometheus metric nam
 ### Dashboards
 - **ASM & Trading Operations** — legacy ops view
 - **Trading Operations v2** — full metrics dashboard
-- **ASM - Core Operations** (`monitoring/asm-core-operations.json`) — new 9-panel dashboard with live tables and AI Judge analytics
+- **ASM - Core Operations** (`monitoring/asm-core-operations.json`) — 9-panel dashboard with live tables and AI Judge analytics
+- **Karsa Crypto-Only Operations** (`monitoring/grafana/dashboards/karsa-crypto-ops.json`) — crypto-only operational dashboard
 
 ### Prometheus Metrics
 
