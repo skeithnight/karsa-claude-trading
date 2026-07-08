@@ -23,6 +23,7 @@ Roster only — for tools, strategies, thresholds, and formulas on a specific ag
 **Execution** (`src/execution/`): `oms.py` (Order Management System), `sl_engine.py` (stop-loss engine), `websocket_manager.py` (Bybit WS).
 
 **Metrics** (`src/metrics/`): `crypto_metrics.py` — 80+ Prometheus metrics across 11 domains. Helper functions: `record_*()`, `update_*()`. Endpoint: `/metrics`.
+**Advisory** (`src/advisory/`): `regime.py` (BULL/BEAR/NEUTRAL), `idx_intelligence.py` (composite scoring), `sizing.py` (ATR position sizing), `crypto_regime.py` (Hurst+ADX macro regime), `coin_regime.py` (per-coin regime), `crypto_technicals.py` (RSI/BB/EMA/MACD/ATR), `crypto_universe.py` (pair config source of truth), `universe_scorer.py` (early breakout detection, overextension penalty, short squeeze multiplier), `crypto_audit.py`, `crypto_market_watch.py`, `performance_tracker.py`, `strategy_selector.py`.
 
 **Advisory** (`src/advisory/`): `regime.py`, `idx_intelligence.py`, `sizing.py`, `crypto_regime.py`, `coin_regime.py`, `crypto_technicals.py`, `crypto_universe.py`, `crypto_audit.py`, `crypto_market_watch.py`, `performance_tracker.py`, `strategy_selector.py`, `universe_scorer.py`.
 
