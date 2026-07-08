@@ -391,3 +391,33 @@ CREATE INDEX IF NOT EXISTS idx_trade_memory_embedding ON trade_memory USING hnsw
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS risk_profile_at_generation VARCHAR(20) DEFAULT 'conservative';
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS position_size_calculated DECIMAL(18, 8);
 CREATE INDEX IF NOT EXISTS idx_signals_risk_profile ON signals(risk_profile_at_generation);
+
+-- ============================================================
+-- VIEWS — Grafana Dashboard Queries
+-- ============================================================
+
+-- 22. Open Positions View (for Row 3: Live State panels)
+CREATE OR REPLACE VIEW open_positions AS
+SELECT
+    ticker AS symbol,
+    side,
+    size,
+    entry_price,
+    leverage,
+    unrealized_pnl,
+    opened_at
+FROM crypto_positions
+WHERE status = 'OPEN'
+ORDER BY opened_at DESC;
+
+-- 23. Closed Trades View (for Row 4: Trade History panels)
+CREATE OR REPLACE VIEW closed_trades_view AS
+SELECT
+    ticker AS symbol,
+    side,
+    realized_pnl AS net_pnl,
+    ROUND((exit_price - entry_price) / entry_price * 100, 2) AS roi_pct,
+    exit_reason,
+    exit_date AS closed_at
+FROM closed_paper_trades
+ORDER BY exit_date DESC;

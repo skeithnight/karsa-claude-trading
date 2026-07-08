@@ -1,45 +1,122 @@
 {
-  "dashboard": {
-    "title": "Karsa Crypto Universe",
-    "uid": "karsa-crypto-universe",
-    "panels": [
-      {
-        "title": "Universe Size Over Time",
-        "type": "stat",
-        "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
-        "targets": [{"expr": "karsa_universe_size", "legendFormat": "Coins"}],
-        "fieldConfig": {"defaults": {"thresholds": {"steps": [{"color": "red", "value": 0}, {"color": "yellow", "value": 8}, {"color": "green", "value": 12}]}}}
+  "title": "Karsa Crypto Universe",
+  "uid": "karsa-crypto-universe",
+  "panels": [
+    {
+      "title": "Universe Size Over Time",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 0
       },
-      {
-        "title": "Universe Refresh Status",
-        "type": "stat",
-        "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
-        "targets": [{"expr": "karsa_universe_refresh_total{status=\"success\"}", "legendFormat": "Success"}, {"expr": "karsa_universe_refresh_total{status=\"failure\"}", "legendFormat": "Failure"}]
-      },
-      {
-        "title": "Refresh Duration",
-        "type": "timeseries",
-        "gridPos": {"h": 4, "w": 12, "x": 12, "y": 0},
-        "targets": [{"expr": "karsa_universe_refresh_duration_seconds", "legendFormat": "Duration"}]
-      },
-      {
-        "title": "Coin Scores",
-        "type": "barchart",
-        "gridPos": {"h": 8, "w": 24, "x": 0, "y": 4},
-        "targets": [{"expr": "karsa_universe_coin_score", "legendFormat": "{{ticker}}"}],
-        "options": {"orientation": "horizontal"}
-      },
-      {
-        "title": "Universe Refresh Rate",
-        "type": "timeseries",
-        "gridPos": {"h": 6, "w": 24, "x": 0, "y": 12},
-        "targets": [
-          {"expr": "rate(karsa_universe_refresh_total{status=\"success\"}[1h])", "legendFormat": "Success/hr"},
-          {"expr": "rate(karsa_universe_refresh_total{status=\"failure\"}[1h])", "legendFormat": "Failure/hr"}
-        ]
+      "targets": [
+        {
+          "expr": "karsa_universe_size",
+          "legendFormat": "Coins"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "yellow",
+                "value": 8
+              },
+              {
+                "color": "green",
+                "value": 12
+              }
+            ]
+          }
+        }
       }
-    ],
-    "refresh": "1m",
-    "time": {"from": "now-24h", "to": "now"}
+    },
+    {
+      "title": "Universe Refresh Status",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "karsa_universe_refresh_total{status=\"success\"}",
+          "legendFormat": "Success"
+        },
+        {
+          "expr": "karsa_universe_refresh_total{status=\"failure\"}",
+          "legendFormat": "Failure"
+        }
+      ]
+    },
+    {
+      "title": "Refresh Duration",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "karsa_universe_refresh_duration_seconds",
+          "legendFormat": "Duration"
+        }
+      ]
+    },
+    {
+      "title": "Coin Scores",
+      "type": "barchart",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 4
+      },
+      "targets": [
+        {
+          "expr": "karsa_universe_coin_score",
+          "legendFormat": "{{ticker}}"
+        }
+      ],
+      "options": {
+        "orientation": "horizontal"
+      }
+    },
+    {
+      "title": "Universe Refresh Rate",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 12
+      },
+      "targets": [
+        {
+          "expr": "rate(karsa_universe_refresh_total{status=\"success\"}[1h])",
+          "legendFormat": "Success/hr"
+        },
+        {
+          "expr": "rate(karsa_universe_refresh_total{status=\"failure\"}[1h])",
+          "legendFormat": "Failure/hr"
+        }
+      ]
+    }
+  ],
+  "refresh": "1m",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
   }
 }

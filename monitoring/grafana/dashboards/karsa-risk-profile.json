@@ -1,52 +1,128 @@
 {
-  "dashboard": {
-    "title": "Karsa Risk Profile Analytics",
-    "uid": "karsa-risk-profile",
-    "panels": [
-      {
-        "title": "Active Risk Profile Over Time",
-        "type": "state-timeline",
-        "gridPos": {"h": 6, "w": 12, "x": 0, "y": 0},
-        "targets": [{"expr": "karsa_active_risk_profile", "legendFormat": "Profile"}],
-        "fieldConfig": {
-          "defaults": {
-            "mappings": [
-              {"type": "value", "options": {"0": {"text": "Conservative", "color": "green"}}},
-              {"type": "value", "options": {"1": {"text": "Semi-Aggressive", "color": "yellow"}}},
-              {"type": "value", "options": {"2": {"text": "Aggressive", "color": "red"}}}
-            ]
-          }
+  "title": "Karsa Risk Profile Analytics",
+  "uid": "karsa-risk-profile",
+  "panels": [
+    {
+      "title": "Active Risk Profile Over Time",
+      "type": "state-timeline",
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "karsa_active_risk_profile",
+          "legendFormat": "Profile"
         }
-      },
-      {
-        "title": "Profile Changes (24h)",
-        "type": "barchart",
-        "gridPos": {"h": 6, "w": 12, "x": 12, "y": 0},
-        "targets": [{"expr": "increase(karsa_risk_profile_changes_total[24h])", "legendFormat": "{{from_profile}} → {{to_profile}}"}]
-      },
-      {
-        "title": "Signal Rejection Rate by Profile",
-        "type": "piechart",
-        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
-        "targets": [{"expr": "sum by (profile, reason) (karsa_signal_rejections_total)", "legendFormat": "{{profile}}: {{reason}}"}]
-      },
-      {
-        "title": "Position Size Distribution",
-        "type": "histogram",
-        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6},
-        "targets": [{"expr": "karsa_position_size_pct_bucket", "legendFormat": "{{profile}}"}]
-      },
-      {
-        "title": "Signal Confidence Distribution",
-        "type": "histogram",
-        "gridPos": {"h": 8, "w": 24, "x": 0, "y": 14},
-        "targets": [
-          {"expr": "karsa_signal_confidence_bucket{outcome=\"executed\"}", "legendFormat": "Executed {{profile}}"},
-          {"expr": "karsa_signal_confidence_bucket{outcome=\"rejected\"}", "legendFormat": "Rejected {{profile}}"}
-        ]
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "Conservative",
+                  "color": "green"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "Semi-Aggressive",
+                  "color": "yellow"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "2": {
+                  "text": "Aggressive",
+                  "color": "red"
+                }
+              }
+            }
+          ]
+        }
       }
-    ],
-    "refresh": "30s",
-    "time": {"from": "now-24h", "to": "now"}
+    },
+    {
+      "title": "Profile Changes (24h)",
+      "type": "barchart",
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "increase(karsa_risk_profile_changes_total[24h])",
+          "legendFormat": "{{from_profile}} \u2192 {{to_profile}}"
+        }
+      ]
+    },
+    {
+      "title": "Signal Rejection Rate by Profile",
+      "type": "piechart",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 6
+      },
+      "targets": [
+        {
+          "expr": "sum by (profile, reason) (karsa_signal_rejections_total)",
+          "legendFormat": "{{profile}}: {{reason}}"
+        }
+      ]
+    },
+    {
+      "title": "Position Size Distribution",
+      "type": "histogram",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 6
+      },
+      "targets": [
+        {
+          "expr": "karsa_position_size_pct_bucket",
+          "legendFormat": "{{profile}}"
+        }
+      ]
+    },
+    {
+      "title": "Signal Confidence Distribution",
+      "type": "histogram",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 14
+      },
+      "targets": [
+        {
+          "expr": "karsa_signal_confidence_bucket{outcome=\"executed\"}",
+          "legendFormat": "Executed {{profile}}"
+        },
+        {
+          "expr": "karsa_signal_confidence_bucket{outcome=\"rejected\"}",
+          "legendFormat": "Rejected {{profile}}"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
   }
 }
