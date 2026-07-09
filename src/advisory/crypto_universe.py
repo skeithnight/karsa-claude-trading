@@ -16,10 +16,23 @@ CORE_UNIVERSE = [
 ]
 
 # Static fallback when Bybit API is unreachable
+# NOTE: kept in rough tier order (tier1 -> tier2 -> tier3) for readability;
+# actual tier assignment at runtime comes from _get_tier(), not list position.
 CRYPTO_UNIVERSE = [
-    "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
-    "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT",
-    "SUIUSDT", "NEARUSDT", "MATICUSDT", "PEPEUSDT",
+    # Tier 1 — majors
+    "BTCUSDT", "ETHUSDT",
+    # Tier 2 — large/mid caps
+    "SOLUSDT", "BNBUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT", "NEARUSDT",
+    "APTUSDT", "ARBUSDT", "OPUSDT", "INJUSDT", "TIAUSDT", "ATOMUSDT",
+    "UNIUSDT", "AAVEUSDT", "LTCUSDT", "ETCUSDT", "BCHUSDT", "EGLDUSDT",
+    "FETUSDT", "WLDUSDT", "RNDRUSDT", "TAOUSDT", "MKRUSDT",
+    # Tier 3 — smaller cap / higher beta / meme
+    "XRPUSDT", "ADAUSDT", "DOGEUSDT", "DOTUSDT", "MATICUSDT", "TRXUSDT",
+    "FILUSDT", "ICPUSDT", "EOSUSDT", "XLMUSDT", "VETUSDT", "ALGOUSDT",
+    "FTMUSDT", "HBARUSDT", "THETAUSDT", "GALAUSDT", "SANDUSDT", "MANAUSDT",
+    "APEUSDT", "AXSUSDT", "WIFUSDT", "BONKUSDT", "SHIBUSDT", "FLOKIUSDT",
+    "BOMEUSDT", "PYTHUSDT", "STRKUSDT", "MANTLEUSDT", "AGIXUSDT",
+    "OCEANUSDT", "CRVUSDT", "RUNEUSDT", "PENDLEUSDT", "ONDOUSDT", "SEIUSDT",
 ]
 
 # Blacklist: tokens to never trade (illiquid, delisted, etc.)
@@ -28,21 +41,75 @@ UNIVERSE_BLACKLIST = set()
 # Max total tokens per scan (core + dynamic)
 MAX_UNIVERSE_SIZE = 50
 
+# IMPORTANT: min_order_usd / tick_size below are reasonable placeholders,
+# not live exchange data. Bybit tick sizes and min qty change over time —
+# verify against GET /v5/market/instruments-info (category=linear) before
+# relying on these for order placement, or better, fetch and cache them at
+# startup instead of hardcoding. Wrong tick_size => order rejection risk.
 PAIR_CONFIG = {
+    # Tier 1
     "BTCUSDT":  {"min_order_usd": 10, "tick_size": 0.1, "category": "tier1"},
     "ETHUSDT":  {"min_order_usd": 10, "tick_size": 0.01, "category": "tier1"},
+    # Tier 2
     "SOLUSDT":  {"min_order_usd": 5, "tick_size": 0.001, "category": "tier2"},
     "BNBUSDT":  {"min_order_usd": 5, "tick_size": 0.01, "category": "tier2"},
-    "XRPUSDT":  {"min_order_usd": 5, "tick_size": 0.0001, "category": "tier3"},
-    "ADAUSDT":  {"min_order_usd": 5, "tick_size": 0.0001, "category": "tier3"},
-    "DOGEUSDT": {"min_order_usd": 5, "tick_size": 0.00001, "category": "tier3"},
     "AVAXUSDT": {"min_order_usd": 5, "tick_size": 0.001, "category": "tier2"},
-    "DOTUSDT":  {"min_order_usd": 5, "tick_size": 0.001, "category": "tier3"},
     "LINKUSDT": {"min_order_usd": 5, "tick_size": 0.001, "category": "tier2"},
     "SUIUSDT":  {"min_order_usd": 5, "tick_size": 0.0001, "category": "tier2"},
     "NEARUSDT": {"min_order_usd": 5, "tick_size": 0.001, "category": "tier2"},
+    "APTUSDT":  {"min_order_usd": 5, "tick_size": 0.001, "category": "tier2"},
+    "ARBUSDT":  {"min_order_usd": 5, "tick_size": 0.0001, "category": "tier2"},
+    "OPUSDT":   {"min_order_usd": 5, "tick_size": 0.0001, "category": "tier2"},
+    "INJUSDT":  {"min_order_usd": 5, "tick_size": 0.001, "category": "tier2"},
+    "TIAUSDT":  {"min_order_usd": 5, "tick_size": 0.001, "category": "tier2"},
+    "ATOMUSDT": {"min_order_usd": 5, "tick_size": 0.001, "category": "tier2"},
+    "UNIUSDT":  {"min_order_usd": 5, "tick_size": 0.001, "category": "tier2"},
+    "AAVEUSDT": {"min_order_usd": 5, "tick_size": 0.01, "category": "tier2"},
+    "LTCUSDT":  {"min_order_usd": 5, "tick_size": 0.01, "category": "tier2"},
+    "ETCUSDT":  {"min_order_usd": 5, "tick_size": 0.001, "category": "tier2"},
+    "BCHUSDT":  {"min_order_usd": 5, "tick_size": 0.01, "category": "tier2"},
+    "EGLDUSDT": {"min_order_usd": 5, "tick_size": 0.001, "category": "tier2"},
+    "FETUSDT":  {"min_order_usd": 5, "tick_size": 0.0001, "category": "tier2"},
+    "WLDUSDT":  {"min_order_usd": 5, "tick_size": 0.0001, "category": "tier2"},
+    "RNDRUSDT": {"min_order_usd": 5, "tick_size": 0.001, "category": "tier2"},
+    "TAOUSDT":  {"min_order_usd": 5, "tick_size": 0.01, "category": "tier2"},
+    "MKRUSDT":  {"min_order_usd": 5, "tick_size": 0.1, "category": "tier2"},
+    # Tier 3
+    "XRPUSDT":  {"min_order_usd": 5, "tick_size": 0.0001, "category": "tier3"},
+    "ADAUSDT":  {"min_order_usd": 5, "tick_size": 0.0001, "category": "tier3"},
+    "DOGEUSDT": {"min_order_usd": 5, "tick_size": 0.00001, "category": "tier3"},
+    "DOTUSDT":  {"min_order_usd": 5, "tick_size": 0.001, "category": "tier3"},
     "MATICUSDT":{"min_order_usd": 5, "tick_size": 0.0001, "category": "tier3"},
-    "PEPEUSDT": {"min_order_usd": 5, "tick_size": 0.0000001, "category": "tier3"},
+    "TRXUSDT":  {"min_order_usd": 5, "tick_size": 0.00001, "category": "tier3"},
+    "FILUSDT":  {"min_order_usd": 5, "tick_size": 0.001, "category": "tier3"},
+    "ICPUSDT":  {"min_order_usd": 5, "tick_size": 0.001, "category": "tier3"},
+    "EOSUSDT":  {"min_order_usd": 5, "tick_size": 0.0001, "category": "tier3"},
+    "XLMUSDT":  {"min_order_usd": 5, "tick_size": 0.00001, "category": "tier3"},
+    "VETUSDT":  {"min_order_usd": 5, "tick_size": 0.00001, "category": "tier3"},
+    "ALGOUSDT": {"min_order_usd": 5, "tick_size": 0.0001, "category": "tier3"},
+    "FTMUSDT":  {"min_order_usd": 5, "tick_size": 0.0001, "category": "tier3"},
+    "HBARUSDT": {"min_order_usd": 5, "tick_size": 0.00001, "category": "tier3"},
+    "THETAUSDT":{"min_order_usd": 5, "tick_size": 0.0001, "category": "tier3"},
+    "GALAUSDT": {"min_order_usd": 5, "tick_size": 0.00001, "category": "tier3"},
+    "SANDUSDT": {"min_order_usd": 5, "tick_size": 0.0001, "category": "tier3"},
+    "MANAUSDT": {"min_order_usd": 5, "tick_size": 0.0001, "category": "tier3"},
+    "APEUSDT":  {"min_order_usd": 5, "tick_size": 0.0001, "category": "tier3"},
+    "AXSUSDT":  {"min_order_usd": 5, "tick_size": 0.001, "category": "tier3"},
+    "WIFUSDT":  {"min_order_usd": 5, "tick_size": 0.0001, "category": "tier3"},
+    "BONKUSDT": {"min_order_usd": 5, "tick_size": 0.000001, "category": "tier3"},
+    "SHIBUSDT": {"min_order_usd": 5, "tick_size": 0.000001, "category": "tier3"},
+    "FLOKIUSDT":{"min_order_usd": 5, "tick_size": 0.000001, "category": "tier3"},
+    "BOMEUSDT": {"min_order_usd": 5, "tick_size": 0.000001, "category": "tier3"},
+    "PYTHUSDT": {"min_order_usd": 5, "tick_size": 0.0001, "category": "tier3"},
+    "STRKUSDT": {"min_order_usd": 5, "tick_size": 0.0001, "category": "tier3"},
+    "MANTLEUSDT":{"min_order_usd": 5, "tick_size": 0.0001, "category": "tier3"},
+    "AGIXUSDT": {"min_order_usd": 5, "tick_size": 0.0001, "category": "tier3"},
+    "OCEANUSDT":{"min_order_usd": 5, "tick_size": 0.0001, "category": "tier3"},
+    "CRVUSDT":  {"min_order_usd": 5, "tick_size": 0.0001, "category": "tier3"},
+    "RUNEUSDT": {"min_order_usd": 5, "tick_size": 0.001, "category": "tier3"},
+    "PENDLEUSDT":{"min_order_usd": 5, "tick_size": 0.001, "category": "tier3"},
+    "ONDOUSDT": {"min_order_usd": 5, "tick_size": 0.0001, "category": "tier3"},
+    "SEIUSDT":  {"min_order_usd": 5, "tick_size": 0.0001, "category": "tier3"},
 }
 
 SECTOR_MAPPING = {
@@ -58,10 +125,22 @@ SECTOR_MAPPING = {
     "INJUSDT": "Layer1",
     "TIAUSDT": "Layer1",
     "SEIUSDT": "Layer1",
+    "TRXUSDT": "Layer1",
+    "EOSUSDT": "Layer1",
+    "ICPUSDT": "Layer1",
+    "ETCUSDT": "Layer1",
+    "VETUSDT": "Layer1",
+    "ALGOUSDT": "Layer1",
+    "FTMUSDT": "Layer1",
+    "HBARUSDT": "Layer1",
+    "EGLDUSDT": "Layer1",
+    "ATOMUSDT": "Layer1",
     "BNBUSDT": "Exchange",
     "XRPUSDT": "Payments",
+    "LTCUSDT": "Payments",
+    "BCHUSDT": "Payments",
+    "XLMUSDT": "Payments",
     "DOGEUSDT": "Meme",
-    "PEPEUSDT": "Meme",
     "WIFUSDT": "Meme",
     "BONKUSDT": "Meme",
     "SHIBUSDT": "Meme",
@@ -87,7 +166,126 @@ SECTOR_MAPPING = {
     "RUNEUSDT": "DeFi",
     "PENDLEUSDT": "DeFi",
     "ONDOUSDT": "RWA",
+    "FILUSDT": "Storage",
+    "THETAUSDT": "Media",
+    "GALAUSDT": "Gaming",
+    "SANDUSDT": "Gaming",
+    "MANAUSDT": "Gaming",
+    "APEUSDT": "Gaming",
+    "AXSUSDT": "Gaming",
 }
+
+
+# --- Asset-class filter: exclude TradFi / xStock perpetuals ---
+#
+# Bybit's linear-perp universe is no longer crypto-only. Since May 2026 it
+# also lists USDT-settled "TradFi" perpetuals tracking real equities/ETFs
+# (TSLA, NVDA, META, BABA, SOXL, SNDK, CRWV, NBIS, QQQ, ...). These show up
+# identically to crypto perps in get_all_perps()/get_top_movers(), but they
+# track stock/ETF prices, not crypto — different volatility regime, gap risk
+# when the underlying market is closed, dividend/corp-action exposure. None
+# of that is what CORRELATION_TIERS / SECTOR_MAPPING were built for, so they
+# must never enter the scored crypto universe.
+#
+# Bybit's official signal for this is the `symbolType` field/param on
+# GET /v5/market/instruments-info (category=linear), with values including
+# "stock", "forex", "commodity" alongside the default "crypto". Prefer
+# filtering the request itself (symbolType=crypto) at the bybit_client layer
+# if possible — the checks below are the in-process safety net for whatever
+# get_all_perps()/get_top_movers() actually returns.
+TRADFI_SYMBOL_TYPES = {"stock", "forex", "commodity", "equity", "etf"}
+
+# Fallback symbol blacklist in case a candidate dict lacks symbolType
+# metadata. Best-effort snapshot as of the May 2026 TradFi perps launch —
+# WILL go stale as Bybit adds tickers. Treat symbolType as the source of
+# truth; this is just a backstop.
+TRADFI_STOCK_BLACKLIST = {
+    "TSLAUSDT", "NVDAUSDT", "METAUSDT", "GOOGLUSDT", "MSFTUSDT", "ORCLUSDT",
+    "AAPLUSDT", "INTCUSDT", "TSMUSDT", "MUUSDT", "SNDKUSDT", "MSTRUSDT",
+    "COINUSDT", "CRCLUSDT", "HOODUSDT", "BABAUSDT", "SOXLUSDT", "CRWVUSDT",
+    "NBISUSDT", "EWYUSDT", "EWJUSDT", "QQQUSDT",
+}
+
+
+def is_tradfi_perp(candidate: dict) -> bool:
+    """True if a Bybit perp candidate is a tokenized-stock/ETF ("TradFi")
+    contract rather than a crypto-native asset.
+    """
+    symbol_type = str(candidate.get("symbolType", "")).lower()
+    if symbol_type and symbol_type in TRADFI_SYMBOL_TYPES:
+        return True
+    return candidate.get("symbol", "") in TRADFI_STOCK_BLACKLIST
+
+
+def filter_tradfi_perps(candidates: list[dict]) -> list[dict]:
+    """Strip tokenized-stock/ETF perpetuals out of a crypto candidate list."""
+    kept, dropped = [], []
+    for c in candidates:
+        (dropped if is_tradfi_perp(c) else kept).append(c)
+    if dropped:
+        logger.info(
+            "tradfi_perps_excluded",
+            count=len(dropped),
+            symbols=[c.get("symbol", "?") for c in dropped][:20],
+        )
+    return kept
+
+
+# --- New-listing filter ---
+#
+# Bybit tags recently-listed pairs "NEW" (e.g. CRDOUSDT, MVLLUSDT). Freshly
+# listed pairs routinely show extreme 24h moves purely from thin order books
+# and unstable price discovery in their first days, not tradeable structure —
+# left unfiltered they dominate "top movers" scans and score artificially
+# well. Excluded from the scored universe until they've had time to settle;
+# CORE_UNIVERSE symbols are exempt since they're always included regardless.
+MIN_LISTING_AGE_DAYS = getattr(settings, "CRYPTO_MIN_LISTING_AGE_DAYS", 14)
+
+# If a candidate has no discoverable launchTime, allow it through (current
+# default) rather than silently shrinking the universe when the exchange
+# omits the field for some symbols. Set CRYPTO_NEW_LISTING_FAIL_OPEN=False
+# in settings for a more conservative bot that excludes unverifiable pairs.
+NEW_LISTING_FAIL_OPEN = getattr(settings, "CRYPTO_NEW_LISTING_FAIL_OPEN", True)
+
+
+def _get_launch_time_ms(candidate: dict) -> int | None:
+    raw = candidate.get("launchTime")
+    if raw in (None, ""):
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def filter_new_listings(candidates: list[dict], min_age_days: int = MIN_LISTING_AGE_DAYS) -> list[dict]:
+    """Exclude pairs listed more recently than min_age_days."""
+    import time
+
+    now_ms = int(time.time() * 1000)
+    cutoff_ms = min_age_days * 24 * 60 * 60 * 1000
+
+    kept, dropped, unknown_age = [], [], []
+
+    for c in candidates:
+        launch_ms = _get_launch_time_ms(c)
+        if launch_ms is None:
+            unknown_age.append(c.get("symbol", "?"))
+            if NEW_LISTING_FAIL_OPEN:
+                kept.append(c)
+            continue
+
+        if (now_ms - launch_ms) < cutoff_ms:
+            dropped.append(c.get("symbol", "?"))
+        else:
+            kept.append(c)
+
+    if dropped:
+        logger.info("new_listings_excluded", count=len(dropped), min_age_days=min_age_days, symbols=dropped[:20])
+    if unknown_age:
+        logger.warning("listing_age_unknown", count=len(unknown_age), symbols=unknown_age[:20], fail_open=NEW_LISTING_FAIL_OPEN)
+
+    return kept
 
 
 async def get_dynamic_universe(bybit_client) -> list[str]:
@@ -95,9 +293,9 @@ async def get_dynamic_universe(bybit_client) -> list[str]:
 
     Returns up to MAX_UNIVERSE_SIZE symbols. Core tokens always included.
     Dynamic movers fill remaining slots, sorted by 24h turnover.
-    Blacklisted tokens are excluded.
+    Blacklisted, TradFi/xStock, and too-recently-listed tokens are excluded.
     """
-    # Start with core (always scanned)
+    # Start with core (always scanned, exempt from all filters below)
     universe = list(CORE_UNIVERSE)
 
     try:
@@ -105,6 +303,8 @@ async def get_dynamic_universe(bybit_client) -> list[str]:
             top_n=30,
             min_volume_usd=250_000,  # ponytail: matches UniverseEngine.generate() floor
         )
+        movers = filter_tradfi_perps(movers)
+        movers = filter_new_listings(movers)
         for m in movers:
             sym = m["symbol"]
             if sym in UNIVERSE_BLACKLIST:
@@ -118,6 +318,8 @@ async def get_dynamic_universe(bybit_client) -> list[str]:
         for sym in CRYPTO_UNIVERSE:
             if sym not in universe:
                 universe.append(sym)
+            if len(universe) >= MAX_UNIVERSE_SIZE:
+                break
 
     return universe
 
@@ -233,6 +435,11 @@ class UniverseEngine:
                 pass
             return list(CRYPTO_UNIVERSE)
 
+        # Strip out non-crypto TradFi/xStock perps and too-recently-listed
+        # pairs before they can enter liquidity filtering / scoring.
+        candidates = filter_tradfi_perps(candidates)
+        candidates = filter_new_listings(candidates)
+
         # Filter by liquidity — use profile floor, fallback to $1M if too few
         liquid = filter_liquid(candidates, min_volume_usd=min_vol)
         if len(liquid) < 5:
@@ -314,6 +521,9 @@ class UniverseEngine:
         candidates = await self._bybit.get_all_perps(min_volume_usd=min_vol)
         if not candidates:
             return []
+
+        candidates = filter_tradfi_perps(candidates)
+        candidates = filter_new_listings(candidates)
 
         liquid = filter_liquid(candidates, min_volume_usd=min_vol)
         if len(liquid) < 5:

@@ -27,10 +27,30 @@ logger = get_logger("crypto_risk_manager")
 CORRELATION_TIERS = {
     "tier1": {"symbols": {"BTCUSDT", "ETHUSDT"}, "max_positions": 2, "max_combined_pct": 0.15},
     "tier2": {"symbols": {"SOLUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT", "BNBUSDT", "NEARUSDT"}, "max_positions": 2, "max_combined_pct": 0.15},
-    "tier3": {"symbols": {"DOGEUSDT", "XRPUSDT", "ADAUSDT", "PEPEUSDT", "DOTUSDT", "MATICUSDT"}, "max_positions": 2, "max_combined_pct": 0.10},
+    "tier3": {"symbols": {"DOGEUSDT", "XRPUSDT", "ADAUSDT", "DOTUSDT", "MATICUSDT"}, "max_positions": 2, "max_combined_pct": 0.10},
 }
 
 MAX_LEVERAGE_BY_TIER = {"tier1": 10, "tier2": 5, "tier3": 3}
+
+# Session-aware position sizing (Phase 5)
+SESSION_SIZING = {
+    "asian": 0.7,      # Lower liquidity, wider spreads
+    "london": 1.0,     # Standard
+    "new_york": 1.2,   # Peak liquidity
+    "off_hours": 0.8,  # Weekend/transition periods
+}
+
+
+def _get_current_session(utc_hour: int) -> str:
+    """Determine current trading session from UTC hour."""
+    if 0 <= utc_hour < 8:
+        return "asian"
+    elif 8 <= utc_hour < 14:
+        return "london"
+    elif 14 <= utc_hour < 21:
+        return "new_york"
+    else:
+        return "off_hours"
 
 REGIME_RISK_MAPPING = {
     "FULL_TREND_ALIGNMENT": {
@@ -200,9 +220,10 @@ class CryptoRiskManager:
             from src.models.database import async_session
             from src.models.tables import ClosedPaperTrade
             from sqlalchemy import select, func, case
-            from datetime import datetime, timezone, timedelta
+            from datetime import datetime, timedelta
 
-            cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+            # Use naive datetime to match TIMESTAMP WITHOUT TIME ZONE column
+            cutoff = datetime.utcnow() - timedelta(days=lookback_days)
             async with async_session() as session:
                 result = await session.execute(
                     select(
@@ -478,6 +499,26 @@ class CryptoRiskManager:
         if not entry_price or entry_price <= 0:
             return self._reject("Missing or invalid entry price")
 
+        # Validate entry_price is within 30% of current market price
+        if self.mcp:
+            try:
+                ticker_info = await self.mcp.get_ticker(ticker, "CRYPTO")
+                if ticker_info and ticker_info.get("last_price"):
+                    current_price = float(ticker_info["last_price"])
+                    if current_price > 0:
+                        deviation = abs(entry_price - current_price) / current_price
+                        if deviation > 0.30:
+                            logger.warning("entry_price_deviation",
+                                          ticker=ticker,
+                                          signal_price=entry_price,
+                                          market_price=current_price,
+                                          deviation_pct=f"{deviation*100:.1f}%")
+                            # Use actual market price instead of stale signal price
+                            entry_price = current_price
+                            signal["entry_price"] = current_price
+            except Exception as e:
+                logger.warning("price_validation_failed", error=str(e))
+
         if confidence < min_confidence:
             return self._reject(f"Confidence {confidence} below {min_confidence} threshold")
 
@@ -523,8 +564,9 @@ class CryptoRiskManager:
                 logger.warning("downside_correlation_check_failed", ticker=ticker, error=str(e))
                 # non-fatal — static tier check already passed
 
-        # --- Gate 4: Cooldown check ---
+        # --- Gate 4: Cooldown + Anti-Churn checks ---
         try:
+            # Global cooldown (sellall event)
             if self._redis:
                 cooldown = await self._redis.get("karsa:crypto_cooldown")
             else:
@@ -534,6 +576,19 @@ class CryptoRiskManager:
                 await r.close()
             if cooldown:
                 return self._reject("Cooldown active (sellall was triggered)")
+
+            # Per-symbol cooldown after loss (anti-churn)
+            from src.risk.circuit_breaker import CircuitBreakerManager
+            cb = CircuitBreakerManager(self._redis, None)
+            sym_allowed, sym_reason = await cb.check_symbol_cooldown(ticker)
+            if not sym_allowed:
+                return self._reject(sym_reason)
+
+            # Trade frequency limiter (anti-churn)
+            freq_allowed, freq_reason = await cb.check_trade_frequency(ticker)
+            if not freq_allowed:
+                return self._reject(freq_reason)
+
         except Exception as e:
             logger.warning("cooldown_check_failed", error=str(e))
             # Fail closed on cooldown — if Redis is down, don't trade
@@ -567,7 +622,7 @@ class CryptoRiskManager:
                 # Override stop-loss multiplier if profile hasn't strictly set it
                 if not profile_config:
                     sl_mult = mapping["stop_loss_atr_mult"]
-                
+
                 if size_multiplier <= 0:
                     return self._reject(f"Regime {regime_state} enforces a 0x size multiplier (Do not trade)")
             else:
@@ -575,6 +630,14 @@ class CryptoRiskManager:
                 if regime_state == "CHOP" and confidence < 75:
                     return self._reject(f"CHOP regime requires confidence >= 75 (got {confidence})")
                 size_multiplier = regime.get("size_multiplier", 1.0)
+
+            # Phase 5: Apply session-aware sizing
+            from datetime import datetime, timezone
+            utc_hour = datetime.now(timezone.utc).hour
+            session = _get_current_session(utc_hour)
+            session_mult = SESSION_SIZING.get(session, 1.0)
+            size_multiplier *= session_mult
+            logger.info("session_sizing", session=session, multiplier=session_mult)
 
         # ATR-based stop distance
         stop_loss = signal.get("stop_loss_price")
@@ -629,8 +692,13 @@ class CryptoRiskManager:
 
         # Position size: risk_amount / stop_distance_per_unit
         # Kelly cap: use quarter-Kelly if less than profile max
-        kelly_cap = await self.get_kelly_fraction()
-        effective_risk_pct = min(max_risk_pct, kelly_cap)
+        # ASM override: bypass Kelly cap to use user's explicit risk setting
+        if signal.get("_override_max_position_pct"):
+            effective_risk_pct = max_risk_pct
+            logger.info("asm_kelly_bypass", effective_risk_pct=effective_risk_pct)
+        else:
+            kelly_cap = await self.get_kelly_fraction()
+            effective_risk_pct = min(max_risk_pct, kelly_cap)
         risk_amount = wallet_balance * effective_risk_pct * size_multiplier
         qty = risk_amount / stop_distance if stop_distance > 0 else 0
 
@@ -777,12 +845,22 @@ class CryptoRiskManager:
                     f"(fee {taker_fee_roundtrip:.3f}% + slip {expected_slippage_pct:.3f}% + fund {expected_funding_drag:.3f}%)"
                 )
 
-        # --- Take profit: profile-aware R/R ---
-        rr_ratio = tp_mult
-        if direction == "LONG":
-            take_profit = entry_price + (stop_distance * rr_ratio)
+        # --- Take profit: ATR-based dynamic target ---
+        # Use ATR * tp_mult (default 2.5) instead of fixed R/R
+        # Minimum R:R of 2:1 enforced
+        if atr > 0:
+            tp_distance = atr * tp_mult
+            # Enforce minimum 2:1 R:R relative to stop
+            min_tp_distance = stop_distance * 2.0
+            tp_distance = max(tp_distance, min_tp_distance)
         else:
-            take_profit = entry_price - (stop_distance * rr_ratio)
+            # Fallback: use stop_distance * tp_mult
+            tp_distance = stop_distance * tp_mult
+            rr_ratio = tp_mult
+        if direction == "LONG":
+            take_profit = entry_price + tp_distance
+        else:
+            take_profit = entry_price - tp_distance
 
         # --- Leverage: tier-based cap ---
         # ASM override: force leverage for small equity

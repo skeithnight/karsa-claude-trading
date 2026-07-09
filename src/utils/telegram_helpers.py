@@ -138,3 +138,37 @@ def build_nav_keyboard(buttons: list[list[tuple[str, str]]]) -> InlineKeyboardMa
     for row in buttons:
         keyboard.append([InlineKeyboardButton(text, callback_data=data) for text, data in row])
     return InlineKeyboardMarkup(keyboard)
+
+
+async def send_or_edit_message(update: Update, text: str, parse_mode: str = "HTML", reply_markup=None):
+    """Smart sender: edits existing message if callback_query, sends new if message.
+
+    Prevents "Message is not modified" errors on refresh and chat spam on edit.
+    Always falls back to reply_text if edit fails (e.g., message too old).
+    """
+    try:
+        if update.callback_query:
+            try:
+                return await update.callback_query.message.edit_text(
+                    text, parse_mode=parse_mode, reply_markup=reply_markup
+                )
+            except Exception:
+                # Fallback: send new message if edit fails (message too old, etc.)
+                return await update.callback_query.message.reply_text(
+                    text, parse_mode=parse_mode, reply_markup=reply_markup
+                )
+        elif update.message:
+            return await update.message.reply_text(
+                text, parse_mode=parse_mode, reply_markup=reply_markup
+            )
+    except Exception:
+        pass
+    return None
+
+
+async def send_toast(bot, chat_id: int, text: str):
+    """Send a short toast notification. Returns message for later deletion."""
+    try:
+        return await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+    except Exception:
+        return None

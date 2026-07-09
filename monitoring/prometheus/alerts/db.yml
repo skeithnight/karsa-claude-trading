@@ -1,0 +1,29 @@
+groups:
+  - name: db_health
+    rules:
+      - alert: DbPoolCheckoutHigh
+        expr: karsa_db_pool_checked_out > 8
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "DB pool near saturation ({{ $value }} checked out)"
+          description: "The DB connection pool is almost fully checked out. This could indicate a slow query or a connection leak."
+
+      - alert: DbPoolOverflowNegative
+        expr: karsa_db_pool_overflow < 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "DB connection leaked from pool (overflow={{ $value }})"
+          description: "The DB connection pool overflow is negative, indicating a hard connection leak. The pool_recycle_loop should auto-dispose the pool."
+
+      - alert: PgIdleConnectionsHigh
+        expr: pg_idle_connections > 12
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} idle PG connections — potential leak"
+          description: "Postgres has an unusually high number of idle connections. This could indicate SQLAlchemy sessions failing to release connections properly."

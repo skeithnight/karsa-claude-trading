@@ -4,6 +4,8 @@ Automated circuit breakers beyond the daily DD kill switch:
 - Daily Drawdown: existing, refactored here
 - Volatility Spike: 5% move in 15min → 30min halt
 - Correlation Cascade: >60% of correlated positions losing → warning
+- Trade Frequency: max N trades per symbol per hour (anti-churn)
+- Symbol Cooldown: 30-min block after closing a losing position
 
 Flow:
   Scheduler calls check_all() every 1 min →
@@ -13,6 +15,7 @@ Flow:
 
 import asyncio
 import json
+import time
 from datetime import datetime, timezone
 
 from src.risk import emergency
@@ -34,6 +37,16 @@ VOL_SPIKE_PCT = 5.0        # 5% in 15 min
 VOL_SPIKE_LOOKBACK = 15     # minutes
 CORRELATION_CASCADE_PCT = 0.6  # 60% of correlated positions losing
 PEAK_EQUITY_KEY = "karsa:circuit_breaker:peak_equity"
+
+# Anti-churn configuration
+TRADE_FREQ_KEY_PREFIX = "karsa:trade_freq"
+TRADE_FREQ_WINDOW_SEC = 3600  # 1 hour sliding window
+MAX_TRADES_PER_SYMBOL_PER_HOUR = 5
+MAX_TRADES_GLOBAL_PER_HOUR = 15
+
+# Per-symbol cooldown after loss
+SYMBOL_COOLDOWN_KEY_PREFIX = "karsa:cooldown"
+SYMBOL_COOLDOWN_SEC = 1800  # 30 minutes
 
 
 class CircuitBreakerManager:
@@ -364,3 +377,100 @@ class CircuitBreakerManager:
             return breakers
         except Exception:
             return []
+
+    # --- Anti-Churn: Trade Frequency Limiter ---
+
+    async def record_trade(self, symbol: str) -> None:
+        """Record a completed trade for frequency tracking.
+
+        Uses Redis sorted sets with timestamp as score.
+        Called after a position is opened or closed.
+        """
+        if not self._redis:
+            return
+        try:
+            now = time.time()
+            # Per-symbol sorted set
+            sym_key = f"{TRADE_FREQ_KEY_PREFIX}:{symbol}"
+            await self._redis.zadd(sym_key, {f"{now}": now})
+            await self._redis.expire(sym_key, TRADE_FREQ_WINDOW_SEC)
+            # Global sorted set
+            await self._redis.zadd(TRADE_FREQ_KEY_PREFIX, {f"{symbol}:{now}": now})
+            await self._redis.expire(TRADE_FREQ_KEY_PREFIX, TRADE_FREQ_WINDOW_SEC)
+        except Exception as e:
+            logger.error("record_trade_failed", symbol=symbol, error=str(e))
+
+    async def check_trade_frequency(self, symbol: str) -> tuple[bool, str]:
+        """Check if trading frequency limits are exceeded.
+
+        Returns (allowed, reason). Rejects if:
+        - More than MAX_TRADES_PER_SYMBOL_PER_HOUR trades on this symbol
+        - More than MAX_TRADES_GLOBAL_PER_HOUR trades across all symbols
+        """
+        if not self._redis:
+            return True, ""  # fail-open if Redis unavailable
+        try:
+            now = time.time()
+            window_start = now - TRADE_FREQ_WINDOW_SEC
+
+            # Check per-symbol limit
+            sym_key = f"{TRADE_FREQ_KEY_PREFIX}:{symbol}"
+            sym_count = await self._redis.zcount(sym_key, window_start, now)
+            if sym_count >= MAX_TRADES_PER_SYMBOL_PER_HOUR:
+                return False, (
+                    f"Anti-churn: {sym_count} trades on {symbol} in last hour "
+                    f"(max {MAX_TRADES_PER_SYMBOL_PER_HOUR})"
+                )
+
+            # Check global limit
+            global_count = await self._redis.zcount(
+                TRADE_FREQ_KEY_PREFIX, window_start, now,
+            )
+            if global_count >= MAX_TRADES_GLOBAL_PER_HOUR:
+                return False, (
+                    f"Anti-churn: {global_count} trades globally in last hour "
+                    f"(max {MAX_TRADES_GLOBAL_PER_HOUR})"
+                )
+
+            return True, ""
+        except Exception as e:
+            logger.warning("trade_freq_check_failed", symbol=symbol, error=str(e))
+            return True, ""  # fail-open on error
+
+    # --- Anti-Churn: Per-Symbol Cooldown After Loss ---
+
+    async def record_symbol_cooldown(self, symbol: str) -> None:
+        """Set a cooldown on a symbol after closing a losing position.
+
+        Called when a position closes with negative PnL.
+        Blocks re-entry for SYMBOL_COOLDOWN_SEC (30 min).
+        """
+        if not self._redis:
+            return
+        try:
+            key = f"{SYMBOL_COOLDOWN_KEY_PREFIX}:{symbol}"
+            await self._redis.setex(key, SYMBOL_COOLDOWN_SEC, "loss_cooldown")
+            logger.info("symbol_cooldown_set", symbol=symbol, ttl=SYMBOL_COOLDOWN_SEC)
+        except Exception as e:
+            logger.error("symbol_cooldown_set_failed", symbol=symbol, error=str(e))
+
+    async def check_symbol_cooldown(self, symbol: str) -> tuple[bool, str]:
+        """Check if a symbol has an active cooldown after a recent loss.
+
+        Returns (allowed, reason).
+        """
+        if not self._redis:
+            return True, ""  # fail-open
+        try:
+            key = f"{SYMBOL_COOLDOWN_KEY_PREFIX}:{symbol}"
+            val = await self._redis.get(key)
+            if val:
+                ttl = await self._redis.ttl(key)
+                return False, (
+                    f"Cooldown active for {symbol} after recent loss "
+                    f"({ttl}s remaining)"
+                )
+            return True, ""
+        except Exception as e:
+            logger.warning("symbol_cooldown_check_failed", symbol=symbol, error=str(e))
+            return True, ""  # fail-open on error

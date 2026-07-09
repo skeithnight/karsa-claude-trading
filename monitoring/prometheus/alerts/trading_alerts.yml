@@ -142,3 +142,24 @@ groups:
           severity: critical
         annotations:
           summary: "Redis disconnected — caching and kill switch impaired"
+
+      # === DEAD MAN'S SWITCH ===
+      - alert: KarsaOrchestratorDown
+        expr: up{job="karsa-crypto-orchestrator"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: orchestrator
+        annotations:
+          summary: "🚨 KARSA ORCHESTRATOR IS DOWN"
+          description: "The crypto orchestrator has been unreachable for 5 minutes. Open positions are currently unmanaged."
+
+      - alert: KarsaMainOrchestratorDown
+        expr: up{job="karsa-orchestrator"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: orchestrator
+        annotations:
+          summary: "🚨 KARSA MAIN ORCHESTRATOR IS DOWN"
+          description: "The main orchestrator has been unreachable for 5 minutes."

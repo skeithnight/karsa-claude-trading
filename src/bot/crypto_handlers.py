@@ -7,6 +7,7 @@ from telegram.ext import ContextTypes
 
 from src.config import settings
 from src.utils.format import HTML, bold, italic, code, pre, fmt, join
+from src.utils.telegram_helpers import send_or_edit_message, send_toast
 from src.utils.logging import get_logger
 
 logger = get_logger("crypto_handlers")
@@ -66,65 +67,115 @@ async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Unified ASM Dashboard — adapts layout based on ASM state (IDLE vs ACTIVE)."""
     if not _is_authorized(update): return
 
+    import asyncio
+    import time
+    t0 = time.monotonic()
     r = _get_redis(context)
     orch = context.bot_data.get("orchestrator")
     bybit = _get_bybit(context)
 
-    # --- System health ---
-    redis_ok, bybit_ok, db_ok, halt_active = False, False, False, False
-    try:
-        redis_ok = await r.ping()
-        halt_active = bool(await r.get("karsa:global_halt"))
-    except Exception: pass
-    try:
-        from src.models.database import async_session
-        from sqlalchemy import text
-        async with async_session() as session:
-            await session.execute(text("SELECT 1"))
-            db_ok = True
-    except Exception: pass
+    # --- Parallel fetch all data with timing ---
+    async def _fetch_redis():
+        t = time.monotonic()
+        try:
+            redis_ok = await r.ping()
+            halt_active = bool(await r.get("karsa:global_halt"))
+            is_active = (await r.get("karsa:auto:state:active")) == "1"
+            logger.info("fetch_redis_done", ms=int((time.monotonic()-t)*1000))
+            return {"redis_ok": redis_ok, "halt_active": halt_active, "is_active": is_active}
+        except Exception:
+            return {"redis_ok": False, "halt_active": False, "is_active": False}
 
-    # --- Wallet ---
-    wallet = {}
-    try:
-        wallet = await bybit.get_wallet_balance()
-        bybit_ok = not wallet.get("error")
-    except Exception: pass
+    async def _fetch_db():
+        t = time.monotonic()
+        try:
+            from src.models.database import async_session
+            from sqlalchemy import text
+            async with async_session() as session:
+                await session.execute(text("SELECT 1"))
+            logger.info("fetch_db_done", ms=int((time.monotonic()-t)*1000))
+            return True
+        except Exception:
+            return False
 
-    # --- Regime ---
-    regime_state, hurst, adx = "UNKNOWN", 0.5, 0.0
-    top_mover_str = ""
-    try:
-        from src.advisory.crypto_regime import CryptoRegimeFilter
-        regime = await CryptoRegimeFilter(orch.mcp).get_current_regime()
-        regime_state = regime.get("state", "UNKNOWN")
-        hurst = regime.get("hurst", 0.5)
-        adx = regime.get("adx", 0.0)
-    except Exception: pass
-    try:
-        from src.advisory.crypto_market_watch import CryptoMarketWatchEngine
-        movers = await CryptoMarketWatchEngine.get_top_movers(orch.mcp)
-        if movers:
-            best = movers[0]
-            sym = best.get("symbol", "?")
-            chg = best.get("change_pct", 0)
-            top_mover_str = f" • Top: {sym} ({chg:+.1f}%)"
-    except Exception as e:
-        logger.debug("top_mover_failed", error=str(e))
+    async def _fetch_wallet():
+        t = time.monotonic()
+        try:
+            wallet = await bybit.get_wallet_balance()
+            logger.info("fetch_wallet_done", ms=int((time.monotonic()-t)*1000))
+            return {"wallet": wallet, "ok": not wallet.get("error")}
+        except Exception:
+            return {"wallet": {}, "ok": False}
 
-    # --- Profile ---
-    profile_str = ""
-    try:
-        if orch and orch.profile_manager:
-            p = await orch.profile_manager.get_active_profile()
-            profile_str = f"{p.emoji} {p.name.upper().replace('_', ' ')}"
-    except Exception: pass
+    async def _fetch_regime():
+        t = time.monotonic()
+        try:
+            from src.advisory.crypto_regime import CryptoRegimeFilter
+            regime = await CryptoRegimeFilter(orch.mcp).get_current_regime()
+            logger.info("fetch_regime_done", ms=int((time.monotonic()-t)*1000))
+            return {
+                "state": regime.get("state", "UNKNOWN"),
+                "hurst": regime.get("hurst", 0.5),
+                "adx": regime.get("adx", 0.0),
+            }
+        except Exception:
+            return {"state": "UNKNOWN", "hurst": 0.5, "adx": 0.0}
 
-    # --- ASM state ---
-    is_active = False
-    try:
-        is_active = (await r.get("karsa:auto:state:active")) == "1"
-    except Exception: pass
+    async def _fetch_movers():
+        t = time.monotonic()
+        try:
+            from src.advisory.crypto_market_watch import CryptoMarketWatchEngine
+            movers = await CryptoMarketWatchEngine.get_top_movers(orch.mcp)
+            logger.info("fetch_movers_done", ms=int((time.monotonic()-t)*1000))
+            if movers:
+                best = movers[0]
+                return f" • Top: {best.get('symbol', '?')} ({best.get('change_pct', 0):+.1f}%)"
+        except Exception:
+            pass
+        return ""
+
+    async def _fetch_profile():
+        t = time.monotonic()
+        try:
+            if orch and orch.profile_manager:
+                p = await orch.profile_manager.get_active_profile()
+                logger.info("fetch_profile_done", ms=int((time.monotonic()-t)*1000))
+                return f"{p.emoji} {p.name.upper().replace('_', ' ')}"
+        except Exception:
+            pass
+        return ""
+
+    # Execute all fetches in parallel with individual timeouts
+    async def _with_timeout(coro, timeout_sec):
+        try:
+            return await asyncio.wait_for(coro, timeout=timeout_sec)
+        except (asyncio.TimeoutError, Exception):
+            return None
+
+    results = await asyncio.gather(
+        _with_timeout(_fetch_redis(), 2),
+        _with_timeout(_fetch_db(), 2),
+        _with_timeout(_fetch_wallet(), 3),
+        _with_timeout(_fetch_regime(), 5),
+        _with_timeout(_fetch_movers(), 5),
+        _with_timeout(_fetch_profile(), 2),
+    )
+
+    logger.info("dashboard_parallel_fetch_total", ms=int((time.monotonic()-t0)*1000))
+
+    redis_data = results[0] if isinstance(results[0], dict) else {"redis_ok": False, "halt_active": False, "is_active": False}
+    db_ok = results[1] if isinstance(results[1], bool) else False
+    wallet_data = results[2] if isinstance(results[2], dict) else {"wallet": {}, "ok": False}
+    regime_data = results[3] if isinstance(results[3], dict) else {"state": "UNKNOWN", "hurst": 0.5, "adx": 0.0}
+    top_mover_str = results[4] if isinstance(results[4], str) else ""
+    profile_str = results[5] if isinstance(results[5], str) else ""
+
+    redis_ok = redis_data.get("redis_ok", False)
+    halt_active = redis_data.get("halt_active", False)
+    is_active = redis_data.get("is_active", False)
+    bybit_ok = wallet_data.get("ok", False)
+    wallet = wallet_data.get("wallet", {})
+    regime_state = regime_data.get("state", "UNKNOWN")
 
     system_online = all([redis_ok, bybit_ok, db_ok])
     sys_icon = "🟢" if system_online else "🔴"
@@ -153,6 +204,15 @@ async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             open_count = sum(1 for p in positions if float(p.get("size", 0)) > 0)
         except Exception: pass
 
+        # Get starting equity from session config
+        starting_equity = balance  # default to current balance
+        try:
+            config = json.loads(await r.get("karsa:auto:config") or "{}")
+            starting_equity = float(config.get("starting_equity", balance) or balance)
+        except Exception:
+            pass
+        current_equity = starting_equity + total_pnl
+
         # Next scan estimate
         next_scan_str = "..."
         try:
@@ -168,25 +228,25 @@ async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception: pass
 
         text = fmt(
-            bold("🤖 ASM DASHBOARD"), "\n",
+            bold("🟢 ACTIVE SESSION 🟢"), "\n",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "\n",
-            f"{sys_icon} SYSTEM ONLINE • {asm_icon} ASM ACTIVE", halt_line, "\n\n",
-            bold("💰 CAPITAL & MARKET CONTEXT"), "\n",
-            f"Balance: ${balance:,.2f} • Margin: ${margin:,.2f}\n",
-            f"Regime: {regime_icon} {regime_state}", top_mover_str, "\n\n",
-            bold("🤖 AUTONOMOUS ENGINE"), "\n",
-            f"🟢 RUNNING • ID: {session_id} • Uptime: {uptime}\n",
-            f"PnL: {pnl_icon} {total_pnl:+,.2f} USD ({realized:+,.2f} R / {unrealized:+,.2f} U)\n",
-            f"Next Scan: {next_scan_str}... | Open: {open_count} Pos\n",
+            f"🆔 Session ID: {session_id}\n",
+            f"⏱ Uptime: {uptime} | Next Scan: {next_scan_str}\n",
+            f"💰 Starting Equity: ${starting_equity:,.2f}\n",
+            f"📈 Current Equity: ${current_equity:,.2f}\n\n",
+            bold("Performance:"), "\n",
+            f"Realized PnL: {realized:+,.2f} USD {'🟢' if realized >= 0 else '🔴'}\n",
+            f"Unrealized PnL: {unrealized:+,.2f} USD {'🟢' if unrealized >= 0 else '🔴'}\n",
+            f"Total PnL: {total_pnl:+,.2f} USD ({(total_pnl/starting_equity*100) if starting_equity else 0:+.2f}%) {pnl_icon}\n\n",
+            f"📂 Open Positions: {open_count}",
+            halt_line, "\n",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "\n",
         )
         keyboard = [
-            [InlineKeyboardButton("⏸ Pause", callback_data="auto_pause"),
-             InlineKeyboardButton("🛑 Stop Session", callback_data="auto_stop")],
-            [InlineKeyboardButton("📂 Session History", callback_data="cmd_history"),
-             InlineKeyboardButton("💼 Open Positions", callback_data="cmd_positions")],
-            [InlineKeyboardButton("📋 Live Activity", callback_data="cmd_activity"),
-             InlineKeyboardButton("🎛️ Global Control", callback_data="cmd_control")],
+            [InlineKeyboardButton("📊 View Positions", callback_data="view_positions_detail"),
+             InlineKeyboardButton("🔄 Refresh", callback_data="cmd_dashboard")],
+            [InlineKeyboardButton("⏸ Pause Session", callback_data="auto_pause"),
+             InlineKeyboardButton("🛑 Stop & Close All", callback_data="auto_stop")],
         ]
     else:
         # --- IDLE STATE ---
@@ -201,27 +261,22 @@ async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             last_run_str = f"Last Run: {pnl_icon} ${pnl:+,.2f} ({last_stats.get('pnl_pct', 0):+.1f}%) • {ago}"
 
         text = fmt(
-            bold("🤖 ASM DASHBOARD"), "\n",
+            bold("🤖 Autonomous Session Manager"), "\n",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "\n",
-            f"{sys_icon} SYSTEM ONLINE • {asm_icon} ASM IDLE", halt_line, "\n\n",
-            bold("💰 CAPITAL & MARKET CONTEXT"), "\n",
-            f"Balance: ${balance:,.2f} • Available: {avail_pct:.0f}%\n",
-            f"Regime: {regime_icon} {regime_state}", top_mover_str, "\n\n",
-            bold("🤖 AUTONOMOUS ENGINE"), "\n",
-            f"Status: 🔴 IDLE • Ready to deploy\n",
-            last_run_str, "\n",
-            f"Active Profile: {profile_str}\n",
+            f"{sys_icon} System Status: {'Healthy' if system_online else 'Degraded'}", halt_line, "\n",
+            f"💰 Wallet Balance: ${balance:,.2f}\n",
+            f"📊 Market Regime: {regime_icon} {regime_state}", top_mover_str, "\n",
+            f"📉 Last Trade PnL: {last_run_str}\n",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "\n",
+            "Ready to deploy capital. Select an action below.",
         )
         keyboard = [
             [InlineKeyboardButton("🚀 LAUNCH NEW SESSION", callback_data="auto_launch")],
-            [InlineKeyboardButton("📂 Session History", callback_data="cmd_history"),
-             InlineKeyboardButton("⚙️ Manage Profiles", callback_data="cmd_profiles")],
-            [InlineKeyboardButton("📋 Live Activity", callback_data="cmd_activity"),
-             InlineKeyboardButton("🎛️ Global Control", callback_data="cmd_control")],
+            [InlineKeyboardButton("📜 Trade History", callback_data="cmd_trade_history"),
+             InlineKeyboardButton("⚙️ Settings", callback_data="cmd_settings")],
         ]
 
-    await _reply(update, text, reply_markup=InlineKeyboardMarkup(keyboard))
+    await send_or_edit_message(update, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 # --- 1b. Session History (Slide-up View) ---
 
@@ -619,6 +674,81 @@ async def performance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error("performance_failed", error=str(e))
         await _reply(update, "❌ Performance load failed.", reply_markup=build_main_keyboard())
 
+# --- 4b. Settings (Preferences & Toggles) ---
+
+async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Bot settings and preferences with inline toggles."""
+    if not _is_authorized(update): return
+
+    r = _get_redis(context)
+
+    # Read current settings from Redis
+    try:
+        alerts_raw = await r.get("karsa:alerts_enabled")
+        alerts_on = alerts_raw in ("1", b"1") if alerts_raw is not None else True
+    except Exception:
+        alerts_on = True
+
+    try:
+        max_pos = await r.get("karsa:settings:max_positions") or "5"
+    except Exception:
+        max_pos = "5"
+
+    try:
+        regime_raw = await r.get("karsa:settings:regime_filter")
+        regime_on = regime_raw in ("1", b"1") if regime_raw is not None else True
+    except Exception:
+        regime_on = True
+
+    text = fmt(
+        bold("⚙️ Bot Settings & Preferences"), "\n",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "\n\n",
+        bold("Current Configuration:"), "\n\n",
+        f"📂 Max Open Positions: {max_pos}\n",
+        f"📊 Regime Filter: {'ENABLED' if regime_on else 'DISABLED'} (Only trade in BULL/NEUTRAL)\n",
+        f"🔔 Trade Alerts: {'ENABLED' if alerts_on else 'MUTED'} (SL/TP notifications)\n",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "\n",
+        "Select a parameter below to modify it.",
+    )
+
+    keyboard = [
+        [InlineKeyboardButton(f"📂 Max Pos: {max_pos}", callback_data="toggle_max_pos"),
+         InlineKeyboardButton(f"📊 Regime: {'ON' if regime_on else 'OFF'}", callback_data="toggle_regime")],
+        [InlineKeyboardButton(f"🔔 Alerts: {'ON' if alerts_on else 'OFF'}", callback_data="toggle_alerts")],
+        [InlineKeyboardButton("🔙 Back to Dashboard", callback_data="cmd_dashboard")],
+    ]
+
+    await _reply(update, text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def _toggle_max_pos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cycle max positions: 3 → 5 → 8 → 3."""
+    r = _get_redis(context)
+    try:
+        current = int(await r.get("karsa:settings:max_positions") or 5)
+    except Exception:
+        current = 5
+
+    cycle = {3: 5, 5: 8, 8: 3}
+    new_val = cycle.get(current, 5)
+    await r.set("karsa:settings:max_positions", str(new_val))
+
+    await settings_cmd(update, context)
+
+
+async def _toggle_regime(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Toggle regime filter on/off."""
+    r = _get_redis(context)
+    try:
+        current = await r.get("karsa:settings:regime_filter")
+        is_on = current in ("1", b"1") if current is not None else True
+    except Exception:
+        is_on = True
+
+    await r.set("karsa:settings:regime_filter", "0" if is_on else "1")
+    await settings_cmd(update, context)
+
+
 # --- 5. Control (Emergency & Overrides) ---
 
 async def control_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -983,32 +1113,45 @@ async def _asm_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
     asm = AutonomousSessionManager(orch, r, bybit)
 
     is_active = await asm.is_active()
-    status_text = await asm.get_status()
 
     if is_active:
+        status_text = await asm.get_status()
         keyboard = [
             [InlineKeyboardButton("⏹ Stop", callback_data="auto_stop"),
              InlineKeyboardButton("🔄 Refresh", callback_data="auto_refresh")],
             [InlineKeyboardButton("🏠 Dashboard", callback_data="cmd_dashboard")]
         ]
     else:
+        # Config menu for launching new session
+        wallet_balance = 0.0
+        try:
+            wallet = await bybit.get_wallet_balance()
+            wallet_balance = float(wallet.get("balance", 0) or 0)
+        except Exception:
+            pass
+
+        from src.utils.formatters import format_risk_button_text
+
+        status_text = fmt(
+            bold("⚙️ Session Configuration"), "\n",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "\n",
+            "Please configure your risk parameters.\n",
+            italic("⚠️ Session runs continuously until manually stopped or halted by risk limits."), "\n\n",
+            bold(f"💰 Current Wallet: ${wallet_balance:,.2f}"), "\n",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "\n",
+            bold("Select Risk Level:"),
+        )
+
         keyboard = [
-            [InlineKeyboardButton("▶️ 10%", callback_data="auto_start_10"),
-             InlineKeyboardButton("▶️ 30%", callback_data="auto_start_30"),
-             InlineKeyboardButton("▶️ 50%", callback_data="auto_start_50")],
-            [InlineKeyboardButton("▶️ 70%", callback_data="auto_start_70"),
-             InlineKeyboardButton("🔥 100%", callback_data="auto_start_100")],
-            [InlineKeyboardButton("⏰ Duration:", callback_data="noop")],
-            [InlineKeyboardButton("1h", callback_data="auto_dur_60"),
-             InlineKeyboardButton("4h", callback_data="auto_dur_240"),
-             InlineKeyboardButton("8h", callback_data="auto_dur_480")],
-            [InlineKeyboardButton("12h", callback_data="auto_dur_720"),
-             InlineKeyboardButton("24h", callback_data="auto_dur_1440"),
-             InlineKeyboardButton("♾️ Unlimited", callback_data="auto_dur_0")],
-            [InlineKeyboardButton("🏠 Dashboard", callback_data="cmd_dashboard")]
+            [InlineKeyboardButton(format_risk_button_text(10, wallet_balance), callback_data="auto_start_10"),
+             InlineKeyboardButton(format_risk_button_text(30, wallet_balance), callback_data="auto_start_30")],
+            [InlineKeyboardButton(format_risk_button_text(50, wallet_balance), callback_data="auto_start_50"),
+             InlineKeyboardButton(format_risk_button_text(70, wallet_balance), callback_data="auto_start_70")],
+            [InlineKeyboardButton(format_risk_button_text(100, wallet_balance), callback_data="auto_start_100")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="cmd_dashboard")]
         ]
 
-    await _reply(update, status_text, reply_markup=InlineKeyboardMarkup(keyboard))
+    await _reply(update, HTML(status_text), reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 async def _auto_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1056,7 +1199,13 @@ async def _auto_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     asm = AutonomousSessionManager(orch, r, bybit)
     result = await asm.stop()
 
-    await _reply(update, HTML(result), reply_markup=build_main_keyboard())
+    # After session stops, show launch screen
+    keyboard = [
+        [InlineKeyboardButton("🚀 LAUNCH NEW SESSION", callback_data="auto_launch")],
+        [InlineKeyboardButton("📜 Trade History", callback_data="cmd_trade_history"),
+         InlineKeyboardButton("⚙️ Settings", callback_data="cmd_settings")],
+    ]
+    await _reply(update, HTML(result), reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 async def _auto_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1114,6 +1263,289 @@ async def _toggle_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# --- /clear_halt command (P0 safety) ---
+
+async def clear_halt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clear emergency/halt state. Admin-only command."""
+    if not _is_authorized(update): return
+
+    try:
+        from src.risk.emergency import deactivate_global_halt, deactivate
+        await deactivate_global_halt(operator=f"tg_{update.effective_user.id}")
+        try:
+            await deactivate(operator=f"tg_{update.effective_user.id}")
+        except Exception:
+            pass
+        r = _get_redis(context)
+        await r.delete("karsa:crypto_cooldown")
+        await _reply(update, "✅ <b>Halt cleared.</b> Trading can resume.", reply_markup=build_main_keyboard())
+    except Exception as e:
+        await _reply(update, f"❌ Failed to clear halt: {e}")
+
+
+# --- View Positions with Move SL to BE (P3.3) ---
+
+async def view_positions_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Detailed position view with Move SL to BE buttons and position proportions."""
+    if not _is_authorized(update): return
+
+    bybit = _get_bybit(context)
+    positions = []
+    try:
+        raw = await bybit.get_positions()
+        positions = [p for p in raw if float(p.get("size", 0)) > 0]
+    except Exception:
+        pass
+
+    # Get wallet balance for proportion calculation
+    total_equity = 0.0
+    try:
+        wallet = await bybit.get_wallet_balance()
+        total_equity = float(wallet.get("balance", 0) or 0)
+    except Exception:
+        pass
+
+    from src.utils.formatters import format_position_card
+
+    lines = [
+        bold("📊 OPEN POSITIONS DETAIL"), "\n",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "\n",
+    ]
+
+    # Calculate total position value and cash
+    total_position_value = 0.0
+    position_values = []
+    for p in positions:
+        entry = float(p.get("entry_price", 0) or 0)
+        size = float(p.get("size", 0) or 0)
+        pos_value = entry * size
+        total_position_value += pos_value
+        position_values.append(pos_value)
+
+    cash = total_equity - total_position_value if total_equity > 0 else 0
+    cash_pct = (cash / total_equity * 100) if total_equity > 0 else 0
+
+    # Show allocation summary
+    if total_equity > 0 and positions:
+        lines.append(bold("💰 ALLOCATION"))
+        lines.append(f"Equity: ${total_equity:,.2f} | Cash: ${cash:,.2f} ({cash_pct:.1f}%)")
+        lines.append(f"Positions: {len(positions)} | Deployed: ${total_position_value:,.2f} ({100-cash_pct:.1f}%)")
+        lines.append("")
+
+    keyboard = []
+
+    if not positions:
+        lines.append("No open positions.")
+    else:
+        for i, (p, pos_val) in enumerate(zip(positions, position_values), 1):
+            pos_pct = (pos_val / total_equity * 100) if total_equity > 0 else 0
+            card = format_position_card(p, index=i, pos_pct=pos_pct)
+            lines.append(card)
+            lines.append("")
+
+            symbol = p.get("symbol", "?")
+            # Close and Move SL to BE buttons per position
+            keyboard.append([
+                InlineKeyboardButton(f"🏃 Close {symbol}", callback_data=f"close_pos_{symbol}"),
+                InlineKeyboardButton(f"🛡 SL→BE {symbol}", callback_data=f"move_sl_be_{symbol}"),
+            ])
+
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append(italic("💡 Move SL to BE shifts Stop Loss to Entry Price — risk-free trade."))
+
+    keyboard.append([InlineKeyboardButton("🔙 Back to Dashboard", callback_data="cmd_dashboard")])
+
+    await send_or_edit_message(update, fmt(*lines, sep="\n"), reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def _move_sl_to_be(update: Update, context: ContextTypes.DEFAULT_TYPE, symbol: str):
+    """Move stop loss to breakeven (entry price) for a specific position."""
+    bybit = _get_bybit(context)
+
+    try:
+        # Get position details
+        positions = await bybit.get_positions()
+        pos = None
+        for p in (positions or []):
+            if p.get("symbol") == symbol and float(p.get("size", 0)) > 0:
+                pos = p
+                break
+
+        if not pos:
+            await _reply(update, f"❌ No open position found for {symbol}")
+            return
+
+        entry_price = float(pos.get("entry_price", 0))
+        if entry_price <= 0:
+            await _reply(update, f"❌ Cannot determine entry price for {symbol}")
+            return
+
+        # Amend stop loss order on Bybit
+        side = pos.get("side", "Buy")
+        # For LONG: SL goes to entry (below current). For SHORT: SL goes to entry (above current)
+        new_sl = entry_price
+
+        # Use Bybit API to amend the SL order
+        try:
+            # Try to find existing SL order and amend it
+            orders = await bybit.get_open_orders(symbol)
+            sl_order = None
+            for o in (orders or []):
+                if o.get("stopLoss") or o.get("order_type") == "Stop":
+                    sl_order = o
+                    break
+
+            if sl_order:
+                # Amend existing SL
+                order_id = sl_order.get("order_id", "")
+                await bybit.amend_order(
+                    symbol=symbol,
+                    order_id=order_id,
+                    stop_loss=str(new_sl),
+                )
+            else:
+                # Set new SL if none exists
+                await bybit.set_stop_loss(
+                    symbol=symbol,
+                    side="Sell" if side == "Buy" else "Buy",
+                    stop_price=str(new_sl),
+                )
+        except Exception as amend_err:
+            logger.warning("move_sl_be_amend_failed", symbol=symbol, error=str(amend_err))
+            # Fallback: try set_stop_loss directly
+            try:
+                await bybit.set_stop_loss(
+                    symbol=symbol,
+                    side="Sell" if side == "Buy" else "Buy",
+                    stop_price=str(new_sl),
+                )
+            except Exception:
+                await _reply(update, f"❌ Failed to amend SL for {symbol}: {amend_err}")
+                return
+
+        # Edit position card in-place (refresh the positions view)
+        await view_positions_detail_cmd(update, context)
+
+        # Send toast confirmation
+        chat_id = update.effective_chat.id
+        toast_text = fmt(
+            bold("✅ SL Moved to Breakeven"), "\n",
+            f"Symbol: {symbol}", "\n",
+            f"New SL: ${new_sl:,.2f}",
+        )
+        toast_msg = await send_toast(context.bot, chat_id, str(toast_text))
+        if toast_msg:
+            # Add dismiss button to toast
+            dismiss_kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🗑 Dismiss", callback_data=f"dismiss_toast_{toast_msg.message_id}")]
+            ])
+            try:
+                await toast_msg.edit_reply_markup(reply_markup=dismiss_kb)
+            except Exception:
+                pass
+
+    except Exception as e:
+        logger.error("move_sl_be_failed", symbol=symbol, error=str(e))
+        await _reply(update, f"❌ Move SL to BE failed: {e}")
+
+
+async def _close_position(update: Update, context: ContextTypes.DEFAULT_TYPE, symbol: str):
+    """Market close a specific position."""
+    try:
+        from src.risk.sor import SmartOrderRouter
+        bybit = _get_bybit(context)
+        sor = SmartOrderRouter(bybit)
+
+        # Get position side
+        positions = await bybit.get_positions()
+        pos = None
+        for p in (positions or []):
+            if p.get("symbol") == symbol and float(p.get("size", 0)) > 0:
+                pos = p
+                break
+
+        if not pos:
+            await _reply(update, f"❌ No open position for {symbol}")
+            return
+
+        side = pos.get("side", "Buy")
+        size = float(pos.get("size", 0))
+        close_side = "Sell" if side == "Buy" else "Buy"
+
+        await bybit.place_order(
+            symbol=symbol,
+            side=close_side,
+            order_type="Market",
+            qty=str(size),
+        )
+
+        await _reply(update, f"🏃 <b>{symbol}</b> position closed (Market {close_side})", reply_markup=build_main_keyboard())
+
+    except Exception as e:
+        logger.error("close_position_failed", symbol=symbol, error=str(e))
+        await _reply(update, f"❌ Failed to close {symbol}: {e}")
+
+
+# --- Trade History (P3.4) ---
+
+async def trade_history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show recent closed trades and session performance."""
+    if not _is_authorized(update): return
+
+    try:
+        from src.models.database import async_session
+        from src.models.tables import ClosedPaperTrade
+        from sqlalchemy import select, desc
+
+        async with async_session() as session:
+            result = await session.execute(
+                select(ClosedPaperTrade)
+                .where(ClosedPaperTrade.market == "CRYPTO")
+                .order_by(desc(ClosedPaperTrade.exit_date))
+                .limit(15)
+            )
+            trades = result.scalars().all()
+
+        lines = [
+            bold("📜 TRADE HISTORY"), "\n",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "\n",
+        ]
+
+        if not trades:
+            lines.append("No closed trades yet.")
+        else:
+            total_pnl = 0.0
+            wins = 0
+            losses = 0
+            for t in trades:
+                pnl = float(t.realized_pnl_pct or 0)
+                total_pnl += float(t.realized_pnl or 0)
+                if pnl > 0:
+                    wins += 1
+                else:
+                    losses += 1
+                pnl_icon = "🟢" if pnl > 0 else "🔴"
+                side_icon = "⬆️" if t.side == "Buy" else "⬇️"
+                exit_reason = t.exit_reason or "N/A"
+                ts = t.exit_date.strftime("%m-%d %H:%M") if t.exit_date else "?"
+                lines.append(
+                    f"{pnl_icon} {code(ts)} {side_icon} {bold(t.ticker)} "
+                    f"{pnl:+.2f}% | {exit_reason}"
+                )
+
+            win_rate = (wins / max(wins + losses, 1)) * 100
+            lines.append("")
+            lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            lines.append(bold(f"Summary: {wins}W / {losses}L • WR: {win_rate:.0f}% • Net: ${total_pnl:+,.2f}"))
+
+        keyboard = [[InlineKeyboardButton("🏠 Back to Dashboard", callback_data="cmd_dashboard")]]
+        await send_or_edit_message(update, fmt(*lines, sep="\n"), reply_markup=InlineKeyboardMarkup(keyboard))
+
+    except Exception as e:
+        logger.error("trade_history_failed", error=str(e))
+        await _reply(update, "❌ Trade history load failed.", reply_markup=build_main_keyboard())
+
+
 # --- Global Callback Router ---
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1129,6 +1561,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "cmd_performance": await performance_cmd(update, context)
     elif data == "cmd_control": await control_cmd(update, context)
     elif data == "cmd_auto": await _asm_view(update, context)
+    elif data == "cmd_settings": await settings_cmd(update, context)
+    elif data == "toggle_max_pos": await _toggle_max_pos(update, context)
+    elif data == "toggle_regime": await _toggle_regime(update, context)
 
     # ASM Dashboard views
     elif data == "cmd_history": await session_history_cmd(update, context)
@@ -1152,6 +1587,20 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text("❌ Session config not found.")
     elif data == "cmd_profiles": await manage_profiles_cmd(update, context)
     elif data == "cmd_positions": await open_positions_cmd(update, context)
+    elif data == "view_positions_detail": await view_positions_detail_cmd(update, context)
+    elif data == "cmd_trade_history": await trade_history_cmd(update, context)
+    elif data.startswith("move_sl_be_"):
+        symbol = data.replace("move_sl_be_", "")
+        await _move_sl_to_be(update, context, symbol)
+    elif data.startswith("close_pos_"):
+        symbol = data.replace("close_pos_", "")
+        await _close_position(update, context, symbol)
+    elif data.startswith("dismiss_toast_"):
+        try:
+            msg_id = int(data.replace("dismiss_toast_", ""))
+            await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=msg_id)
+        except Exception:
+            pass
     elif data == "auto_launch": await _asm_view(update, context)
     elif data == "auto_pause": await _auto_pause(update, context)
     elif data == "auto_resume_pause": await _auto_resume_from_pause(update, context)

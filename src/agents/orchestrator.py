@@ -729,6 +729,14 @@ class Orchestrator:
                 # Send Telegram notification
                 await self._notify_crypto_trade(signal, risk_result)
 
+                # Anti-churn: record trade for frequency tracking
+                try:
+                    from src.risk.circuit_breaker import CircuitBreakerManager
+                    cb = CircuitBreakerManager(self.redis_client, None)
+                    await cb.record_trade(ticker)
+                except Exception:
+                    pass  # non-fatal
+
                 # Fix #2: Track new position in-loop to prevent duplicate entries
                 open_positions.append({"symbol": ticker, "ticker": ticker})
             else:

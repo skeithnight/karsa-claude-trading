@@ -5,9 +5,9 @@ Detailed reference docs live in `docs/reference/` and are loaded on demand — s
 
 ## Project
 
-**Karsa** — AI-driven multi-market trading system for IDX (Indonesia), US Equities, Global ETFs, and Crypto (Bybit perpetuals). Uses Anthropic SDK tool-use agents routed through 9Router. Crypto node auto-executes trades via Smart Order Router.
+**Karsa** — AI-driven crypto trading system for Bybit perpetuals. Uses Anthropic SDK tool-use agents routed through 9Router. Auto-executes trades via Smart Order Router.
 
-Four containers share the same `src/` package: `karsa-orchestrator` (IDX/US/ETF), `karsa-crypto-orchestrator` (crypto-only, port 8001), `karsa-telegram-bot`, `karsa-crypto-bot`. Full architecture/module descriptions: `docs/reference/ARCHITECTURE.md`. Full file-by-file map: `docs/reference/FILE_MAP.md` — but prefer `/graphify query` over reading this, it's kept in sync with the codebase automatically.
+Two containers share the same `src/` package: `karsa-crypto-orchestrator` (scheduler, port 8001), `karsa-crypto-bot` (Telegram bot, port 8444). Full architecture/module descriptions: `docs/reference/ARCHITECTURE.md`. Full file-by-file map: `docs/reference/FILE_MAP.md` — but prefer `/graphify query` over reading this, it's kept in sync with the codebase automatically.
 
 ## Dev Tooling
 
@@ -26,17 +26,15 @@ Full setup/command reference: `docs/reference/TOOLING.md`.
 ## Build & Run
 
 ```bash
-# Crypto-only stack (primary)
+# Crypto stack (primary)
 docker compose up -d --build karsa-crypto-orchestrator  # rebuild after code changes
+docker compose up -d --build karsa-crypto-bot           # rebuild bot after code changes
 docker compose restart karsa-crypto-orchestrator         # config-only changes
 docker compose ps                                        # status
-docker logs -f karsa-crypto-orchestrator                 # follow logs
+docker logs -f karsa-crypto-orchestrator                 # follow orchestrator logs
+docker logs -f karsa-crypto-bot                          # follow bot logs
 curl http://localhost:8001/health                        # crypto orchestrator health
 curl http://localhost:8444/health                        # crypto bot health
-
-# IDX/US/ETF stack (if enabled)
-docker compose up -d --build karsa-orchestrator
-curl http://localhost:8000/health/scheduler
 ```
 Testing/debug one-liners: `docs/reference/TOOLING.md`.
 
@@ -60,10 +58,12 @@ Testing/debug one-liners: `docs/reference/TOOLING.md`.
 - APScheduler uses `MemoryJobStore` — jobs don't survive container restarts.
 - `/kill` sets both `karsa:global_halt` and `karsa:emergency_stop` Redis keys.
 - Postgres image must be `pgvector/pgvector:pg15`, not `postgres:15-alpine` (needed for `trade_memory` vector column).
-- **Database Pool**: All scheduler jobs must have `max_instances=1, coalesce=True` to prevent connection pool exhaustion from overlapping instances. See `docs/FIX_DATABASE_LEAK.md`.
+- **Database Pool**: NullPool health engine for watchdog, asyncio.Lock on engine creation/dispose. Pool metrics: `karsa_db_pool_checked_out`, `karsa_db_pool_overflow`. See `docs/FIX_DATABASE_LEAK.md`.
 - **Universe Scorer**: Uses early breakout detection (1h vs 24h), overextension penalty (>30% 24h), and short squeeze multiplier (negative funding). See `docs/OPTIMIZE_UNIVERSE.md`.
 - **Asyncpg Patch**: Monkey-patch applied to fix `asyncio.shield()` bug in connection terminate method. Import path: `sqlalchemy.dialects.postgresql.asyncpg.AsyncAdapt_asyncpg_connection`.
 - **Position Deduplication**: Unique index `idx_crypto_positions_ticker_side_open` prevents duplicate OPEN positions per ticker+side. Code check in `orchestrator.py:_save_crypto_position()`.
+- **Entry Price Validation**: Risk manager validates signal entry_price within 30% of market price; uses actual price if deviation > 30%.
+- **Kelly Fraction**: Uses `datetime.utcnow()` (not timezone-aware) to match `TIMESTAMP WITHOUT TIME ZONE` DB columns.
 
 Full gotchas list (Redis auth, IDX lot sizing, 9router port mapping, etc.): `docs/reference/GOTCHAS.md`.
 

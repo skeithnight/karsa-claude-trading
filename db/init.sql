@@ -381,7 +381,13 @@ CREATE TABLE IF NOT EXISTS trade_memory (
     pnl_pct DECIMAL(10, 2),
     reasoning TEXT,
     embedding vector(384),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    -- Phase 3: Enhanced trade memory fields
+    mfe_pct DECIMAL(10, 2),                    -- Maximum Favorable Excursion %
+    exit_reason VARCHAR(50),                    -- Why the trade was closed
+    fees_usdt DECIMAL(18, 8) DEFAULT 0,        -- Total fees paid (entry + exit)
+    hold_duration_hours DECIMAL(10, 2),         -- How long the position was held
+    regime_at_entry VARCHAR(30)                 -- Regime when position was opened
 );
 CREATE INDEX IF NOT EXISTS idx_trade_memory_ticker ON trade_memory(ticker);
 CREATE INDEX IF NOT EXISTS idx_trade_memory_regime ON trade_memory(regime);

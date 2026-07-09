@@ -150,7 +150,31 @@ class PositionReconciler:
                 await arch_pm.sync_from_exchange(cmd)
                 logger.info("position_manager_write", ticker=db_pos.ticker, action="phantom_closed")
             else:
-                # Legacy direct DB write
+                # Step 1: Fetch PnL data from Bybit BEFORE opening DB session.
+                # This is the IO-before-session pattern — a 5-15s HTTP call must
+                # never hold a DB connection open while it waits.
+                exit_price = db_pos.current_price or db_pos.entry_price
+                pnl = db_pos.unrealized_pnl or 0
+                try:
+                    closed_pnl_data = await self.bybit.get_closed_pnl(
+                        symbol=db_pos.ticker, limit=5
+                    )
+                    if closed_pnl_data:
+                        for cp in closed_pnl_data:
+                            if cp.get("symbol") == db_pos.ticker:
+                                exit_price = Decimal(str(cp["exit_price"])) if cp["exit_price"] else exit_price
+                                pnl = Decimal(str(cp["closed_pnl"])) if cp["closed_pnl"] else pnl
+                                logger.info("phantom_pnl_from_exchange",
+                                            ticker=db_pos.ticker,
+                                            exit_price=str(exit_price),
+                                            pnl=str(pnl))
+                                break
+                except Exception as e:
+                    logger.warning("phantom_closed_pnl_fetch_failed",
+                                   ticker=db_pos.ticker, error=str(e),
+                                   fallback="using_unrealized_pnl")
+
+                # Step 2: Write to DB — connection held only during fast local ops
                 async with async_session() as session:
                     pos = await session.get(CryptoPosition, db_pos.id)
                     if pos:
@@ -159,30 +183,6 @@ class PositionReconciler:
 
                         try:
                             from src.models.tables import ClosedPaperTrade
-
-                            # Fetch actual exit price from Bybit closed-pnl API
-                            exit_price = pos.current_price or pos.entry_price
-                            pnl = pos.unrealized_pnl or 0
-
-                            try:
-                                closed_pnl_data = await self.bybit.get_closed_pnl(
-                                    symbol=db_pos.ticker, limit=5
-                                )
-                                if closed_pnl_data:
-                                    # Find matching closed trade (most recent for this symbol)
-                                    for cp in closed_pnl_data:
-                                        if cp.get("symbol") == db_pos.ticker:
-                                            exit_price = Decimal(str(cp["exit_price"])) if cp["exit_price"] else exit_price
-                                            pnl = Decimal(str(cp["closed_pnl"])) if cp["closed_pnl"] else pnl
-                                            logger.info("phantom_pnl_from_exchange",
-                                                        ticker=db_pos.ticker,
-                                                        exit_price=str(exit_price),
-                                                        pnl=str(pnl))
-                                            break
-                            except Exception as e:
-                                logger.warning("phantom_closed_pnl_fetch_failed",
-                                               ticker=db_pos.ticker, error=str(e),
-                                               fallback="using_unrealized_pnl")
 
                             pnl_pct = float((exit_price - pos.entry_price) / pos.entry_price * 100) if pos.entry_price else 0
                             if pos.side == "Sell":

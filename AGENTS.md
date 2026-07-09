@@ -35,7 +35,7 @@ Roster only — for tools, strategies, thresholds, and formulas on a specific ag
 
 **AODE** (`src/aode/`): Asymmetric Opportunity Discovery Engine — `discovery/`, `scoring/`, `risk/`, `onchain/`, `narrative/`, `community/`, `smart_money/`, `fundamentals/`, `learning/`, `monitoring/`.
 
-**Utilities**: `mcp_client.py`, `bybit_client.py`, `_approval.py`, `format.py`, `validation.py`, `market_hours.py`, `feature_flags.py`, `logging.py`, `rate_limit.py`, `telegram_helpers.py`, `trader_format.py`.
+**Utilities**: `mcp_client.py`, `bybit_client.py`, `_approval.py`, `format.py`, `formatters.py` (position cards, risk buttons, regime display), `validation.py`, `market_hours.py`, `feature_flags.py`, `logging.py`, `rate_limit.py`, `telegram_helpers.py`, `trader_format.py`, `position_snapshot.py`.
 
 **Bot Handlers** (`src/bot/`): `handlers.py`, `crypto_handlers.py`, `crypto_main.py`, `aode_handlers.py`, `_approval.py`.
 

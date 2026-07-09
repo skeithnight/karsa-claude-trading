@@ -8,6 +8,7 @@ Uses Bybit testnet by default. Circuit breaker + caching reuse from MCPClient pa
 """
 
 import asyncio
+import random
 import time
 from datetime import datetime, timezone
 
@@ -26,9 +27,10 @@ _MAX_FAILURES = 5
 # Retry config
 _MAX_RETRIES = 3
 _RETRY_DELAYS = [1, 2, 4]  # exponential backoff in seconds
+_JITTER_MAX = 0.5  # max random jitter in seconds
 
 # Bybit V5 error codes
-_RETRYABLE_CODES = {10002, 10006, 10016, 30034, 30035}  # timestamp, rate limit, timeout
+_RETRYABLE_CODES = {10002, 10006, 10016, 30034, 30035, 409}  # timestamp, rate limit, timeout, conflict
 _FATAL_CODES = {10001, 10003, 10004, 110001, 110004, 110007}  # params, recv_window, auth, order, balance, risk
 
 # Interval map for Bybit klines
@@ -146,8 +148,9 @@ class BybitClient:
                     last_error = f"Bybit retryable ({ret_code}): {resp.get('retMsg')}"
                     if attempt < _MAX_RETRIES - 1:
                         delay = _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)]
-                        logger.warning("bybit_retry", attempt=attempt + 1, delay=delay, error=last_error)
-                        await asyncio.sleep(delay)
+                        jitter = random.uniform(0, _JITTER_MAX)
+                        logger.warning("bybit_retry", attempt=attempt + 1, delay=delay + jitter, error=last_error)
+                        await asyncio.sleep(delay + jitter)
                         continue
 
                 # Unknown error code — don't retry
@@ -160,8 +163,9 @@ class BybitClient:
                 last_error = str(e)
                 if attempt < _MAX_RETRIES - 1:
                     delay = _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)]
-                    logger.warning("bybit_retry", attempt=attempt + 1, delay=delay, error=last_error)
-                    await asyncio.sleep(delay)
+                    jitter = random.uniform(0, _JITTER_MAX)
+                    logger.warning("bybit_retry", attempt=attempt + 1, delay=delay + jitter, error=last_error)
+                    await asyncio.sleep(delay + jitter)
 
         self._record_failure("bybit")
         record_bybit_call(func.__name__, time.time() - _t0, error="retry_exhausted")

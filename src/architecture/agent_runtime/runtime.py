@@ -1,6 +1,9 @@
 """Agent Runtime — lifecycle management for AI agents.
 
 State machine: CREATED→INITIALIZING→READY→RUNNING→COMPLETED/FAILED→RETRYING→READY
+
+FATAL errors (TypeError, ValueError, auth failures) skip retries —
+they will never self-heal. TRANSIENT errors (ConnectionError, timeout) retry normally.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -9,6 +12,8 @@ from typing import Any, Optional, Callable, Awaitable
 from datetime import datetime, timezone
 import asyncio
 import structlog
+
+from src.utils.error_classification import classify_error, ErrorSeverity
 
 logger = structlog.get_logger(__name__)
 
@@ -83,7 +88,16 @@ class AgentRuntime:
                     return run
                 except Exception as e:
                     run.error = str(e)
-                    logger.error("agent_failed", agent_id=agent_id, error=str(e), retry=run.retry_count)
+                    severity = classify_error(e)
+                    logger.error("agent_failed", agent_id=agent_id, error=str(e),
+                                 retry=run.retry_count, severity=severity.value)
+
+                    # FATAL errors (config/code bugs) — never retry
+                    if severity == ErrorSeverity.FATAL:
+                        logger.error("agent_fatal_no_retry", agent_id=agent_id, error=str(e))
+                        self._transition(run, AgentState.FAILED)
+                        return run
+
                     if run.retry_count < max_retries:
                         self._transition(run, AgentState.FAILED)
                         run.retry_count += 1

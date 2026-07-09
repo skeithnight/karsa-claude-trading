@@ -22,14 +22,23 @@ from src.utils.logging import get_logger
 logger = get_logger("position_manager")
 
 # Partial exit targets (in R-multiples)
+# Multi-tier: 30% at +1R, 30% at +2R, remaining 40% with trailing stop
 PARTIAL_EXIT_TARGETS = [
-    {"r_multiple": 1.0, "exit_pct": 50, "reason": "partial_1r"},
-    # Leave 50% with trailing stop
+    {"r_multiple": 1.0, "exit_pct": 30, "reason": "partial_1r"},
+    {"r_multiple": 2.0, "exit_pct": 30, "reason": "partial_2r"},
+    # Remaining 40% with trailing stop
 ]
 
 # Time-based exit: close positions open > 48h with < 1% gain
 TIME_EXIT_MAX_HOURS = 48
 TIME_EXIT_MIN_GAIN_PCT = Decimal("1.0")
+
+# Anti-churn: minimum hold time before exit evaluation
+MIN_HOLD_SECONDS = 300  # 5 minutes
+
+# Break-even stop configuration
+BREAKEVEN_ATR_MULT = 1.5      # Move SL to break-even after +1.5x ATR profit
+BREAKEVEN_BUFFER_PCT = 0.1    # 0.1% buffer above entry to cover fees
 
 
 class PositionManager:
@@ -51,6 +60,16 @@ class PositionManager:
                 continue
             if pos.partial_exits_taken >= len(PARTIAL_EXIT_TARGETS):
                 continue  # all partials taken
+
+            # Anti-churn: enforce minimum hold time
+            now = datetime.now(timezone.utc)
+            opened_at = pos.opened_at
+            if opened_at.tzinfo is None:
+                from datetime import timezone as tz
+                opened_at = opened_at.replace(tzinfo=tz.utc)
+            hold_seconds = (now - opened_at).total_seconds()
+            if hold_seconds < MIN_HOLD_SECONDS:
+                continue  # too soon to evaluate exits
 
             try:
                 # Calculate current R-multiple
@@ -313,6 +332,96 @@ class PositionManager:
 
             except Exception as e:
                 logger.error("time_exit_check_failed", ticker=pos.ticker, error=str(e))
+
+        return actions
+
+    # --- Break-Even Stop Logic (Phase 2B) ---
+
+    async def check_break_even_stops(self, positions: list[CryptoPosition]) -> list[dict]:
+        """Check if any position should have its stop moved to break-even.
+
+        Moves SL to entry + 0.1% buffer when price has moved >= 1.5x ATR in profit.
+        Only moves if current SL is still at original level (not already moved).
+        Returns list of actions taken.
+        """
+        actions = []
+        for pos in positions:
+            if pos.status != "OPEN":
+                continue
+            try:
+                entry_price = Decimal(str(pos.entry_price))
+                current_price = Decimal(str(pos.current_price or 0))
+                stop_loss = Decimal(str(pos.stop_loss or 0))
+                trailing_stop = Decimal(str(pos.trailing_stop_price or 0))
+
+                if entry_price == 0 or current_price == 0:
+                    continue
+
+                # Get ATR for break-even threshold
+                atr = await self._get_current_atr(pos.ticker)
+                if not atr:
+                    continue
+
+                # Calculate current profit in price terms
+                if pos.side == "Buy":
+                    profit_distance = current_price - entry_price
+                else:
+                    profit_distance = entry_price - current_price
+
+                if profit_distance <= 0:
+                    continue  # not in profit
+
+                # Check if profit >= BREAKEVEN_ATR_MULT * ATR
+                breakeven_threshold = Decimal(str(atr)) * Decimal(str(BREAKEVEN_ATR_MULT))
+                if profit_distance < breakeven_threshold:
+                    continue  # not enough profit yet
+
+                # Check if SL is still at original level (not already moved to break-even)
+                # Original SL should be further from entry than break-even level
+                if pos.side == "Buy":
+                    # Break-even SL = entry + buffer
+                    breakeven_sl = entry_price * (1 + Decimal(str(BREAKEVEN_BUFFER_PCT)) / 100)
+                    # If current SL is already at or above break-even, skip
+                    if stop_loss >= breakeven_sl or trailing_stop >= breakeven_sl:
+                        continue
+                else:
+                    # Break-even SL = entry - buffer
+                    breakeven_sl = entry_price * (1 - Decimal(str(BREAKEVEN_BUFFER_PCT)) / 100)
+                    # If current SL is already at or below break-even, skip
+                    if (stop_loss > 0 and stop_loss <= breakeven_sl) or \
+                       (trailing_stop > 0 and trailing_stop <= breakeven_sl):
+                        continue
+
+                # Move stop to break-even
+                new_sl = float(breakeven_sl)
+                result = await self.bybit.set_stop_loss(pos.ticker, new_sl, pos.side)
+                if result.get("error"):
+                    logger.error("breakeven_sl_failed", ticker=pos.ticker, error=result["error"])
+                    continue
+
+                # Update DB
+                async with async_session() as session:
+                    db_pos = await session.get(CryptoPosition, pos.id)
+                    if db_pos:
+                        db_pos.trailing_stop_price = new_sl
+                        db_pos.last_management_check = datetime.now(timezone.utc)
+                        await session.commit()
+
+                actions.append({
+                    "ticker": pos.ticker,
+                    "action": "breakeven_stop",
+                    "new_sl": new_sl,
+                    "atr": atr,
+                    "profit_distance": float(profit_distance),
+                })
+                logger.info("breakeven_stop_set",
+                            ticker=pos.ticker,
+                            new_sl=new_sl,
+                            atr=atr,
+                            profit=float(profit_distance))
+
+            except Exception as e:
+                logger.error("breakeven_check_failed", ticker=pos.ticker, error=str(e))
 
         return actions
 
