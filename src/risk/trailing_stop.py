@@ -66,7 +66,15 @@ class TrailingStopManager:
                     actions.append(recovered)
                 continue
 
+            # Use current regime for trailing (not regime_at_entry) to adapt to regime changes
             regime = pos.regime_at_entry or "TREND_BULL"
+            try:
+                if self._redis:
+                    cached_regime = await self._redis.get("karsa:crypto_regime_state")
+                    if cached_regime:
+                        regime = cached_regime
+            except Exception:
+                pass
             multiplier = REGIME_TRAIL_MULTIPLIER.get(regime, 2.0)
             if multiplier == 0:
                 logger.debug("trailing_disabled_chop", ticker=pos.ticker)

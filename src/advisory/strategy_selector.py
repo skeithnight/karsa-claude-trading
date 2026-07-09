@@ -79,6 +79,79 @@ STRATEGY_CONFIGS: dict[str, dict[str, Any]] = {
         "preferred_pairs": [],
         "data_focus": [],
     },
+    # Coin-level regimes (from coin_regime.py)
+    "TREND_BULL": {
+        "primary_strategy": "Trend Following (Bull)",
+        "prompt_modifier": "COIN REGIME: TREND BULL — 4H trending up. Buy dips with trend.",
+        "confidence_boost": 10,
+        "max_positions": 5,
+        "size_multiplier": 1.0,
+        "preferred_pairs": [],
+        "data_focus": ["adx", "volume"],
+    },
+    "TREND_BEAR": {
+        "primary_strategy": "Trend Following (Bear)",
+        "prompt_modifier": "COIN REGIME: TREND BEAR — 4H trending down. Short rallies with trend.",
+        "confidence_boost": 5,
+        "max_positions": 3,
+        "size_multiplier": 0.7,
+        "preferred_pairs": [],
+        "data_focus": ["adx", "volume"],
+    },
+    "FULL_ALIGNMENT": {
+        "primary_strategy": "Aggressive Trend (Coin)",
+        "prompt_modifier": "COIN REGIME: FULL ALIGNMENT — all timeframes aligned. Max conviction.",
+        "confidence_boost": 15,
+        "max_positions": 5,
+        "size_multiplier": 1.0,
+        "preferred_pairs": [],
+        "data_focus": ["adx", "volume"],
+    },
+    "SQUEEZE_ALERT": {
+        "primary_strategy": "Breakout Squeeze Play",
+        "prompt_modifier": "COIN REGIME: SQUEEZE ALERT — BBW at extreme low. Big move incoming. Wait for direction.",
+        "confidence_boost": 5,
+        "max_positions": 3,
+        "size_multiplier": 0.8,
+        "preferred_pairs": [],
+        "data_focus": ["bollinger", "volume"],
+    },
+    "MICRO_CHOP_IN_MACRO_TREND": {
+        "primary_strategy": "Range Trade in Trend",
+        "prompt_modifier": "COIN REGIME: MICRO CHOP IN MACRO TREND — macro trending, micro ranging. Trade the range edges.",
+        "confidence_boost": 0,
+        "max_positions": 3,
+        "size_multiplier": 0.6,
+        "preferred_pairs": [],
+        "data_focus": ["rsi", "bollinger"],
+    },
+    "MICRO_BREAKOUT": {
+        "primary_strategy": "Micro Breakout",
+        "prompt_modifier": "COIN REGIME: MICRO BREAKOUT — 15m breaking out. Quick scalp with tight stops.",
+        "confidence_boost": -5,
+        "max_positions": 2,
+        "size_multiplier": 0.5,
+        "preferred_pairs": [],
+        "data_focus": ["volume", "rsi"],
+    },
+    "DEAD_CHOP": {
+        "primary_strategy": "Halt (Coin)",
+        "prompt_modifier": "COIN REGIME: DEAD CHOP — no trend, no volatility. Do not trade.",
+        "confidence_boost": -100,
+        "max_positions": 0,
+        "size_multiplier": 0.0,
+        "preferred_pairs": [],
+        "data_focus": [],
+    },
+    "CHOP": {
+        "primary_strategy": "Halt (Chop)",
+        "prompt_modifier": "COIN REGIME: CHOP — choppy market, low edge. Skip or very small size.",
+        "confidence_boost": -50,
+        "max_positions": 1,
+        "size_multiplier": 0.3,
+        "preferred_pairs": [],
+        "data_focus": [],
+    },
     "MEAN_REVERSION": {
         "primary_strategy": "Mean Reversion",
         "prompt_modifier": (
@@ -175,16 +248,32 @@ class StrategySelector:
     def __init__(self):
         self._history: list[dict] = []
 
-    def select(self, regime_state: str) -> dict[str, Any]:
+    def select(self, regime_state: str, btc_dominance: float | None = None) -> dict[str, Any]:
         """Get strategy config for a regime.
 
         Args:
             regime_state: One of FULL_TREND_ALIGNMENT, MACRO_BEAR_MICRO_PULLBACK, MEAN_REVERSION, PURE_DEAD_CHOP, UNKNOWN
+            btc_dominance: BTC dominance percentage (optional, for alt season adjustment)
 
         Returns:
-            Strategy configuration dict. Defaults to FULL_TREND_ALIGNMENT for UNKNOWN.
+            Strategy configuration dict. Defaults to PURE_DEAD_CHOP (halt) for UNKNOWN.
         """
-        config = STRATEGY_CONFIGS.get(regime_state, STRATEGY_CONFIGS["FULL_TREND_ALIGNMENT"])
+        config = STRATEGY_CONFIGS.get(regime_state, STRATEGY_CONFIGS["PURE_DEAD_CHOP"])
+        if regime_state not in STRATEGY_CONFIGS:
+            logger.warning("unknown_regime_defaulting", regime=regime_state)
+
+        # Adjust for BTC dominance / alt season
+        if btc_dominance is not None:
+            config = dict(config)  # copy to avoid mutating the template
+            if btc_dominance > 55:
+                # BTC season: reduce alt exposure, favor BTC/ETH
+                config["size_multiplier"] = config.get("size_multiplier", 1.0) * 0.8
+                config["preferred_pairs"] = ["BTCUSDT", "ETHUSDT"]
+                logger.info("btc_season_adjustment", dominance=btc_dominance, factor=0.8)
+            elif btc_dominance < 45:
+                # Alt season: boost alt sizing
+                config["size_multiplier"] = config.get("size_multiplier", 1.0) * 1.2
+                logger.info("alt_season_adjustment", dominance=btc_dominance, factor=1.2)
 
         self._history.append({
             "regime": regime_state,
@@ -206,7 +295,7 @@ class StrategySelector:
 
     def get_regime_performance(self, regime: str) -> dict:
         """Get human-readable strategy description for a regime."""
-        config = STRATEGY_CONFIGS.get(regime, STRATEGY_CONFIGS["FULL_TREND_ALIGNMENT"])
+        config = STRATEGY_CONFIGS.get(regime, STRATEGY_CONFIGS["PURE_DEAD_CHOP"])
         return {
             "regime": regime,
             "strategy": config["primary_strategy"],

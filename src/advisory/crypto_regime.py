@@ -18,6 +18,7 @@ import time
 from typing import Any
 
 from src.utils.logging import get_logger
+from src.advisory.crypto_technicals import calculate_bollinger
 
 logger = get_logger("crypto_regime")
 
@@ -34,7 +35,55 @@ def _get_cached() -> dict | None:
 
 
 def _set_cached(data: dict):
+    old = _regime_cache.get("CRYPTO", {}).get("data", {})
+    old_state = old.get("state")
+    new_state = data.get("state")
     _regime_cache["CRYPTO"] = {"data": data, "ts": time.time()}
+    # Fire-and-forget transition alert
+    if old_state and new_state and old_state != new_state:
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_alert_regime_transition(old_state, new_state, data))
+        except RuntimeError:
+            pass  # No event loop running
+
+
+async def _alert_regime_transition(old_state: str, new_state: str, regime: dict) -> None:
+    """Send Telegram alert on regime transition."""
+    try:
+        import httpx
+        from src.config import settings
+
+        token = settings.CRYPTO_TELEGRAM_TOKEN or settings.TELEGRAM_TOKEN
+        chat_id_str = None
+        try:
+            import redis as sync_redis
+            r = sync_redis.from_url(settings.REDIS_URL, decode_responses=True)
+            chat_id_str = r.get("karsa:telegram_chat_id")
+        except Exception:
+            pass
+
+        if not token or not chat_id_str:
+            return
+
+        size_mult = regime.get("size_multiplier", "N/A")
+        message = (
+            f"🔄 <b>Regime Transition</b>\n"
+            f"  <b>From:</b> {old_state}\n"
+            f"  <b>To:</b> {new_state}\n"
+            f"  <b>Size Multiplier:</b> {size_mult}\n"
+            f"  <b>BTC:</b> ${regime.get('benchmark_price', 'N/A'):,.2f}"
+        )
+
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": int(chat_id_str), "text": message, "parse_mode": "HTML"},
+            )
+        logger.info("regime_transition_alert_sent", old=old_state, new=new_state)
+    except Exception as e:
+        logger.warning("regime_transition_alert_failed", error=str(e))
 
 
 def _hurst_exponent(prices: list[float]) -> float:
@@ -261,7 +310,17 @@ class CryptoRegimeFilter:
             closes_4h = [c["close"] for c in btc_ohlcv_4h]
             hurst = _hurst_exponent(closes_4h)
             btc_price = closes_4h[-1] if closes_4h else 0
-            ema_200 = sum(closes_4h[-200:]) / min(200, len(closes_4h)) if closes_4h else btc_price
+            # EMA200 with proper exponential smoothing (k = 2/(period+1))
+            if len(closes_4h) >= 200:
+                k = 2.0 / (200 + 1)
+                ema_200 = closes_4h[0]
+                for price in closes_4h[1:]:
+                    ema_200 = price * k + ema_200 * (1 - k)
+            elif closes_4h:
+                # Fallback to SMA if insufficient data for proper EMA
+                ema_200 = sum(closes_4h) / len(closes_4h)
+            else:
+                ema_200 = btc_price
 
             # MTF ADX Contextual Regime Engine
             adx_15m = await self._get_cached_adx("BTCUSDT", "15", 1200)
@@ -294,6 +353,69 @@ class CryptoRegimeFilter:
             # Fetch BTC dominance — Redis-cached for 1h to avoid blocking scan loop
             btc_dom = await _get_btc_dominance(redis_client=self._redis)
 
+            # ETH/BTC ratio — key signal for alt rotation
+            eth_btc_ratio = None
+            try:
+                eth_ohlcv = await self.mcp.get_ohlcv("ETHUSDT", "CRYPTO", timeframe="4h", limit=30)
+                if eth_ohlcv and closes_4h and len(eth_ohlcv) >= 7:
+                    eth_closes = [c["close"] for c in eth_ohlcv]
+                    eth_btc_ratio = eth_closes[-1] / btc_price if btc_price > 0 else None
+            except Exception:
+                pass
+
+            # Fear & Greed Index — Redis-cached 1hr
+            fear_greed = None
+            try:
+                if self._redis:
+                    fg_cached = await self._redis.get("karsa:fear_greed_index")
+                    if fg_cached:
+                        fear_greed = int(fg_cached)
+                if fear_greed is None:
+                    import httpx
+                    async with httpx.AsyncClient(timeout=5) as client:
+                        fg_resp = await client.get("https://api.alternative.me/fng/?limit=1")
+                        if fg_resp.status_code == 200:
+                            fg_data = fg_resp.json().get("data", [{}])[0]
+                            fear_greed = int(fg_data.get("value", 50))
+                            if self._redis:
+                                await self._redis.setex("karsa:fear_greed_index", 3600, str(fear_greed))
+            except Exception:
+                pass
+
+            # Funding rate regime — sustained patterns
+            funding_regime = "NEUTRAL"
+            try:
+                # Fetch recent funding history for BTC
+                if self.mcp:
+                    bybit = self.mcp._get_bybit()
+                    if bybit:
+                        funding_history = await bybit.get_funding_history("BTCUSDT", limit=6)
+                        if funding_history and len(funding_history) >= 3:
+                            rates = [float(h.get("fundingRate", 0)) for h in funding_history]
+                            avg_rate = sum(rates) / len(rates)
+                            if avg_rate < -0.0005:
+                                funding_regime = "SHORT_CROWDING"
+                            elif avg_rate > 0.0005:
+                                funding_regime = "LONG_CROWDING"
+            except Exception:
+                pass
+
+            # Volatility regime from BTC 4H BBW percentile
+            try:
+                bb = calculate_bollinger(btc_ohlcv_4h, period=20, std_dev=2.0, bbw_lookback=120)
+                bbw_pct = bb.get("bbw_percentile")
+                if bbw_pct is not None:
+                    if bbw_pct >= 80:
+                        volatility_regime = "HIGH_VOL"
+                    elif bbw_pct <= 20:
+                        volatility_regime = "LOW_VOL"
+                    else:
+                        volatility_regime = "NORMAL_VOL"
+                else:
+                    volatility_regime = "UNKNOWN"
+            except Exception:
+                volatility_regime = "UNKNOWN"
+
             result = {
                 "state": regime,
                 "benchmark": "BTCUSDT",
@@ -308,8 +430,20 @@ class CryptoRegimeFilter:
                 "btc_dominance": btc_dom.get("btc_dominance"),
                 "eth_dominance": btc_dom.get("eth_dominance"),
                 "market_season": btc_dom.get("season", "UNKNOWN"),
+                "volatility_regime": volatility_regime,
+                "eth_btc_ratio": round(eth_btc_ratio, 6) if eth_btc_ratio else None,
+                "fear_greed_index": fear_greed,
+                "funding_regime": funding_regime,
             }
             _set_cached(result)
+
+            # Store regime state in Redis for adaptive checkpoints + trailing stops
+            try:
+                if self._redis:
+                    await self._redis.setex("karsa:volatility_regime", 300, volatility_regime)
+                    await self._redis.setex("karsa:crypto_regime_state", 300, regime)
+            except Exception:
+                pass
 
             try:
                 from src.metrics.crypto_metrics import CRYPTO_REGIME, REGIME_SIZE_MULT, DOMINANCE
@@ -331,7 +465,8 @@ class CryptoRegimeFilter:
                         hurst=hurst,
                         adx=adx_4h,
                         btc_dominance=result.get("btc_dominance"),
-                        size_multiplier=result["size_multiplier"]
+                        size_multiplier=result["size_multiplier"],
+                        volatility_regime=volatility_regime,
                     ))
                     await session.commit()
             except Exception as e:

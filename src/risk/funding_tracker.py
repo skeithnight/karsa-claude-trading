@@ -109,6 +109,47 @@ class FundingTracker:
             logger.error("funding_sync_failed", symbol=symbol, error=str(e))
             return []
 
+    async def get_cumulative_funding(self, symbol: str, since_ts: int) -> float:
+        """Get cumulative funding cost for a position since it was opened.
+
+        Args:
+            symbol: e.g. "BTCUSDT"
+            since_ts: Position open timestamp in milliseconds
+
+        Returns:
+            Total funding fee in USDT (negative = paid, positive = received)
+        """
+        records = await self.sync_funding_from_exchange(symbol, since_ts=since_ts)
+        return sum(r.get("funding_fee", 0) for r in records)
+
+    async def should_exit_for_funding(
+        self, symbol: str, since_ts: int, unrealized_pnl: float, threshold_pct: float = 0.3
+    ) -> dict:
+        """Check if cumulative funding exceeds threshold of unrealized PnL.
+
+        Args:
+            symbol: e.g. "BTCUSDT"
+            since_ts: Position open timestamp in milliseconds
+            unrealized_pnl: Current unrealized PnL in USDT
+            threshold_pct: Exit if funding > this % of unrealized PnL (default 30%)
+
+        Returns:
+            {"should_exit": bool, "cumulative_funding": float, "reason": str}
+        """
+        cumulative = await self.get_cumulative_funding(symbol, since_ts)
+
+        # Only trigger if funding is negative (we're paying) and PnL is positive
+        if cumulative < 0 and unrealized_pnl > 0:
+            funding_abs = abs(cumulative)
+            if funding_abs > unrealized_pnl * threshold_pct:
+                return {
+                    "should_exit": True,
+                    "cumulative_funding": cumulative,
+                    "reason": f"Funding cost ${funding_abs:.2f} exceeds {threshold_pct*100:.0f}% of unrealized PnL ${unrealized_pnl:.2f}",
+                }
+
+        return {"should_exit": False, "cumulative_funding": cumulative, "reason": ""}
+
     async def get_alerts(self, positions: list[dict] | None = None) -> list[dict]:
         """Check for funding rate alerts across universe."""
         rates = await self.get_current_rates()

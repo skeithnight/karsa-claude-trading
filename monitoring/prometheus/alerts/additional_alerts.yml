@@ -1,0 +1,66 @@
+groups:
+  - name: karsa_additional
+    interval: 60s
+    rules:
+      # === LLM & COST MONITORING ===
+      - alert: LLMRunawayCost
+        expr: increase(karsa_llm_tokens_input_total[1h]) > 500000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LLM token usage {{ $value }} in last hour — possible runaway"
+          description: "Input tokens exceeded 500k in 1h. Check for stuck agent loops."
+
+      - alert: AIJudgeEscalationSpike
+        expr: rate(karsa_ai_judge_tier_used_total{tier="escalated"}[1h]) > 0.5
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "AI judge escalation rate {{ $value }}/s — too many ambiguous positions"
+
+      # === POSITION HEALTH ===
+      - alert: ConsecutiveHoldEnforcement
+        expr: karsa_position_consecutive_holds > 3
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Position {{ $labels.ticker }} held for {{ $value }} consecutive AI HOLDs on losing position"
+
+      - alert: WinRateDegradation
+        expr: (karsa_session_win_rate_7d - karsa_session_win_rate_30d) < -0.15
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Win rate dropped {{ $value }}% from 30d average — regime shift?"
+
+      # === COST MONITORING ===
+      - alert: FeePnLRatioHigh
+        expr: karsa_total_fees_usd / abs(karsa_realized_pnl_usd) > 0.3
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Fees are {{ $value }}% of realized PnL — trading too frequently"
+
+      # === SESSION MONITORING ===
+      - alert: AutoSessionRegimePause
+        expr: increase(karsa_auto_session_regime_pauses_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: info
+        annotations:
+          summary: "ASM auto-paused due to regime change"
+
+      # === DLQ MONITORING ===
+      - alert: DLQDepthHigh
+        expr: karsa_dlq_depth > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "DLQ {{ $labels.queue }} has {{ $value }} pending retries"
+          description: "Failed operations accumulating. Check DLQ consumer health."

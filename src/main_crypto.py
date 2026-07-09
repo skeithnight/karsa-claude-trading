@@ -346,6 +346,18 @@ class CryptoKarsaApp:
                   id="crypto_funding_limit", name="Crypto Funding Limit Enforcement", replace_existing=True, misfire_grace_time=300, max_instances=1, coalesce=True)
         s.add_job(self._job_reconcile_positions, "interval", seconds=60,
                   id="crypto_reconciliation", name="Crypto Position Reconciliation", replace_existing=True, misfire_grace_time=30, max_instances=1, coalesce=True)
+
+        # DLQ consumer — retries failed operations every 30s
+        s.add_job(self._job_process_dlq, "interval", seconds=30,
+                  id="dlq_consumer", name="DLQ Consumer", replace_existing=True, misfire_grace_time=30, max_instances=1, coalesce=True)
+
+        # Daily digest — Telegram summary at 00:00 UTC
+        s.add_job(self._job_daily_digest, "cron", hour=0, minute=0,
+                  id="daily_digest", name="Daily Digest", replace_existing=True, misfire_grace_time=600, max_instances=1, coalesce=True)
+
+        # Anomaly detection — check every 15 min
+        s.add_job(self._job_check_anomalies, "cron", minute="*/15",
+                  id="anomaly_detection", name="Anomaly Detection", replace_existing=True, misfire_grace_time=120, max_instances=1, coalesce=True)
         s.add_job(self._job_liquidity_check, "cron", minute="*/15",
                   id="crypto_liquidity", name="Crypto Liquidity Check", replace_existing=True, misfire_grace_time=120, max_instances=1, coalesce=True)
         s.add_job(self._job_oms_cleanup, "interval", minutes=2,
@@ -1206,6 +1218,101 @@ class CryptoKarsaApp:
         except Exception as e:
             JOB_ERRORS.labels(job_id="kill_switch").inc()
             logger.error("kill_switch_failed", error=str(e))
+
+    # DLQ Consumer Job
+    async def _job_process_dlq(self):
+        """Process Dead Letter Queue — retry failed operations."""
+        try:
+            from src.risk.dlq import DeadLetterQueue
+            dlq = DeadLetterQueue(self.redis_client)
+
+            for queue_name in ["sl_placement", "position_close"]:
+                entry = await dlq.pop_due(queue_name)
+                if not entry:
+                    continue
+
+                op = entry.get("operation", {})
+                try:
+                    if queue_name == "sl_placement":
+                        bybit = self.mcp._get_bybit()
+                        result = await bybit.set_stop_loss(
+                            op["ticker"], op["stop_loss"], op["entry_side"]
+                        )
+                        if result and not result.get("error"):
+                            logger.info("dlq_sl_retry_success", ticker=op["ticker"])
+                            continue
+                        await dlq.requeue(queue_name, entry, result.get("error", "unknown"))
+                    elif queue_name == "position_close":
+                        bybit = self.mcp._get_bybit()
+                        result = await bybit.close_position(op["ticker"], op["side"])
+                        if result and not result.get("error"):
+                            logger.info("dlq_close_retry_success", ticker=op["ticker"])
+                            continue
+                        await dlq.requeue(queue_name, entry, result.get("error", "unknown"))
+                except Exception as e:
+                    await dlq.requeue(queue_name, entry, str(e))
+
+            # Log DLQ depths
+            for q in ["sl_placement", "position_close"]:
+                depth = await dlq.get_depth(q)
+                if depth > 0:
+                    logger.warning("dlq_depth", queue=q, depth=depth)
+        except Exception as e:
+            logger.error("dlq_consumer_failed", error=str(e))
+
+    # Daily Digest Job
+    async def _job_daily_digest(self):
+        """Send daily PnL digest via Telegram."""
+        try:
+            from src.notifications.daily_digest import send_daily_digest
+            await send_daily_digest(self.redis_client)
+        except Exception as e:
+            logger.error("daily_digest_job_failed", error=str(e))
+
+    # Anomaly Detection Job
+    async def _job_check_anomalies(self):
+        """Check for anomalous trading metrics."""
+        try:
+            from src.monitoring.anomaly_detector import get_anomaly_detector
+            detector = get_anomaly_detector()
+
+            # Record current values
+            daily_pnl = float(await self.redis_client.get("karsa:session_realized_pnl") or 0)
+            drawdown = float(await self.redis_client.get("karsa:current_drawdown_pct") or 0)
+            win_rate = float(await self.redis_client.get("karsa:session_win_rate") or 0)
+
+            detector.record("daily_pnl", daily_pnl)
+            detector.record("drawdown_velocity", drawdown)
+            detector.record("win_rate", win_rate)
+
+            # Check for anomalies
+            for metric_name, value in [("daily_pnl", daily_pnl), ("drawdown_velocity", drawdown), ("win_rate", win_rate)]:
+                anomaly = detector.check(metric_name, value)
+                if anomaly:
+                    logger.warning("anomaly_detected", **anomaly)
+                    # Send Telegram alert
+                    try:
+                        import httpx
+                        from src.config import settings
+                        token = settings.CRYPTO_TELEGRAM_TOKEN or settings.TELEGRAM_TOKEN
+                        chat_id = await self.redis_client.get("karsa:telegram_chat_id")
+                        if token and chat_id:
+                            msg = (
+                                f"⚠️ <b>Anomaly Detected</b>\n"
+                                f"  <b>Metric:</b> {anomaly['metric']}\n"
+                                f"  <b>Value:</b> {anomaly['value']}\n"
+                                f"  <b>Z-Score:</b> {anomaly['zscore']}\n"
+                                f"  <b>Mean:</b> {anomaly['mean']}"
+                            )
+                            async with httpx.AsyncClient(timeout=10) as client:
+                                await client.post(
+                                    f"https://api.telegram.org/bot{token}/sendMessage",
+                                    json={"chat_id": int(chat_id), "text": msg, "parse_mode": "HTML"},
+                                )
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.error("anomaly_detection_failed", error=str(e))
 
     # AODE Job Methods
     async def _job_aode_discovery(self):

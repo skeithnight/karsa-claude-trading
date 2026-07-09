@@ -9,7 +9,9 @@ Flow:
 """
 
 import asyncio
+import json
 import time
+import uuid
 
 from src.config import settings
 from src.data.bybit_client import BybitClient
@@ -107,6 +109,7 @@ class SmartOrderRouter:
             return await self._market_order(ticker, direction, qty, stop_loss, take_profit, reduce_only)
 
         # Place Post-Only Limit with re-price loop
+        order_link_id = f"karsa-{uuid.uuid4().hex[:16]}"
         for attempt in range(MAX_REPRICE_ATTEMPTS):
             result = await self.bybit.place_order(
                 symbol=ticker,
@@ -116,6 +119,7 @@ class SmartOrderRouter:
                 price=limit_price,
                 time_in_force="PostOnly",
                 reduce_only=reduce_only,
+                order_link_id=order_link_id,
             )
 
             if result.get("error"):
@@ -172,7 +176,20 @@ class SmartOrderRouter:
 
     async def _market_order(self, ticker: str, direction: str, qty: float, stop_loss: float, take_profit: float, reduce_only: bool = False) -> dict:
         bybit_side = "Buy" if direction == "LONG" else "Sell"
-        result = await self.bybit.place_order(symbol=ticker, side=bybit_side, qty=qty, order_type="Market", reduce_only=reduce_only)
+        order_link_id = f"karsa-m-{uuid.uuid4().hex[:16]}"
+
+        # Retry market order up to 3 times
+        result = None
+        for attempt in range(3):
+            result = await self.bybit.place_order(
+                symbol=ticker, side=bybit_side, qty=qty, order_type="Market",
+                reduce_only=reduce_only, order_link_id=order_link_id,
+            )
+            if not result.get("error"):
+                break
+            logger.warning("market_order_retry", ticker=ticker, attempt=attempt + 1,
+                           error=result.get("error"))
+            await asyncio.sleep(1 * (attempt + 1))
 
         if result.get("error"):
             logger.error("market_order_failed", ticker=ticker, error=result["error"])
@@ -211,10 +228,51 @@ class SmartOrderRouter:
                 "order_type": "market", **sl_tp}
 
     async def _place_sl_tp(self, ticker: str, entry_side: str, qty: float, stop_loss: float, take_profit: float) -> dict:
-        sl_result = await self.bybit.set_stop_loss(ticker, stop_loss, entry_side)
-        tp_result = await self.bybit.set_take_profit(ticker, take_profit, entry_side)
-        return {"sl_order_id": sl_result.get("order_id"), "sl_price": stop_loss,
-                "tp_order_id": tp_result.get("order_id"), "tp_price": take_profit}
+        sl_result, tp_result = None, None
+        sl_ok, tp_ok = False, False
+
+        # Retry SL placement (3 attempts with backoff)
+        for attempt in range(3):
+            sl_result = await self.bybit.set_stop_loss(ticker, stop_loss, entry_side)
+            if sl_result and not sl_result.get("error"):
+                sl_ok = True
+                break
+            logger.warning("sl_placement_retry", ticker=ticker, attempt=attempt + 1,
+                           error=sl_result.get("error") if sl_result else "no_response")
+            await asyncio.sleep(1 * (attempt + 1))
+
+        # Retry TP placement (3 attempts with backoff)
+        for attempt in range(3):
+            tp_result = await self.bybit.set_take_profit(ticker, take_profit, entry_side)
+            if tp_result and not tp_result.get("error"):
+                tp_ok = True
+                break
+            logger.warning("tp_placement_retry", ticker=ticker, attempt=attempt + 1,
+                           error=tp_result.get("error") if tp_result else "no_response")
+            await asyncio.sleep(1 * (attempt + 1))
+
+        # Alert on final failure — position left unprotected
+        if not sl_ok:
+            logger.error("sl_placement_failed", ticker=ticker, stop_loss=stop_loss,
+                         error=sl_result.get("error") if sl_result else "no_response")
+            try:
+                if hasattr(self, '_redis') and self._redis:
+                    await self._redis.publish("karsa:alerts:critical", json.dumps({
+                        "type": "sl_placement_failed",
+                        "ticker": ticker,
+                        "stop_loss": stop_loss,
+                        "error": sl_result.get("error") if sl_result else "no_response",
+                    }))
+            except Exception:
+                pass
+
+        if not tp_ok:
+            logger.error("tp_placement_failed", ticker=ticker, take_profit=take_profit,
+                         error=tp_result.get("error") if tp_result else "no_response")
+
+        return {"sl_order_id": (sl_result or {}).get("order_id"), "sl_price": stop_loss,
+                "tp_order_id": (tp_result or {}).get("order_id"), "tp_price": take_profit,
+                "sl_ok": sl_ok, "tp_ok": tp_ok}
 
     async def _wait_for_fill(self, ticker: str, order_id: str, timeout: int) -> dict:
         """Poll order status via Bybit order history (not position check)."""

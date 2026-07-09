@@ -699,6 +699,22 @@ class CryptoRiskManager:
         else:
             kelly_cap = await self.get_kelly_fraction()
             effective_risk_pct = min(max_risk_pct, kelly_cap)
+
+        # Portfolio heat: reduce size when total open risk is high
+        portfolio_heat = 0.0
+        if open_positions and wallet_balance > 0:
+            total_open_risk = sum(
+                float(p.get("size", 0)) * float(p.get("entry_price", 0)) * abs(float(p.get("stop_loss", 0)) - float(p.get("entry_price", 0))) / float(p.get("entry_price", 1))
+                for p in open_positions
+                if p.get("size") and p.get("entry_price")
+            )
+            portfolio_heat = total_open_risk / wallet_balance
+            if portfolio_heat > 0.6:  # >60% of risk budget used
+                heat_factor = max(0.3, 1.0 - (portfolio_heat - 0.6) * 2.5)  # Scale down linearly
+                size_multiplier *= heat_factor
+                logger.info("portfolio_heat_reduction", heat_pct=f"{portfolio_heat*100:.1f}%",
+                           factor=heat_factor, ticker=ticker)
+
         risk_amount = wallet_balance * effective_risk_pct * size_multiplier
         qty = risk_amount / stop_distance if stop_distance > 0 else 0
 
