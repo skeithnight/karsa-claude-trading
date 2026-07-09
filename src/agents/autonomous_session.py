@@ -47,6 +47,7 @@ class AutonomousSessionManager:
         self.orchestrator = orchestrator
         self.redis = redis
         self.bybit = bybit_client
+        self._scan_lock = asyncio.Lock()
 
     # ── Lifecycle ──────────────────────────────────────────────
 
@@ -56,9 +57,17 @@ class AutonomousSessionManager:
         if is_active:
             return "⚠️ Session already running. Use /auto_stop first."
 
-        # Auto-clear stale emergency/halt keys from previous sessions.
-        # Without this, a leftover /kill blocks all new ASM iterations.
-        await self._clear_stale_emergency()
+        # Check if halt is active — refuse to start if halted (P0 safety)
+        try:
+            from src.risk import emergency
+            if await emergency.is_global_halt():
+                return (
+                    "🚨 <b>HALT ACTIVE</b> — Session cannot start.\n"
+                    "Previous session was halted due to risk limits.\n"
+                    "Review your account, then use /clear_halt to reset."
+                )
+        except Exception:
+            pass
 
         risk_pct = float(config.get("risk_pct", DEFAULT_RISK_PCT))
         max_pos = int(config.get("max_pos", DEFAULT_MAX_POS))
@@ -153,6 +162,67 @@ class AutonomousSessionManager:
             pass
         if cleared:
             logger.warning("asm_cleared_stale_emergency", cleared=cleared)
+
+    async def reconcile_state(self) -> str:
+        """Reconcile Bybit open positions/orders with Redis/DB state on startup.
+
+        Called on bot startup if an active session is found in Redis.
+        Syncs orphan positions and alerts the user.
+        """
+        if not await self.is_active():
+            return ""
+
+        try:
+            # Get Bybit open positions
+            bybit_positions = await self.bybit.get_positions()
+            open_bybit = [p for p in (bybit_positions or []) if float(p.get("size", 0)) > 0]
+
+            # Get positions tracked in DB
+            from src.models.database import async_session
+            from src.models.tables import CryptoPosition
+            from sqlalchemy import select
+            async with async_session() as db:
+                result = await db.execute(
+                    select(CryptoPosition).where(CryptoPosition.status == "OPEN")
+                )
+                db_positions = {p.ticker: p for p in result.scalars().all()}
+
+            # Find orphans: on Bybit but not in DB
+            bybit_symbols = {p.get("symbol", "") for p in open_bybit}
+            orphan_symbols = bybit_symbols - set(db_positions.keys())
+
+            if orphan_symbols:
+                logger.warning("reconciliation_orphans_found", orphans=list(orphan_symbols))
+                return (
+                    f"⚠️ <b>Reconciliation Alert</b>\n"
+                    f"Found {len(orphan_symbols)} orphan position(s) on Bybit "
+                    f"not tracked in DB: {', '.join(orphan_symbols)}\n"
+                    f"These positions will remain open. Use /control to manage them."
+                )
+
+            # Find DB positions not on Bybit (stale DB records)
+            stale_symbols = set(db_positions.keys()) - bybit_symbols
+            if stale_symbols:
+                logger.info("reconciliation_stale_found", stale=list(stale_symbols))
+                # Mark stale DB records as CLOSED.
+                # MUST re-load each object inside the new session — objects from the
+                # previous session are detached and not tracked by this session's
+                # identity map. Mutating them then calling commit() is a no-op.
+                from datetime import datetime as _dt
+                async with async_session() as db:
+                    for sym in stale_symbols:
+                        live_pos = await db.get(CryptoPosition, db_positions[sym].id)
+                        if live_pos:
+                            live_pos.status = "CLOSED"
+                            live_pos.last_synced_at = _dt.utcnow()
+                    await db.commit()
+
+            logger.info("reconciliation_complete", orphans=len(orphan_symbols), stale=len(stale_symbols))
+            return ""
+
+        except Exception as e:
+            logger.error("reconciliation_failed", error=str(e))
+            return f"⚠️ Reconciliation check failed: {e}"
 
     async def pause(self) -> str:
         """Pause scanning loop, keeping existing positions intact."""
@@ -412,56 +482,75 @@ class AutonomousSessionManager:
                 except Exception as e:
                     logger.debug("asm_dd_check_failed", error=str(e))
 
-                # 1. Regime gate
+                # 1. Regime gate — dynamic re-evaluation for BEAR (10m instead of 60m)
                 should_pause, regime_msg = await self._check_regime()
                 if should_pause:
                     from src.metrics.crypto_metrics import AUTO_SESSION_REGIME_PAUSES
                     AUTO_SESSION_REGIME_PAUSES.inc()
                     if chat_id:
                         await self._send_telegram(chat_id, regime_msg)
-                    await asyncio.sleep(3600)
+                    # Dynamic: re-check regime every 10 minutes instead of fixed 60m
+                    for _ in range(6):  # 6 x 10min = 60min max
+                        await asyncio.sleep(600)
+                        if not await self.is_active():
+                            break
+                        # Re-check regime
+                        should_pause_again, _ = await self._check_regime()
+                        if not should_pause_again:
+                            logger.info("asm_regime_shifted_resuming")
+                            break
                     continue
 
-                # 2. Capacity check
-                open_count = await self._get_open_position_count()
-                if open_count >= max_pos:
-                    logger.info("asm_at_capacity", open=open_count, max=max_pos)
+                # Acquire scan lock to prevent overlapping iterations
+                if self._scan_lock.locked():
+                    logger.info("asm_scan_locked_skipping")
                     await asyncio.sleep(interval_sec)
                     continue
 
-                # 3. Scan for signals (clear dedup cache so ASM can re-trade same coins)
-                from src.agents.orchestrator import _signal_cache
-                _signal_cache.clear()
-                # Use _scan_crypto_parallel directly — skip scan_all_markets which auto-executes with regime gate
-                from src.advisory.crypto_regime import CryptoRegimeFilter
-                crf = CryptoRegimeFilter(self.orchestrator.mcp)
-                crypto_regime = await crf.get_current_regime()
-                try:
-                    signals = await self.orchestrator._scan_crypto_parallel(crypto_regime)
-                    consecutive_scan_failures = 0
-                except Exception as scan_err:
-                    consecutive_scan_failures += 1
-                    backoff = min(interval_sec * (2 ** consecutive_scan_failures), 3600)
-                    logger.warning("asm_scan_failed", error=str(scan_err), failures=consecutive_scan_failures, backoff_sec=backoff)
-                    if consecutive_scan_failures >= MAX_CONSECUTIVE_SCAN_FAILURES and chat_id:
-                        await self._send_telegram(chat_id, f"⚠️ <b>{consecutive_scan_failures} consecutive scan failures</b>. Backing off {backoff // 60}min.")
-                    await asyncio.sleep(backoff)
-                    continue
-                logger.info("asm_scan_result", signal_count=len(signals), tickers=[s.get("ticker","?") for s in signals])
+                async with self._scan_lock:
 
-                # 4. Execute each signal through existing pipeline
-                for signal in signals:
-                    if not await self.is_active():
-                        break
-                    if await self._get_open_position_count() >= max_pos:
-                        break
-                    await self._execute_signal(signal, chat_id, regime=crypto_regime)
+                    # 2. Capacity check
+                    open_count = await self._get_open_position_count()
+                    if open_count >= max_pos:
+                        logger.info("asm_at_capacity", open=open_count, max=max_pos)
+                        await asyncio.sleep(interval_sec)
+                        continue
 
-                # 5. Progress update (cooldown enforced)
-                await self._maybe_send_progress(chat_id)
-                await self.redis.set(REDIS_PROGRESS_TS, str(time.time()))
-                from src.metrics.crypto_metrics import update_asm_next_scan
-                update_asm_next_scan(interval_sec)
+                    # 3. Scan for signals (TTL-based dedup — 4h prevents re-entry into same setup)
+                    from src.agents.orchestrator import _signal_cache
+                    _signal_cache.clear()
+                    # TTL dedup: processed signals get 4-hour expiry via Redis
+                    # Prevents re-entry while allowing new breakouts
+                    # Use _scan_crypto_parallel directly — skip scan_all_markets which auto-executes with regime gate
+                    from src.advisory.crypto_regime import CryptoRegimeFilter
+                    crf = CryptoRegimeFilter(self.orchestrator.mcp)
+                    crypto_regime = await crf.get_current_regime()
+                    try:
+                        signals = await self.orchestrator._scan_crypto_parallel(crypto_regime)
+                        consecutive_scan_failures = 0
+                    except Exception as scan_err:
+                        consecutive_scan_failures += 1
+                        backoff = min(interval_sec * (2 ** consecutive_scan_failures), 3600)
+                        logger.warning("asm_scan_failed", error=str(scan_err), failures=consecutive_scan_failures, backoff_sec=backoff)
+                        if consecutive_scan_failures >= MAX_CONSECUTIVE_SCAN_FAILURES and chat_id:
+                            await self._send_telegram(chat_id, f"⚠️ <b>{consecutive_scan_failures} consecutive scan failures</b>. Backing off {backoff // 60}min.")
+                        await asyncio.sleep(backoff)
+                        continue
+                    logger.info("asm_scan_result", signal_count=len(signals), tickers=[s.get("ticker","?") for s in signals])
+
+                    # 4. Execute each signal through existing pipeline
+                    for signal in signals:
+                        if not await self.is_active():
+                            break
+                        if await self._get_open_position_count() >= max_pos:
+                            break
+                        await self._execute_signal(signal, chat_id, regime=crypto_regime)
+
+                    # 5. Progress update (cooldown enforced)
+                    await self._maybe_send_progress(chat_id)
+                    await self.redis.set(REDIS_PROGRESS_TS, str(time.time()))
+                    from src.metrics.crypto_metrics import update_asm_next_scan
+                    update_asm_next_scan(interval_sec)
 
             except Exception as e:
                 logger.critical("asm_loop_error", error=str(e))
@@ -525,6 +614,9 @@ class AutonomousSessionManager:
                     await self.redis.set(f"{REDIS_COOLDOWN_PREFIX}{ticker}", "1", ex=REENTRY_COOLDOWN_SEC)
                 else:
                     AUTO_SESSION_TRADES_TOTAL.labels(result="rejected").inc()
+                # TTL dedup: mark signal as processed with 4-hour expiry
+                signal_hash = f"{ticker}:{direction}"
+                await self.redis.set(f"asm:signal_dedup:{signal_hash}", "1", ex=14400)
         except Exception as e:
             logger.error("asm_execute_failed", ticker=ticker, error=str(e))
         finally:
@@ -707,72 +799,74 @@ class AutonomousSessionManager:
             logger.debug("asm_realized_pnl_query_failed", error=str(e))
             return 0.0
 
-    async def _get_session_stats(self) -> tuple[float, int, int, int]:
-        """Get (realized_pnl, wins, losses, total_trades) from DB."""
+    async def _get_session_metrics(self) -> dict:
+        """Single-session replacement for _get_session_stats + _get_profit_factor.
+
+        Opens ONE DB session for all three stats queries, reducing connection
+        checkouts from 3-4 per ASM loop iteration down to 1.
+        """
+        start_time = float(await self.redis.get(REDIS_START_TIME) or 0)
+        if start_time <= 0:
+            return {"realized_pnl": 0.0, "wins": 0, "losses": 0, "total": 0, "profit_factor": 0.0}
         try:
-            start_time = float(await self.redis.get(REDIS_START_TIME) or 0)
-            if start_time <= 0:
-                return 0.0, 0, 0, 0
             from src.models.database import async_session
             from src.models.tables import ClosedPaperTrade
             from sqlalchemy import select, func
+            since = datetime.fromtimestamp(start_time, tz=timezone.utc).replace(tzinfo=None)
             async with async_session() as session:
-                result = await session.execute(
+                # Query 1: totals + gross profit/loss — all in one SELECT
+                stats_result = await session.execute(
                     select(
                         func.coalesce(func.sum(ClosedPaperTrade.realized_pnl), 0),
                         func.count(ClosedPaperTrade.id),
-                    )
-                    .where(
+                        func.coalesce(func.sum(func.greatest(ClosedPaperTrade.realized_pnl, 0)), 0),
+                        func.coalesce(func.sum(func.greatest(-ClosedPaperTrade.realized_pnl, 0)), 0),
+                    ).where(
                         ClosedPaperTrade.market == "CRYPTO",
-                        ClosedPaperTrade.exit_date >= datetime.fromtimestamp(start_time, tz=timezone.utc).replace(tzinfo=None),
+                        ClosedPaperTrade.exit_date >= since,
                     )
                 )
-                row = result.one()
-                total = row[1]
+                row = stats_result.one()
+                total_pnl = float(row[0])
+                total_trades = row[1]
+                gross_profit = float(row[2])
+                gross_loss = float(row[3])
+
+                # Query 2: win count (same session — same connection)
                 win_result = await session.execute(
-                    select(func.count(ClosedPaperTrade.id))
-                    .where(
+                    select(func.count(ClosedPaperTrade.id)).where(
                         ClosedPaperTrade.market == "CRYPTO",
-                        ClosedPaperTrade.exit_date >= datetime.fromtimestamp(start_time, tz=timezone.utc).replace(tzinfo=None),
+                        ClosedPaperTrade.exit_date >= since,
                         ClosedPaperTrade.realized_pnl > 0,
                     )
                 )
                 wins = win_result.scalar() or 0
-                return float(row[0]), wins, total - wins, total
+
+            losses = total_trades - wins
+            if gross_loss <= 0:
+                profit_factor = 99.9 if gross_profit > 0 else 0.0
+            else:
+                profit_factor = round(gross_profit / gross_loss, 2)
+
+            return {
+                "realized_pnl": total_pnl,
+                "wins": wins,
+                "losses": losses,
+                "total": total_trades,
+                "profit_factor": profit_factor,
+            }
         except Exception as e:
-            logger.debug("asm_stats_query_failed", error=str(e))
-            return 0.0, 0, 0, 0
+            logger.debug("asm_session_metrics_failed", error=str(e))
+            return {"realized_pnl": 0.0, "wins": 0, "losses": 0, "total": 0, "profit_factor": 0.0}
+
+    # Keep legacy methods as thin wrappers so any external callers aren't broken
+    async def _get_session_stats(self) -> tuple[float, int, int, int]:
+        m = await self._get_session_metrics()
+        return m["realized_pnl"], m["wins"], m["losses"], m["total"]
 
     async def _get_profit_factor(self) -> float:
-        """Gross profit / gross loss for current session."""
-        start_time = float(await self.redis.get(REDIS_START_TIME) or time.time())
-        try:
-            from src.models.database import async_session
-            from src.models.tables import ClosedPaperTrade
-            from sqlalchemy import select, func
-            async with async_session() as session:
-                result = await session.execute(
-                    select(
-                        func.coalesce(func.sum(
-                            func.greatest(ClosedPaperTrade.realized_pnl, 0)
-                        ), 0),
-                        func.coalesce(func.sum(
-                            func.greatest(-ClosedPaperTrade.realized_pnl, 0)
-                        ), 0),
-                    ).where(
-                        ClosedPaperTrade.market == "CRYPTO",
-                        ClosedPaperTrade.exit_date >= datetime.fromtimestamp(start_time, tz=timezone.utc).replace(tzinfo=None),
-                    )
-                )
-                row = result.one()
-                gross_profit = float(row[0])
-                gross_loss = float(row[1])
-                if gross_loss <= 0:
-                    return 99.9 if gross_profit > 0 else 0.0
-                return round(gross_profit / gross_loss, 2)
-        except Exception as e:
-            logger.debug("asm_profit_factor_failed", error=str(e))
-            return 0.0
+        m = await self._get_session_metrics()
+        return m["profit_factor"]
 
     async def _update_metrics(self, current_equity: float, positions: list[dict]):
         """Publish session performance metrics to Prometheus."""

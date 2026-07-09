@@ -14,6 +14,7 @@ one event loop but the coroutine runs on another — causing the
 import asyncio
 import logging
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.pool import NullPool
 from sqlalchemy import text
 from sqlalchemy.orm import DeclarativeBase
 
@@ -55,14 +56,29 @@ DATABASE_URL = settings.POSTGRES_URL.replace("postgresql://", "postgresql+asyncp
 _engine = None
 _session_factory = None
 _pool_cleaner_task = None
+_health_engine = None          # NullPool engine — never competes with main pool
+_engine_lock = asyncio.Lock()  # Prevents two engines being created concurrently
+
+
+def get_health_engine():
+    """Return a dedicated NullPool engine for health/monitoring queries.
+
+    Creates and closes a real connection on every use — never borrows from the
+    main pool. This means the watchdog loop can query pg_stat_activity even
+    when the main pool is fully saturated.
+    """
+    global _health_engine
+    if _health_engine is None:
+        _health_engine = create_async_engine(DATABASE_URL, poolclass=NullPool)
+    return _health_engine
 
 
 async def _pool_recycle_loop():
     """Periodically check pool health and force recycle if connections leak.
 
     Checks both the SQLAlchemy pool counters AND the actual Postgres
-    connection count (via a direct query). If either exceeds the limit,
-    disposes the engine to flush leaked connections.
+    connection count (via a direct query on the NullPool health engine).
+    If either exceeds the limit, disposes the engine to flush leaked connections.
     """
     global _engine, _session_factory
     while True:
@@ -71,11 +87,19 @@ async def _pool_recycle_loop():
             engine = get_engine()
             pool = engine.pool
 
-            # Check actual Postgres connection count (looking for 'idle' connections,
-            # not just 'idle in transaction' - leaked connections end up in 'idle' state
-            # because SQLAlchemy's async with blocks commit or rollback immediately)
+            # Emit pool metrics to Prometheus
             try:
-                async with engine.connect() as conn:
+                from src.metrics.crypto_metrics import DB_POOL_CHECKED_OUT, DB_POOL_OVERFLOW
+                DB_POOL_CHECKED_OUT.set(pool.checkedout())
+                DB_POOL_OVERFLOW.set(pool.overflow())
+            except Exception:
+                pass
+
+            # Check actual Postgres connection count using NullPool health engine
+            # so this query NEVER steals a slot from the main pool
+            try:
+                health_engine = get_health_engine()
+                async with health_engine.connect() as conn:
                     result = await conn.execute(
                         text(
                             "SELECT count(*) FROM pg_stat_activity "
@@ -85,19 +109,36 @@ async def _pool_recycle_loop():
                     )
                     idle_conns = result.scalar() or 0
 
-                    # If there are way more idle connections than our pool size, we have a leak
-                    # pool_size(10) + overflow(5) = 15, so 25+ idle connections indicates a leak
-                    if idle_conns > 25:
+                    # Calculate expected max: pool_size + max_overflow
+                    expected_max = pool.size() + pool._max_overflow
+                    leak_threshold = expected_max + 3  # small margin
+
+                    logger.debug(
+                        "pool_status idle=%d expected_max=%d checked_in=%d checked_out=%d overflow=%d",
+                        idle_conns, expected_max, pool.checkedin(), pool.checkedout(), pool.overflow(),
+                    )
+
+                    # Dispose under lock so no concurrent coroutine creates
+                    # a session factory pointing at the old (disposed) engine
+                    if idle_conns > leak_threshold:
                         logger.warning(
-                            "pg_idle_connections_high count=%d — forcing pool dispose",
-                            idle_conns,
+                            "pg_idle_connections_high count=%d expected_max=%d — forcing pool dispose",
+                            idle_conns, expected_max,
                         )
-                        # Force dispose regardless of checkedout status to break the deadlock
-                        # The old code refused to dispose when checkedout > 0, creating an
-                        # infinite deadlock where the bot is permanently starved of connections
-                        await engine.dispose()
-                        _engine = None
-                        _session_factory = None
+                        async with _engine_lock:
+                            await engine.dispose()
+                            _engine = None
+                            _session_factory = None
+                    elif pool.overflow() < 0:
+                        logger.warning(
+                            "pg_pool_overflow_negative overflow=%d — forcing pool dispose",
+                            pool.overflow(),
+                        )
+                        async with _engine_lock:
+                            await engine.dispose()
+                            _engine = None
+                            _session_factory = None
+
             except Exception:
                 pass  # Postgres might be unreachable during recycle
 
@@ -105,10 +146,37 @@ async def _pool_recycle_loop():
             logger.debug("pool_recycle_error error=%s", str(e))
 
 
+async def _get_or_create_engine():
+    """Return the shared async engine, creating it safely under a lock.
+
+    Using a lock prevents two coroutines from simultaneously creating separate
+    engine instances when the engine is None (e.g. after a dispose-reset).
+    """
+    global _engine
+    async with _engine_lock:
+        if _engine is None:
+            _engine = create_async_engine(
+                DATABASE_URL,
+                echo=False,
+                pool_size=10,
+                max_overflow=5,
+                pool_pre_ping=True,
+                pool_timeout=10,
+                pool_recycle=1800,
+            )
+            logger.info("db_engine_created pool_size=10 max_overflow=5")
+    return _engine
+
+
 def get_engine():
-    """Return the shared async engine, creating it on first call."""
+    """Return the shared async engine (sync accessor — engine must exist).
+
+    Call init_db() at startup to guarantee the engine is created.
+    After that, get_engine() is safe to call from any coroutine.
+    """
     global _engine
     if _engine is None:
+        # Fallback: create synchronously if called before init_db (shouldn't happen)
         _engine = create_async_engine(
             DATABASE_URL,
             echo=False,
@@ -163,7 +231,7 @@ class Base(DeclarativeBase):
 
 async def init_db():
     """Initialize database tables and eagerly warm the connection pool."""
-    engine = get_engine()
+    engine = await _get_or_create_engine()
     async with engine.connect() as conn:
         await conn.run_sync(Base.metadata.create_all)
     logger.info("db_pool_initialized")
@@ -177,10 +245,13 @@ async def init_db():
 
 async def close_db():
     """Close database connections."""
-    global _pool_cleaner_task
+    global _pool_cleaner_task, _health_engine
     if _pool_cleaner_task:
         _pool_cleaner_task.cancel()
         _pool_cleaner_task = None
+    if _health_engine:
+        await _health_engine.dispose()
+        _health_engine = None
     engine = get_engine()
     await engine.dispose()
     logger.info("db_engine_disposed")

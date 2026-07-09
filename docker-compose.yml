@@ -28,6 +28,7 @@ services:
   postgres:
     image: pgvector/pgvector:pg15
     container_name: karsa-postgres
+    stop_grace_period: 60s
     environment:
       POSTGRES_DB: trading
       POSTGRES_USER: trader
@@ -44,62 +45,14 @@ services:
       retries: 3
 
   # 3. ORCHESTRATION & AGENTS
-  karsa-orchestrator:
-    build:
-      context: .
-      dockerfile: Dockerfile.orchestrator
-    container_name: karsa-orchestrator
-    env_file: [.env]
-    ports:
-      - "127.0.0.1:8000:8000"
-    environment:
-      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
-      - POSTGRES_URL=postgresql://trader:${DB_PASSWORD}@postgres:5432/trading
-      - TRADINGVIEW_MCP_URL=direct
-      - BYBIT_PROXY=socks5h://warp:1080
-    depends_on:
-      redis:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-      warp:
-        condition: service_healthy
-    networks: [trading-net]
-    command: ["python", "-m", "src.main"]
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
+  # karsa-orchestrator REMOVED — Bybit-only mode uses karsa-crypto-orchestrator.
+  # Old src.main ran IDX/US/ETF jobs (no broker) AND duplicate crypto jobs
+  # that raced karsa-crypto-orchestrator for the same DB rows, doubling
+  # connection pool usage and causing write conflicts.
 
-  # 5. TELEGRAM BOT
-  karsa-telegram-bot:
-    build:
-      context: .
-      dockerfile: Dockerfile.bot
-    container_name: karsa-telegram-bot
-    env_file: [.env]
-    ports:
-      - "127.0.0.1:8443:8443"
-    environment:
-      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
-      - POSTGRES_URL=postgresql://trader:${DB_PASSWORD}@postgres:5432/trading
-    depends_on:
-      redis:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-    networks: [trading-net]
-    command: ["python", "-m", "src.bot.main"]
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8443/health || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
+  # 5. TELEGRAM BOT (IDX) REMOVED — used TELEGRAM_TOKEN (not CRYPTO_TELEGRAM_TOKEN).
+  # All commands (/portfolio, /scan, /trades, /idx) were IDX-specific.
+  # Crypto UI is served by karsa-crypto-bot on port 8444.
 
   # 6. VPN GATEWAY (Cloudflare WARP - free, routes crypto bot traffic)
   warp:

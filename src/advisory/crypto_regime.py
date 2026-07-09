@@ -156,21 +156,37 @@ def _size_multiplier(regime: str) -> float:
         "MEAN_REVERSION": 0.5,
     }.get(regime, 0.5)
 
+_BTC_DOM_REDIS_KEY = "karsa:regime:btc_dominance"
+_BTC_DOM_TTL = 3600  # 1 hour — CoinGecko free tier safe; dominance doesn't shift fast
 
-async def _get_btc_dominance() -> dict:
-    """Get BTC dominance from CoinGecko free API.
 
+async def _get_btc_dominance(redis_client=None) -> dict:
+    """Get BTC dominance, Redis-cached for 1 hour.
+
+    Accepts an optional redis_client to use for caching. Falls back to
+    direct HTTP fetch with a 5s timeout (was 10s in the original).
     Returns: {"btc_dominance": float, "season": str, "eth_dominance": float}
     """
+    import json
+
+    # Try Redis cache first — avoids HTTP call on every 5-min regime refresh
+    if redis_client:
+        try:
+            cached = await redis_client.get(_BTC_DOM_REDIS_KEY)
+            if cached:
+                return json.loads(cached)
+        except Exception:
+            pass
+
+    # Fetch from CoinGecko
     try:
         import urllib.request
-        import json
 
         url = "https://api.coingecko.com/api/v3/global"
         req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "karsa/1.0"})
 
         def _fetch():
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with urllib.request.urlopen(req, timeout=5) as resp:  # 5s, was 10s
                 return json.loads(resp.read())
 
         data = await asyncio.to_thread(_fetch)
@@ -185,11 +201,20 @@ async def _get_btc_dominance() -> dict:
         else:
             season = "NEUTRAL"
 
-        return {
+        result = {
             "btc_dominance": round(btc_dom, 2),
             "eth_dominance": round(eth_dom, 2),
             "season": season,
         }
+
+        # Cache in Redis so the next 11 calls (within 1h) are free
+        if redis_client:
+            try:
+                await redis_client.set(_BTC_DOM_REDIS_KEY, json.dumps(result), ex=_BTC_DOM_TTL)
+            except Exception:
+                pass
+
+        return result
 
     except Exception as e:
         logger.warning("btc_dominance_fetch_failed", error=str(e))
@@ -199,8 +224,9 @@ async def _get_btc_dominance() -> dict:
 class CryptoRegimeFilter:
     """Deterministic crypto regime classifier using BTC as benchmark."""
 
-    def __init__(self, mcp_client: Any):
+    def __init__(self, mcp_client: Any, redis_client=None):
         self.mcp = mcp_client
+        self._redis = redis_client  # Optional: used to cache CoinGecko call in Redis
 
     async def _get_cached_adx(self, symbol: str, timeframe: str, ttl: int) -> float:
         cache_key = f"{symbol}_{timeframe}"
@@ -265,8 +291,8 @@ class CryptoRegimeFilter:
                     regime = "PURE_DEAD_CHOP"
                     rec = "Dead chop across all timeframes. Do not trade."
 
-            # Fetch BTC dominance
-            btc_dom = await _get_btc_dominance()
+            # Fetch BTC dominance — Redis-cached for 1h to avoid blocking scan loop
+            btc_dom = await _get_btc_dominance(redis_client=self._redis)
 
             result = {
                 "state": regime,

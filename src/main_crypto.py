@@ -38,28 +38,7 @@ from src.metrics.crypto_metrics import JOB_LAST_RUN, JOB_DURATION, JOB_ERRORS, D
 logger = get_logger("main_crypto")
 
 
-def _snapshot_position(db_pos):
-    """Extract all needed columns from a CryptoPosition ORM object into a
-    plain namespace, so the object can be used after the session closes
-    without triggering lazy loads or event-loop-mismatch errors."""
-    from types import SimpleNamespace
-    return SimpleNamespace(
-        id=db_pos.id,
-        ticker=db_pos.ticker,
-        side=db_pos.side,
-        status=db_pos.status,
-        size=db_pos.size,
-        entry_price=db_pos.entry_price,
-        current_price=db_pos.current_price,
-        stop_loss=db_pos.stop_loss,
-        trailing_stop_price=db_pos.trailing_stop_price,
-        highest_price=db_pos.highest_price,
-        leverage=db_pos.leverage,
-        regime_at_entry=db_pos.regime_at_entry,
-        signal_source=db_pos.signal_source,
-        opened_at=db_pos.opened_at,
-        partial_exits_taken=db_pos.partial_exits_taken,
-    )
+from src.utils.position_snapshot import snapshot_from_db as _snapshot_position
 
 
 app = FastAPI(title="Karsa Crypto Orchestrator", version="0.1.0")
@@ -252,8 +231,22 @@ class CryptoKarsaApp:
         @app.get("/health")
         async def health():
             db_ok = False
+            pool_healthy = True
             try:
                 from sqlalchemy import text
+                from src.models.database import get_engine
+                engine = get_engine()
+                pool = engine.pool
+
+                # Check for negative overflow (connection leak)
+                if pool.overflow() < 0:
+                    logger.warning("health_check_pool_leak overflow=%d — forcing dispose", pool.overflow())
+                    await engine.dispose()
+                    import src.models.database as db_module
+                    db_module._engine = None
+                    db_module._session_factory = None
+                    pool_healthy = False
+
                 async with async_session() as session:
                     await session.execute(text("SELECT 1"))
                     db_ok = True
@@ -264,7 +257,11 @@ class CryptoKarsaApp:
                 "status": "ok" if (db_ok and redis_ok) else "degraded",
                 "mode": "crypto_only",
                 "trading_mode": settings.TRADING_MODE,
-                "checks": {"postgres": "ok" if db_ok else "FAIL", "redis": "ok" if redis_ok else "FAIL"},
+                "checks": {
+                    "postgres": "ok" if db_ok else "FAIL",
+                    "redis": "ok" if redis_ok else "FAIL",
+                    "pool": "ok" if pool_healthy else "reset",
+                },
             }
 
         @app.get("/health/scheduler")
@@ -334,13 +331,14 @@ class CryptoKarsaApp:
         s.add_job(self._job_scan_funding, "cron", hour="1,5,9,13,17,21", minute=10,
                   id="funding_capture", name="Funding Capture Scan", replace_existing=True, misfire_grace_time=300, max_instances=1, coalesce=True)
 
-        # AODE Research Jobs (feature-flagged inside each job)
-        s.add_job(self._job_aode_discovery, "cron", hour="*/1",
-                  id="aode_discovery", name="AODE Token Discovery", replace_existing=True, misfire_grace_time=300, max_instances=1, coalesce=True)
-        s.add_job(self._job_aode_research, "cron", hour="*/4",
-                  id="aode_research", name="AODE Research Scoring", replace_existing=True, misfire_grace_time=600, max_instances=1, coalesce=True)
-        s.add_job(self._job_aode_monitoring, "cron", minute="*/30",
-                  id="aode_monitoring", name="AODE Monitoring Cycle", replace_existing=True, misfire_grace_time=120, max_instances=1, coalesce=True)
+        # AODE Research Jobs (only scheduled when AODE feature is enabled)
+        if settings.AODE_ENABLED:
+            s.add_job(self._job_aode_discovery, "cron", hour="*/1",
+                      id="aode_discovery", name="AODE Token Discovery", replace_existing=True, misfire_grace_time=300, max_instances=1, coalesce=True)
+            s.add_job(self._job_aode_research, "cron", hour="*/4",
+                      id="aode_research", name="AODE Research Scoring", replace_existing=True, misfire_grace_time=600, max_instances=1, coalesce=True)
+            s.add_job(self._job_aode_monitoring, "cron", minute="*/30",
+                      id="aode_monitoring", name="AODE Monitoring Cycle", replace_existing=True, misfire_grace_time=120, max_instances=1, coalesce=True)
 
         logger.info("crypto_jobs_registered", count=len(self.scheduler.get_jobs()))
 
@@ -935,25 +933,21 @@ class CryptoKarsaApp:
             except Exception as e:
                 logger.warning("gate_exit_verify_failed", ticker=ticker, error=str(e))
 
-        # Update DB — mark position closed
+        # Update DB and record closed trade in a SINGLE session — one connection checkout
         async with _async_session() as db_session:
-            db_result = await db_session.execute(
-                select(CryptoPosition).where(
-                    CryptoPosition.id == position_id,
-                    CryptoPosition.status == "OPEN",
+            try:
+                db_result = await db_session.execute(
+                    select(CryptoPosition).where(
+                        CryptoPosition.id == position_id,
+                        CryptoPosition.status == "OPEN",
+                    )
                 )
-            )
-            db_pos = db_result.scalar_one_or_none()
-            if db_pos:
-                db_pos.status = "CLOSED"
-                db_pos.last_synced_at = datetime.utcnow()
-                await db_session.commit()
+                db_pos = db_result.scalar_one_or_none()
+                if db_pos:
+                    db_pos.status = "CLOSED"
+                    db_pos.last_synced_at = datetime.utcnow()
 
-        # Record closed trade for PnL tracking
-        try:
-            async with _async_session() as db_session:
                 entry_price = float(pos_data.get("avgPrice", 0) or 0)
-                # Calculate actual realized PnL from fill price, not unrealized proxy
                 pnl_per_unit = (fill_price - entry_price) if side == "Buy" else (entry_price - fill_price)
                 realized_pnl = pnl_per_unit * size
                 pnl_pct = (pnl_per_unit / entry_price * 100) if entry_price else gain_pct
@@ -980,8 +974,9 @@ class CryptoKarsaApp:
                     exit_price=fill_price,
                     closed_time=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
                 )
-        except Exception as e:
-            logger.warning("gate_exit_trade_record_failed", ticker=ticker, error=str(e))
+            except Exception as e:
+                await db_session.rollback()
+                logger.warning("gate_exit_db_write_failed", ticker=ticker, error=str(e))
 
         # Clean up gate tracking data
         from src.risk.performance_gate import PerformanceGate

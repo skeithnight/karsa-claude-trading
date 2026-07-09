@@ -14,10 +14,11 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 from src.config import settings
 from src.bot.crypto_handlers import (
     start_cmd, dashboard_cmd, activity_cmd,
-    portfolio_cmd, performance_cmd, control_cmd,
+    portfolio_cmd, performance_cmd, control_cmd, settings_cmd,
     mode_cmd, setmode_cmd, universe_cmd, refresh_universe_cmd,
     replay_cmd, events_cmd, button_callback,
     session_history_cmd, manage_profiles_cmd, open_positions_cmd,
+    clear_halt_cmd, view_positions_detail_cmd, trade_history_cmd,
 )
 from src.bot.aode_handlers import (
     cmd_discover, cmd_opportunity, cmd_narrative,
@@ -52,6 +53,8 @@ async def lifespan(app: FastAPI):
     telegram_app.add_handler(CommandHandler("refresh_universe", refresh_universe_cmd))
     telegram_app.add_handler(CommandHandler("replay", replay_cmd))
     telegram_app.add_handler(CommandHandler("events", events_cmd))
+    telegram_app.add_handler(CommandHandler("clear_halt", clear_halt_cmd))
+    telegram_app.add_handler(CommandHandler("settings", settings_cmd))
 
     # AODE Research Commands
     telegram_app.add_handler(CommandHandler("discover", cmd_discover))
@@ -87,6 +90,33 @@ async def lifespan(app: FastAPI):
     app.state.orchestrator = orch
     app.state.redis_client = redis_client
     app.state.telegram_app = telegram_app
+
+    # Wire high-frequency risk monitor (P0 — decoupled from scan loop)
+    try:
+        from src.risk.risk_monitor import HighFrequencyRiskMonitor
+        chat_id = int(settings.TELEGRAM_CHAT_ID) if settings.TELEGRAM_CHAT_ID else 0
+        risk_monitor = HighFrequencyRiskMonitor(orch, redis_client, bybit, chat_id)
+        telegram_app.bot_data["risk_monitor"] = risk_monitor
+        await risk_monitor.start()
+        logger.info("risk_monitor_wired")
+    except Exception as e:
+        logger.warning("risk_monitor_setup_failed", error=str(e))
+
+    # Startup reconciliation — sync Bybit positions with DB/Redis
+    try:
+        from src.agents.autonomous_session import AutonomousSessionManager
+        asm = AutonomousSessionManager(orch, redis_client, bybit)
+        reconcile_msg = await asm.reconcile_state()
+        if reconcile_msg and chat_id:
+            await telegram_app.bot.send_message(
+                chat_id=chat_id, text=reconcile_msg, parse_mode="HTML"
+            )
+        # If session is active, resume the loop
+        if await asm.is_active():
+            asyncio.create_task(asm._run_loop(chat_id))
+            logger.info("asm_loop_resumed_on_startup")
+    except Exception as e:
+        logger.warning("reconciliation_setup_failed", error=str(e))
 
     await telegram_app.initialize()
     await telegram_app.start()

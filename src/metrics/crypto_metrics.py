@@ -300,6 +300,18 @@ WARP_CONNECTED = Gauge(
     "karsa_warp_connected", "1 if Cloudflare WARP proxy is reachable, 0 otherwise")
 
 # ============================================================
+# DOMAIN 5c — Database Pool Health
+# ============================================================
+
+DB_POOL_CHECKED_OUT = Gauge(
+    "karsa_db_pool_checked_out",
+    "Number of DB connections currently checked out from the pool")
+
+DB_POOL_OVERFLOW = Gauge(
+    "karsa_db_pool_overflow",
+    "DB pool overflow counter (negative value indicates leaked connections)")
+
+# ============================================================
 # DOMAIN 5b — WebSocket Health
 # ============================================================
 

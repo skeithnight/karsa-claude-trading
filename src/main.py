@@ -23,27 +23,7 @@ from src.utils.rate_limit import RateLimiter
 logger = get_logger("main")
 
 
-def _snapshot_position(db_pos):
-    """Extract all needed columns from a CryptoPosition ORM object into a
-    plain namespace, so the object can be used after the session closes
-    without triggering lazy loads or event-loop-mismatch errors."""
-    from types import SimpleNamespace
-    return SimpleNamespace(
-        id=db_pos.id,
-        ticker=db_pos.ticker,
-        side=db_pos.side,
-        status=db_pos.status,
-        size=db_pos.size,
-        entry_price=db_pos.entry_price,
-        current_price=db_pos.current_price,
-        stop_loss=db_pos.stop_loss,
-        trailing_stop_price=db_pos.trailing_stop_price,
-        highest_price=db_pos.highest_price,
-        leverage=db_pos.leverage,
-        regime_at_entry=db_pos.regime_at_entry,
-        signal_source=db_pos.signal_source,
-        opened_at=db_pos.opened_at,
-    )
+from src.utils.position_snapshot import snapshot_from_db as _snapshot_position
 
 
 # FastAPI app for health endpoints

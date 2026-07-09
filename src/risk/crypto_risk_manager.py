@@ -27,7 +27,7 @@ logger = get_logger("crypto_risk_manager")
 CORRELATION_TIERS = {
     "tier1": {"symbols": {"BTCUSDT", "ETHUSDT"}, "max_positions": 2, "max_combined_pct": 0.15},
     "tier2": {"symbols": {"SOLUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT", "BNBUSDT", "NEARUSDT"}, "max_positions": 2, "max_combined_pct": 0.15},
-    "tier3": {"symbols": {"DOGEUSDT", "XRPUSDT", "ADAUSDT", "PEPEUSDT", "DOTUSDT", "MATICUSDT"}, "max_positions": 2, "max_combined_pct": 0.10},
+    "tier3": {"symbols": {"DOGEUSDT", "XRPUSDT", "ADAUSDT", "DOTUSDT", "MATICUSDT"}, "max_positions": 2, "max_combined_pct": 0.10},
 }
 
 MAX_LEVERAGE_BY_TIER = {"tier1": 10, "tier2": 5, "tier3": 3}
@@ -200,9 +200,10 @@ class CryptoRiskManager:
             from src.models.database import async_session
             from src.models.tables import ClosedPaperTrade
             from sqlalchemy import select, func, case
-            from datetime import datetime, timezone, timedelta
+            from datetime import datetime, timedelta
 
-            cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+            # Use naive datetime to match TIMESTAMP WITHOUT TIME ZONE column
+            cutoff = datetime.utcnow() - timedelta(days=lookback_days)
             async with async_session() as session:
                 result = await session.execute(
                     select(
@@ -477,6 +478,26 @@ class CryptoRiskManager:
         # --- Gate 0: Basic signal validation ---
         if not entry_price or entry_price <= 0:
             return self._reject("Missing or invalid entry price")
+
+        # Validate entry_price is within 30% of current market price
+        if self.mcp:
+            try:
+                ticker_info = await self.mcp.get_ticker(ticker, "CRYPTO")
+                if ticker_info and ticker_info.get("last_price"):
+                    current_price = float(ticker_info["last_price"])
+                    if current_price > 0:
+                        deviation = abs(entry_price - current_price) / current_price
+                        if deviation > 0.30:
+                            logger.warning("entry_price_deviation",
+                                          ticker=ticker,
+                                          signal_price=entry_price,
+                                          market_price=current_price,
+                                          deviation_pct=f"{deviation*100:.1f}%")
+                            # Use actual market price instead of stale signal price
+                            entry_price = current_price
+                            signal["entry_price"] = current_price
+            except Exception as e:
+                logger.warning("price_validation_failed", error=str(e))
 
         if confidence < min_confidence:
             return self._reject(f"Confidence {confidence} below {min_confidence} threshold")
