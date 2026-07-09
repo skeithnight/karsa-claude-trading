@@ -247,13 +247,13 @@ class CryptoAnalyst(BaseAgent):
 
         return result
 
-    def update_strategy(self, regime_state: str) -> dict:
+    def update_strategy(self, regime_state: str, btc_dominance: float | None = None) -> dict:
         """Update agent's strategy based on current regime.
 
         Call this before scanning to adapt the prompt to market conditions.
         Returns the strategy config that was applied.
         """
-        self._current_config = self.strategy_selector.select(regime_state)
+        self._current_config = self.strategy_selector.select(regime_state, btc_dominance=btc_dominance)
         self.system_prompt = _build_system_prompt(self._current_config, self._profile_name)
 
         from src.utils.logging import get_logger

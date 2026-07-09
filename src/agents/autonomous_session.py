@@ -683,9 +683,19 @@ class AutonomousSessionManager:
 
     async def _check_regime(self) -> tuple[bool, str]:
         """Returns (should_pause, alert_message).
-        Regime gate disabled for ASM — risk gates + SL handle protection.
+        Pauses ASM during PURE_DEAD_CHOP to avoid wasting LLM calls.
         """
-        return False, ""
+        try:
+            from src.advisory.crypto_regime import CryptoRegimeFilter
+            crf = CryptoRegimeFilter(self.orchestrator.mcp)
+            regime = await crf.get_current_regime()
+            state = regime.get("state", "UNKNOWN")
+            if state == "PURE_DEAD_CHOP":
+                return True, f"⏸️ <b>ASM paused</b> — regime: {state}. Re-checking every 10min."
+            return False, ""
+        except Exception as e:
+            logger.warning("asm_regime_check_failed", error=str(e))
+            return False, ""
 
     # ── MTM Report ─────────────────────────────────────────────
 

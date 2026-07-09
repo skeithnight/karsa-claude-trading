@@ -607,6 +607,7 @@ class BybitClient:
         price: float | None = None,
         time_in_force: str = "PostOnly",
         reduce_only: bool = False,
+        order_link_id: str | None = None,
     ) -> dict:
         """Place an order on Bybit.
 
@@ -634,6 +635,8 @@ class BybitClient:
                 "qty": str(qty),
                 "reduceOnly": reduce_only,
             }
+            if order_link_id:
+                params["orderLinkId"] = order_link_id
             if order_type == "Limit" and price:
                 params["price"] = str(price)
                 params["timeInForce"] = time_in_force

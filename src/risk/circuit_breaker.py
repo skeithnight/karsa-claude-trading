@@ -24,6 +24,7 @@ from src.models.database import async_session
 from src.models.tables import CryptoCircuitBreakerEvent, ClosedPaperTrade
 from src.risk.crypto_risk_manager import CORRELATION_TIERS
 from src.utils.logging import get_logger
+from src.utils.retry import async_retry
 from sqlalchemy import select, func, cast, Date
 
 logger = get_logger("circuit_breaker")
@@ -331,28 +332,34 @@ class CircuitBreakerManager:
             except Exception:
                 pass
 
-        # Log to DB
-        try:
-            async with async_session() as session:
-                session.add(CryptoCircuitBreakerEvent(
-                    breaker_type=breaker_type.split(":")[0],  # remove ticker suffix
-                    severity=severity,
-                    details=details,
-                ))
-                await session.commit()
-        except Exception as e:
-            logger.error("cb_log_failed", breaker_type=breaker_type, error=str(e))
+        # Log to DB with retry
+        await self._log_breaker_to_db(breaker_type, severity, details)
+
+    @async_retry(max_attempts=3, base_delay=1.0, log_label="cb_db_write")
+    async def _log_breaker_to_db(self, breaker_type: str, severity: str, details: dict) -> None:
+        """Log circuit breaker event to DB with retry."""
+        async with async_session() as session:
+            session.add(CryptoCircuitBreakerEvent(
+                breaker_type=breaker_type.split(":")[0],  # remove ticker suffix
+                severity=severity,
+                details=details,
+            ))
+            await session.commit()
 
     async def _is_breaker_active(self, breaker_type: str) -> bool:
-        """Check if a circuit breaker is currently active."""
+        """Check if a circuit breaker is currently active.
+        Fail-closed: if Redis is unreachable, assume breaker is active (block trading).
+        """
         if not self._redis:
-            return False
+            logger.error("cb_redis_unavailable_assuming_active", breaker_type=breaker_type)
+            return True  # fail-closed
         try:
             key = f"{CB_KEY_PREFIX}:{breaker_type}"
             val = await self._redis.get(key)
             return val is not None
-        except Exception:
-            return False  # fail-open
+        except Exception as e:
+            logger.error("cb_check_failed_assuming_active", breaker_type=breaker_type, error=str(e))
+            return True  # fail-closed
 
     async def get_active_breakers(self) -> list[dict]:
         """Get all currently active circuit breakers."""

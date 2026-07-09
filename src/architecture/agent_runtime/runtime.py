@@ -102,6 +102,12 @@ class AgentRuntime:
                         self._transition(run, AgentState.FAILED)
                         run.retry_count += 1
                         self._transition(run, AgentState.RETRYING)
+                        # Exponential backoff: min(2^attempt * 1s, 10s) + jitter
+                        import random
+                        delay = min(2 ** run.retry_count, 10) + random.uniform(0, 1)
+                        logger.info("agent_retry_backoff", agent_id=agent_id,
+                                    attempt=run.retry_count, delay=round(delay, 1))
+                        await asyncio.sleep(delay)
                         self._transition(run, AgentState.READY)
                     else:
                         self._transition(run, AgentState.FAILED)

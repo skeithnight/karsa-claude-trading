@@ -145,6 +145,35 @@ CHECKPOINTS: dict[str, list[Checkpoint]] = {
     ],
 }
 
+
+def get_adaptive_checkpoints(bucket: Bucket, volatility_regime: str | None = None) -> list[Checkpoint]:
+    """Get checkpoint schedule adjusted for current volatility regime.
+
+    High vol → shorter checkpoints (catch moves faster)
+    Low vol → longer checkpoints (give positions more time)
+    """
+    base = CHECKPOINTS.get(bucket, CHECKPOINTS[Bucket.STANDARD])
+    if not volatility_regime:
+        return base
+
+    # Volatility multiplier: compress/expand checkpoint timing
+    if volatility_regime == "HIGH_VOL":
+        multiplier = 0.7  # 30% shorter checkpoints
+    elif volatility_regime == "LOW_VOL":
+        multiplier = 1.3  # 30% longer checkpoints
+    else:
+        return base  # NORMAL_VOL — no change
+
+    return [
+        Checkpoint(
+            after_minutes=max(5, int(cp.after_minutes * multiplier)),
+            min_gain_pct=cp.min_gain_pct,
+            reason=cp.reason,
+        )
+        for cp in base
+    ]
+
+
 # Zone boundaries
 HARD_FAIL_THRESHOLD = -8.0   # gain < -8% at any checkpoint = hard fail
 CLEAR_WIN_THRESHOLD = 3.0    # gain > +3% at checkpoint = clear win
@@ -253,7 +282,16 @@ class PerformanceGate:
             return None
 
         bucket = classify_bucket(signal_source)
-        checkpoints = CHECKPOINTS[bucket]
+        # Use adaptive checkpoints based on current volatility regime
+        volatility_regime = None
+        try:
+            if self._redis:
+                vol_regime = await self._redis.get("karsa:volatility_regime")
+                if vol_regime:
+                    volatility_regime = vol_regime
+        except Exception:
+            pass
+        checkpoints = get_adaptive_checkpoints(bucket, volatility_regime)
         gain_pct = get_gain_pct(entry, current, side)
         hours_held = get_hours_held(opened_at)
         minutes_held = hours_held * 60
