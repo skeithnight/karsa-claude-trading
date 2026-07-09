@@ -57,9 +57,37 @@ class CryptoKarsaApp:
         self.scheduler: AsyncIOScheduler | None = None
         self._shutdown = asyncio.Event()
 
+    @staticmethod
+    def _validate_config():
+        """Validate critical config before startup. Fail fast on missing keys."""
+        missing_fatal = []
+        missing_warn = []
+
+        # Critical — bot cannot function without these
+        if not settings.BYBIT_API_KEY:
+            missing_fatal.append("BYBIT_API_KEY")
+        if not settings.BYBIT_API_SECRET:
+            missing_fatal.append("BYBIT_API_SECRET")
+
+        # Important — some features degrade without these
+        if settings.NROUTER_ENABLED and not settings.NROUTER_AUTH_TOKEN:
+            missing_warn.append("9ROUTER_AUTH_TOKEN (LLM features will fail)")
+        if not settings.TELEGRAM_TOKEN and not settings.CRYPTO_TELEGRAM_TOKEN:
+            missing_warn.append("TELEGRAM_TOKEN / CRYPTO_TELEGRAM_TOKEN (no alerts)")
+
+        if missing_fatal:
+            for key in missing_fatal:
+                logger.critical("config_missing", key=key, severity="fatal")
+            logger.critical("startup_aborted", reason="Missing critical config — check .env file")
+            sys.exit(1)
+
+        for key in missing_warn:
+            logger.warning("config_missing", key=key, severity="degraded")
+
     async def startup(self):
         """Initialize services and register crypto-only jobs."""
         logger.info("starting_karsa_crypto", version="0.1.0")
+        self._validate_config()
 
         await init_db()
         logger.info("database_ready")
@@ -974,6 +1002,16 @@ class CryptoKarsaApp:
                     exit_price=fill_price,
                     closed_time=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
                 )
+
+                # Anti-churn: record trade + set cooldown on loss
+                try:
+                    from src.risk.circuit_breaker import CircuitBreakerManager
+                    cb = CircuitBreakerManager(self.redis_client, None)
+                    await cb.record_trade(ticker)
+                    if realized_pnl < 0:
+                        await cb.record_symbol_cooldown(ticker)
+                except Exception:
+                    pass  # non-fatal
             except Exception as e:
                 await db_session.rollback()
                 logger.warning("gate_exit_db_write_failed", ticker=ticker, error=str(e))

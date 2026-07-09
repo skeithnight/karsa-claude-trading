@@ -8,13 +8,14 @@ from html import escape
 from src.utils.format import HTML, bold, italic, code, fmt
 
 
-def format_position_card(position: dict, index: int = 0) -> str:
+def format_position_card(position: dict, index: int = 0, pos_pct: float = 0.0) -> str:
     """Format a single open position as a detailed multi-line card.
 
     Args:
         position: Dict with keys: symbol, side, size, entry_price, current_price,
                   unrealised_pnl, mark_price, liq_price, stop_loss, take_profit
         index: 1-based position index for display
+        pos_pct: Position as percentage of total equity (0-100)
     Returns:
         HTML-formatted position card string.
     """
@@ -23,8 +24,9 @@ def format_position_card(position: dict, index: int = 0) -> str:
     size = float(position.get("size", 0) or 0)
     entry = float(position.get("entry_price", 0) or 0)
     mark = float(position.get("current_price", 0) or 0)
-    pnl = float(position.get("unrealised_pnl", 0) or 0)
-    liq = float(position.get("liq_price", 0) or 0)
+    # Support both spellings from Bybit (unrealized_pnl) and DB (unrealised_pnl)
+    pnl = float(position.get("unrealized_pnl", 0) or position.get("unrealised_pnl", 0) or 0)
+    liq = float(position.get("liquidation_price", 0) or position.get("liq_price", 0) or 0)
     sl = float(position.get("stop_loss", 0) or 0)
     tp = float(position.get("take_profit", 0) or 0)
 
@@ -35,12 +37,22 @@ def format_position_card(position: dict, index: int = 0) -> str:
     side_icon = "⬆️" if side == "Buy" else "⬇️"
     side_label = "LONG" if side == "Buy" else "SHORT"
 
+    # Position allocation bar
+    alloc_bar = ""
+    if pos_pct > 0:
+        filled = min(int(pos_pct / 5), 10)  # 10 chars max, each = 5%
+        empty = 10 - filled
+        alloc_bar = f"{'█' * filled}{'░' * empty} {pos_pct:.1f}%"
+
     card = fmt(
         bold(f"{index}. {symbol} ({side_label})"), f" {pnl_icon}", "\n",
         f"┣ Entry: ${entry:,.2f} | Now: ${mark:,.2f}", "\n",
         f"┣ Size: {size} | Liq: ${liq:,.2f}", "\n",
         f"┗ PnL: {pnl_icon} ${pnl:+,.2f} ({pnl_pct:+.2f}%)",
     )
+
+    if alloc_bar:
+        card = fmt(card, f"\n   📊 Alloc: {alloc_bar}", sep="")
 
     if sl > 0:
         card = fmt(card, f"\n   SL: ${sl:,.2f}", sep="")

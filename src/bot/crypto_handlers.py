@@ -67,68 +67,115 @@ async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Unified ASM Dashboard — adapts layout based on ASM state (IDLE vs ACTIVE)."""
     if not _is_authorized(update): return
 
+    import asyncio
+    import time
+    t0 = time.monotonic()
     r = _get_redis(context)
     orch = context.bot_data.get("orchestrator")
     bybit = _get_bybit(context)
 
-    # --- System health (P1.5: graceful degradation — always render UI) ---
-    redis_ok, bybit_ok, db_ok, halt_active = False, False, False, False
-    try:
-        redis_ok = await r.ping()
-        halt_active = bool(await r.get("karsa:global_halt"))
-    except Exception:
-        pass
-    try:
-        from src.models.database import async_session
-        from sqlalchemy import text
-        async with async_session() as session:
-            await session.execute(text("SELECT 1"))
-            db_ok = True
-    except Exception:
-        pass
+    # --- Parallel fetch all data with timing ---
+    async def _fetch_redis():
+        t = time.monotonic()
+        try:
+            redis_ok = await r.ping()
+            halt_active = bool(await r.get("karsa:global_halt"))
+            is_active = (await r.get("karsa:auto:state:active")) == "1"
+            logger.info("fetch_redis_done", ms=int((time.monotonic()-t)*1000))
+            return {"redis_ok": redis_ok, "halt_active": halt_active, "is_active": is_active}
+        except Exception:
+            return {"redis_ok": False, "halt_active": False, "is_active": False}
 
-    # --- Wallet ---
-    wallet = {}
-    try:
-        wallet = await bybit.get_wallet_balance()
-        bybit_ok = not wallet.get("error")
-    except Exception:
-        pass
+    async def _fetch_db():
+        t = time.monotonic()
+        try:
+            from src.models.database import async_session
+            from sqlalchemy import text
+            async with async_session() as session:
+                await session.execute(text("SELECT 1"))
+            logger.info("fetch_db_done", ms=int((time.monotonic()-t)*1000))
+            return True
+        except Exception:
+            return False
 
-    # --- Regime ---
-    regime_state, hurst, adx = "UNKNOWN", 0.5, 0.0
-    top_mover_str = ""
-    try:
-        from src.advisory.crypto_regime import CryptoRegimeFilter
-        regime = await CryptoRegimeFilter(orch.mcp).get_current_regime()
-        regime_state = regime.get("state", "UNKNOWN")
-        hurst = regime.get("hurst", 0.5)
-        adx = regime.get("adx", 0.0)
-    except Exception: pass
-    try:
-        from src.advisory.crypto_market_watch import CryptoMarketWatchEngine
-        movers = await CryptoMarketWatchEngine.get_top_movers(orch.mcp)
-        if movers:
-            best = movers[0]
-            sym = best.get("symbol", "?")
-            chg = best.get("change_pct", 0)
-            top_mover_str = f" • Top: {sym} ({chg:+.1f}%)"
-    except Exception as e:
-        logger.debug("top_mover_failed", error=str(e))
+    async def _fetch_wallet():
+        t = time.monotonic()
+        try:
+            wallet = await bybit.get_wallet_balance()
+            logger.info("fetch_wallet_done", ms=int((time.monotonic()-t)*1000))
+            return {"wallet": wallet, "ok": not wallet.get("error")}
+        except Exception:
+            return {"wallet": {}, "ok": False}
 
-    # --- Profile ---
-    profile_str = ""
-    try:
-        if orch and orch.profile_manager:
-            p = await orch.profile_manager.get_active_profile()
-            profile_str = f"{p.emoji} {p.name.upper().replace('_', ' ')}"
-    except Exception: pass
+    async def _fetch_regime():
+        t = time.monotonic()
+        try:
+            from src.advisory.crypto_regime import CryptoRegimeFilter
+            regime = await CryptoRegimeFilter(orch.mcp).get_current_regime()
+            logger.info("fetch_regime_done", ms=int((time.monotonic()-t)*1000))
+            return {
+                "state": regime.get("state", "UNKNOWN"),
+                "hurst": regime.get("hurst", 0.5),
+                "adx": regime.get("adx", 0.0),
+            }
+        except Exception:
+            return {"state": "UNKNOWN", "hurst": 0.5, "adx": 0.0}
 
-    # --- ASM state ---
-    is_active = False
-    try:
-        is_active = (await r.get("karsa:auto:state:active")) == "1"
-    except Exception: pass
+    async def _fetch_movers():
+        t = time.monotonic()
+        try:
+            from src.advisory.crypto_market_watch import CryptoMarketWatchEngine
+            movers = await CryptoMarketWatchEngine.get_top_movers(orch.mcp)
+            logger.info("fetch_movers_done", ms=int((time.monotonic()-t)*1000))
+            if movers:
+                best = movers[0]
+                return f" • Top: {best.get('symbol', '?')} ({best.get('change_pct', 0):+.1f}%)"
+        except Exception:
+            pass
+        return ""
+
+    async def _fetch_profile():
+        t = time.monotonic()
+        try:
+            if orch and orch.profile_manager:
+                p = await orch.profile_manager.get_active_profile()
+                logger.info("fetch_profile_done", ms=int((time.monotonic()-t)*1000))
+                return f"{p.emoji} {p.name.upper().replace('_', ' ')}"
+        except Exception:
+            pass
+        return ""
+
+    # Execute all fetches in parallel with individual timeouts
+    async def _with_timeout(coro, timeout_sec):
+        try:
+            return await asyncio.wait_for(coro, timeout=timeout_sec)
+        except (asyncio.TimeoutError, Exception):
+            return None
+
+    results = await asyncio.gather(
+        _with_timeout(_fetch_redis(), 2),
+        _with_timeout(_fetch_db(), 2),
+        _with_timeout(_fetch_wallet(), 3),
+        _with_timeout(_fetch_regime(), 5),
+        _with_timeout(_fetch_movers(), 5),
+        _with_timeout(_fetch_profile(), 2),
+    )
+
+    logger.info("dashboard_parallel_fetch_total", ms=int((time.monotonic()-t0)*1000))
+
+    redis_data = results[0] if isinstance(results[0], dict) else {"redis_ok": False, "halt_active": False, "is_active": False}
+    db_ok = results[1] if isinstance(results[1], bool) else False
+    wallet_data = results[2] if isinstance(results[2], dict) else {"wallet": {}, "ok": False}
+    regime_data = results[3] if isinstance(results[3], dict) else {"state": "UNKNOWN", "hurst": 0.5, "adx": 0.0}
+    top_mover_str = results[4] if isinstance(results[4], str) else ""
+    profile_str = results[5] if isinstance(results[5], str) else ""
+
+    redis_ok = redis_data.get("redis_ok", False)
+    halt_active = redis_data.get("halt_active", False)
+    is_active = redis_data.get("is_active", False)
+    bybit_ok = wallet_data.get("ok", False)
+    wallet = wallet_data.get("wallet", {})
+    regime_state = regime_data.get("state", "UNKNOWN")
 
     system_online = all([redis_ok, bybit_ok, db_ok])
     sys_icon = "🟢" if system_online else "🔴"
@@ -1099,18 +1146,12 @@ async def _asm_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton(format_risk_button_text(10, wallet_balance), callback_data="auto_start_10"),
              InlineKeyboardButton(format_risk_button_text(30, wallet_balance), callback_data="auto_start_30")],
             [InlineKeyboardButton(format_risk_button_text(50, wallet_balance), callback_data="auto_start_50"),
-             InlineKeyboardButton(format_risk_button_text(100, wallet_balance), callback_data="auto_start_100")],
-            [InlineKeyboardButton("⏰ Duration:", callback_data="noop")],
-            [InlineKeyboardButton("1h", callback_data="auto_dur_60"),
-             InlineKeyboardButton("4h", callback_data="auto_dur_240"),
-             InlineKeyboardButton("8h", callback_data="auto_dur_480")],
-            [InlineKeyboardButton("12h", callback_data="auto_dur_720"),
-             InlineKeyboardButton("24h", callback_data="auto_dur_1440"),
-             InlineKeyboardButton("♾️ Unlimited", callback_data="auto_dur_0")],
+             InlineKeyboardButton(format_risk_button_text(70, wallet_balance), callback_data="auto_start_70")],
+            [InlineKeyboardButton(format_risk_button_text(100, wallet_balance), callback_data="auto_start_100")],
             [InlineKeyboardButton("❌ Cancel", callback_data="cmd_dashboard")]
         ]
 
-    await _reply(update, status_text, reply_markup=InlineKeyboardMarkup(keyboard))
+    await _reply(update, HTML(status_text), reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 async def _auto_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1158,7 +1199,13 @@ async def _auto_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     asm = AutonomousSessionManager(orch, r, bybit)
     result = await asm.stop()
 
-    await _reply(update, HTML(result), reply_markup=build_main_keyboard())
+    # After session stops, show launch screen
+    keyboard = [
+        [InlineKeyboardButton("🚀 LAUNCH NEW SESSION", callback_data="auto_launch")],
+        [InlineKeyboardButton("📜 Trade History", callback_data="cmd_trade_history"),
+         InlineKeyboardButton("⚙️ Settings", callback_data="cmd_settings")],
+    ]
+    await _reply(update, HTML(result), reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 async def _auto_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1239,7 +1286,7 @@ async def clear_halt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- View Positions with Move SL to BE (P3.3) ---
 
 async def view_positions_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Detailed position view with Move SL to BE buttons."""
+    """Detailed position view with Move SL to BE buttons and position proportions."""
     if not _is_authorized(update): return
 
     bybit = _get_bybit(context)
@@ -1250,6 +1297,14 @@ async def view_positions_detail_cmd(update: Update, context: ContextTypes.DEFAUL
     except Exception:
         pass
 
+    # Get wallet balance for proportion calculation
+    total_equity = 0.0
+    try:
+        wallet = await bybit.get_wallet_balance()
+        total_equity = float(wallet.get("balance", 0) or 0)
+    except Exception:
+        pass
+
     from src.utils.formatters import format_position_card
 
     lines = [
@@ -1257,13 +1312,34 @@ async def view_positions_detail_cmd(update: Update, context: ContextTypes.DEFAUL
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "\n",
     ]
 
+    # Calculate total position value and cash
+    total_position_value = 0.0
+    position_values = []
+    for p in positions:
+        entry = float(p.get("entry_price", 0) or 0)
+        size = float(p.get("size", 0) or 0)
+        pos_value = entry * size
+        total_position_value += pos_value
+        position_values.append(pos_value)
+
+    cash = total_equity - total_position_value if total_equity > 0 else 0
+    cash_pct = (cash / total_equity * 100) if total_equity > 0 else 0
+
+    # Show allocation summary
+    if total_equity > 0 and positions:
+        lines.append(bold("💰 ALLOCATION"))
+        lines.append(f"Equity: ${total_equity:,.2f} | Cash: ${cash:,.2f} ({cash_pct:.1f}%)")
+        lines.append(f"Positions: {len(positions)} | Deployed: ${total_position_value:,.2f} ({100-cash_pct:.1f}%)")
+        lines.append("")
+
     keyboard = []
 
     if not positions:
         lines.append("No open positions.")
     else:
-        for i, p in enumerate(positions, 1):
-            card = format_position_card(p, index=i)
+        for i, (p, pos_val) in enumerate(zip(positions, position_values), 1):
+            pos_pct = (pos_val / total_equity * 100) if total_equity > 0 else 0
+            card = format_position_card(p, index=i, pos_pct=pos_pct)
             lines.append(card)
             lines.append("")
 

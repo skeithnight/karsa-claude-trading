@@ -91,6 +91,154 @@ async def lifespan(app: FastAPI):
     app.state.redis_client = redis_client
     app.state.telegram_app = telegram_app
 
+    # Connection health monitor — sends Telegram alerts on failures
+    async def _connection_health_loop():
+        """Check critical connections every 60s, alert on failures.
+
+        Classifies errors as FATAL (config/code bug) vs TRANSIENT (network blip).
+        Fatal errors show "manual fix required" — no misleading "retry in 60s".
+        """
+        import asyncio
+        from datetime import datetime
+        from src.utils.error_classification import classify_error, ErrorSeverity
+
+        chat_id = int(settings.TELEGRAM_CHAT_ID) if settings.TELEGRAM_CHAT_ID else 0
+        if not chat_id:
+            return
+
+        # Track last alert time to avoid spam (min 5 min between same alerts)
+        last_alerts = {}
+
+        while True:
+            await asyncio.sleep(60)
+            now = datetime.now()
+            fatal_checks = []   # (service, description)
+            transient_checks = []  # (service, description)
+
+            # 1. Redis check
+            try:
+                await redis_client.ping()
+            except Exception as e:
+                sev = classify_error(e)
+                entry = ("🔴 Redis", str(e)[:50])
+                if sev == ErrorSeverity.FATAL:
+                    fatal_checks.append(entry)
+                else:
+                    transient_checks.append(entry)
+
+            # 2. Bybit check
+            try:
+                from src.data.bybit_client import BybitClient
+                bybit = BybitClient(cache)
+                await bybit._throttle()
+                import asyncio as _aio
+                resp = await _aio.to_thread(bybit._http_client.get_server_time)
+                if resp.get("retCode") != 0:
+                    sev = classify_error(Exception(resp.get("retMsg", "")))
+                    entry = ("🔴 Bybit API", resp.get("retMsg", "unknown error"))
+                    if sev == ErrorSeverity.FATAL:
+                        fatal_checks.append(entry)
+                    else:
+                        transient_checks.append(entry)
+                # pybit HTTP uses requests (sync) — no async cleanup needed
+            except Exception as e:
+                sev = classify_error(e)
+                entry = ("🔴 Bybit API", str(e)[:50])
+                if sev == ErrorSeverity.FATAL:
+                    fatal_checks.append(entry)
+                else:
+                    transient_checks.append(entry)
+
+            # 3. 9Router/LLM check — any HTTP response = reachable; only flag connection errors
+            try:
+                import httpx
+                headers = {}
+                if settings.NROUTER_AUTH_TOKEN:
+                    headers["Authorization"] = f"Bearer {settings.NROUTER_AUTH_TOKEN}"
+                async with httpx.AsyncClient(timeout=5) as client:
+                    resp = await client.get(f"{settings.NROUTER_BASE_URL}/health", headers=headers)
+                    # 200/404 both mean9Router is reachable (404 = no health endpoint, that's OK)
+                    if resp.status_code not in (200, 404):
+                        sev = classify_error(Exception(f"HTTP {resp.status_code}"), status_code=resp.status_code)
+                        entry = ("🔴 9Router/LLM", f"status {resp.status_code}")
+                        if sev == ErrorSeverity.FATAL:
+                            fatal_checks.append(entry)
+                        else:
+                            transient_checks.append(entry)
+            except Exception as e:
+                sev = classify_error(e)
+                entry = ("🔴 9Router/LLM", str(e)[:50])
+                if sev == ErrorSeverity.FATAL:
+                    fatal_checks.append(entry)
+                else:
+                    transient_checks.append(entry)
+
+            # 4. Postgres check
+            try:
+                from src.models.database import async_session
+                from sqlalchemy import text
+                async with async_session() as session:
+                    await session.execute(text("SELECT 1"))
+            except Exception as e:
+                sev = classify_error(e)
+                entry = ("🔴 Postgres", str(e)[:50])
+                if sev == ErrorSeverity.FATAL:
+                    fatal_checks.append(entry)
+                else:
+                    transient_checks.append(entry)
+
+            all_checks = fatal_checks + transient_checks
+
+            # Send alert if any failures
+            if all_checks:
+                # Throttle: min 5 min between same service alerts
+                alert_key = "|".join(sorted(c[0] for c in all_checks))
+                if alert_key in last_alerts:
+                    if (now - last_alerts[alert_key]).seconds < 300:
+                        continue
+
+                lines = [f"🚨 <b>Connection Alert</b> — {now.strftime('%H:%M')}\n"]
+
+                if fatal_checks:
+                    lines.append("🛑 <b>FATAL — Manual Fix Required:</b>")
+                    for service, err in fatal_checks:
+                        lines.append(f"  {service}: {err}")
+                    lines.append("")
+
+                if transient_checks:
+                    lines.append("⚠️ <b>Transient — Auto-Retrying:</b>")
+                    for service, err in transient_checks:
+                        lines.append(f"  {service}: {err}")
+                    lines.append("")
+                    lines.append("⏳ Will retry in 60s...")
+                else:
+                    lines.append("🛑 Bot cannot auto-recover. Check .env and restart.")
+
+                try:
+                    await telegram_app.bot.send_message(
+                        chat_id=chat_id,
+                        text="\n".join(lines),
+                        parse_mode="HTML"
+                    )
+                    last_alerts[alert_key] = now
+                except Exception:
+                    pass
+
+            # Send recovery alert if previously down and now all ok
+            elif last_alerts:
+                try:
+                    await telegram_app.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"✅ <b>All connections restored</b> — {now.strftime('%H:%M')}",
+                        parse_mode="HTML"
+                    )
+                    last_alerts.clear()
+                except Exception:
+                    pass
+
+    asyncio.create_task(_connection_health_loop())
+    logger.info("connection_health_monitor_started")
+
     # Wire high-frequency risk monitor (P0 — decoupled from scan loop)
     try:
         from src.risk.risk_monitor import HighFrequencyRiskMonitor

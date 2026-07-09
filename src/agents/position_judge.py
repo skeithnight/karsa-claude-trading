@@ -175,6 +175,25 @@ class PositionJudge(BaseAgent):
         record_tier_used("cheap")
         start_time = time.time()
 
+        # Phase 1D: Programmatic consecutive-hold enforcement
+        # Force EXIT if 3+ consecutive holds on a losing position
+        consecutive_holds = position_data.get("consecutive_holds", 0)
+        gain_pct = position_data.get("gain_pct", 0)
+        if consecutive_holds >= 3 and gain_pct < 0:
+            logger.warning("forced_exit_consecutive_holds",
+                           ticker=position_data.get("ticker"),
+                           consecutive_holds=consecutive_holds,
+                           gain_pct=gain_pct)
+            record_judge_latency("cheap", time.time() - start_time)
+            record_ai_decision("EXIT")
+            record_confidence_score(90)
+            return {
+                "action": "EXIT",
+                "confidence": 90,
+                "reason": f"Programmatic forced exit: {consecutive_holds} consecutive holds on losing position ({gain_pct:+.1f}%)",
+                "new_stop_pct": None,
+            }
+
         task = self._build_task(position_data, escalated=False)
         result = await self.run(task)
         judgment = self._normalize_result(result, position_data)

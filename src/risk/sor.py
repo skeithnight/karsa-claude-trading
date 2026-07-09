@@ -147,12 +147,17 @@ class SmartOrderRouter:
                 if limit_price and limit_price > 0:
                     slippage_bps = abs(actual_fill - limit_price) / limit_price * 10000
                     record_slippage(ticker, direction, slippage_bps)
+
+                # Calculate trading fee (Bybit taker fee: 0.055%)
+                TAKER_FEE_PCT = 0.055
+                fee_usd = actual_fill * qty * TAKER_FEE_PCT / 100 if actual_fill and qty else 0
+
                 await self._track_order(order_id, ticker, direction, qty,
                                         fill_result.get("fill_price", limit_price), "Filled")
                 return {
                     "success": True, "order_id": order_id,
                     "fill_price": fill_result.get("fill_price", limit_price),
-                    "qty": qty, **sl_tp,
+                    "qty": qty, "fee_usd": round(fee_usd, 6), **sl_tp,
                 }
 
             await self.bybit.cancel_order(ticker, order_id)
@@ -194,10 +199,16 @@ class SmartOrderRouter:
         sl_tp = {}
         if stop_loss and take_profit:
             sl_tp = await self._place_sl_tp(ticker, bybit_side, qty, stop_loss, take_profit)
+
+        # Calculate trading fee (Bybit taker fee: 0.055%)
+        TAKER_FEE_PCT = 0.055
+        fee_usd = float(fill_price) * qty * TAKER_FEE_PCT / 100 if fill_price and qty else 0
+
         record_order_fill(ticker, "market", direction)
         await self._track_order(order_id, ticker, direction, qty, fill_price, "Filled")
         return {"success": True, "order_id": order_id,
-                "fill_price": fill_price, "qty": qty, "order_type": "market", **sl_tp}
+                "fill_price": fill_price, "qty": qty, "fee_usd": round(fee_usd, 6),
+                "order_type": "market", **sl_tp}
 
     async def _place_sl_tp(self, ticker: str, entry_side: str, qty: float, stop_loss: float, take_profit: float) -> dict:
         sl_result = await self.bybit.set_stop_loss(ticker, stop_loss, entry_side)
@@ -322,3 +333,140 @@ class SmartOrderRouter:
                 closed.append(ticker)
                 logger.info("position_closed", ticker=ticker, size=size)
         return {"closed": closed, "count": len(closed)}
+
+    # --- Iceberg Orders (Phase 6A) ---
+
+    ICEBERG_THRESHOLD_USD = 10000  # Split orders above $10k
+    ICEBERG_SLICES = 4            # Number of slices
+
+    async def execute_iceberg_order(self, ticker: str, direction: str, qty: float,
+                                     stop_loss: float, take_profit: float,
+                                     leverage: int = 1) -> dict:
+        """Execute large order as iceberg (split into multiple slices).
+
+        Splits total qty into ICEBERG_SLICES limit orders at incrementally worse prices.
+        Each slice waits for fill before placing the next.
+        """
+        slice_qty = qty / self.ICEBERG_SLICES
+        slice_qty = await self._round_qty(ticker, slice_qty)
+        if slice_qty <= 0:
+            return await self.execute_order(
+                {"ticker": ticker, "direction": direction, "entry_price": 0},
+                {"qty": qty, "stop_loss": stop_loss, "take_profit": take_profit, "leverage": leverage},
+            )
+
+        filled_qty = 0
+        avg_price = 0
+        bybit_side = "Buy" if direction == "LONG" else "Sell"
+
+        orderbook = await self.bybit.get_orderbook(ticker, limit=10)
+        if orderbook.get("error"):
+            return await self._market_order(ticker, direction, qty, stop_loss, take_profit)
+
+        base_price = float(orderbook["bids"][0][0] if direction == "LONG" else orderbook["asks"][0][0])
+        tick_size = 0.01  # simplified; in prod fetch from instruments
+
+        for i in range(self.ICEBERG_SLICES):
+            # Incrementally worse price for each slice
+            offset = tick_size * (i + 1)
+            if direction == "LONG":
+                slice_price = base_price - offset
+            else:
+                slice_price = base_price + offset
+
+            result = await self.bybit.place_order(
+                symbol=ticker, side=bybit_side, qty=slice_qty,
+                order_type="Limit", price=slice_price, time_in_force="PostOnly",
+            )
+            if result.get("error"):
+                logger.warning("iceberg_slice_failed", slice=i, error=result["error"])
+                continue
+
+            order_id = result.get("order_id")
+            fill = await self._wait_for_fill(ticker, order_id, LIMIT_TIMEOUT_SEC)
+            if fill.get("filled"):
+                fill_price = float(fill["fill_price"])
+                avg_price = (avg_price * filled_qty + fill_price * slice_qty) / (filled_qty + slice_qty) if filled_qty > 0 else fill_price
+                filled_qty += slice_qty
+            else:
+                await self.bybit.cancel_order(ticker, order_id)
+
+        if filled_qty <= 0:
+            return {"success": False, "error": "No iceberg slices filled"}
+
+        # Place SL/TP on filled quantity
+        sl_tp = {}
+        if stop_loss and take_profit:
+            sl_tp = await self._place_sl_tp(ticker, bybit_side, filled_qty, stop_loss, take_profit)
+
+        TAKER_FEE_PCT = 0.055
+        fee_usd = avg_price * filled_qty * TAKER_FEE_PCT / 100
+
+        return {
+            "success": True, "fill_price": round(avg_price, 4),
+            "qty": filled_qty, "fee_usd": round(fee_usd, 6),
+            "iceberg_slices": self.ICEBERG_SLICES, **sl_tp,
+        }
+
+    # --- TWAP Execution (Phase 6B) ---
+
+    TWAP_THRESHOLD_USD = 5000   # Use TWAP for orders above $5k
+    TWAP_DURATION_SEC = 1800    # Spread over 30 minutes
+    TWAP_SLICES = 6             # 6 slices over 30 min = 5 min each
+
+    async def execute_twap_order(self, ticker: str, direction: str, qty: float,
+                                   stop_loss: float, take_profit: float,
+                                   leverage: int = 1) -> dict:
+        """Execute order using TWAP (Time-Weighted Average Price).
+
+        Splits total qty into TWAP_SLICES equal parts over TWAP_DURATION_SEC.
+        """
+        slice_qty = qty / self.TWAP_SLICES
+        slice_qty = await self._round_qty(ticker, slice_qty)
+        if slice_qty <= 0:
+            return await self.execute_order(
+                {"ticker": ticker, "direction": direction, "entry_price": 0},
+                {"qty": qty, "stop_loss": stop_loss, "take_profit": take_profit, "leverage": leverage},
+            )
+
+        filled_qty = 0
+        avg_price = 0
+        bybit_side = "Buy" if direction == "LONG" else "Sell"
+        interval = self.TWAP_DURATION_SEC // self.TWAP_SLICES
+
+        for i in range(self.TWAP_SLICES):
+            if i > 0:
+                await asyncio.sleep(interval)
+
+            # Use current market price for each slice
+            result = await self.bybit.place_order(
+                symbol=ticker, side=bybit_side, qty=slice_qty,
+                order_type="Market", reduce_only=False,
+            )
+            if result.get("error"):
+                logger.warning("twap_slice_failed", slice=i, error=result["error"])
+                continue
+
+            order_id = result.get("order_id")
+            await asyncio.sleep(1)
+            status = await self.bybit.get_order_status(ticker, order_id)
+            fill_price = float(status.get("avg_price", 0))
+            if fill_price > 0:
+                avg_price = (avg_price * filled_qty + fill_price * slice_qty) / (filled_qty + slice_qty) if filled_qty > 0 else fill_price
+                filled_qty += slice_qty
+
+        if filled_qty <= 0:
+            return {"success": False, "error": "No TWAP slices filled"}
+
+        sl_tp = {}
+        if stop_loss and take_profit:
+            sl_tp = await self._place_sl_tp(ticker, bybit_side, filled_qty, stop_loss, take_profit)
+
+        TAKER_FEE_PCT = 0.055
+        fee_usd = avg_price * filled_qty * TAKER_FEE_PCT / 100
+
+        return {
+            "success": True, "fill_price": round(avg_price, 4),
+            "qty": filled_qty, "fee_usd": round(fee_usd, 6),
+            "twap_slices": self.TWAP_SLICES, **sl_tp,
+        }

@@ -660,6 +660,24 @@ TRADE_DETAIL = Gauge(
     "Detailed trade record for table display",
     ["ticker", "exit_price", "result", "closed_time"])
 
+# --- Fee Tracking Metrics (Phase 4) ---
+
+TRADING_FEES_USD = Gauge(
+    "karsa_trading_fees_usd",
+    "Cumulative trading fees in USD per ticker",
+    ["ticker"])
+
+TRADE_FEE_PER_TRADE = Histogram(
+    "karsa_trade_fee_usd",
+    "Fee per trade in USD",
+    ["ticker", "side"],
+    buckets=[0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0, 50.0])
+
+NET_ROI_PCT = Gauge(
+    "karsa_net_roi_pct",
+    "Net ROI after fees as percentage",
+    ["ticker"])
+
 
 def update_wallet_metrics(total_equity: float, available: float, used_margin: float):
     """Update wallet gauges. Call from ASM loop or bot dashboard."""
@@ -692,6 +710,17 @@ def record_trade_close(pnl: float, result: str, ticker: str = "", exit_price: fl
             result=result,
             closed_time=closed_time,
         ).set(1)
+
+
+def record_trading_fee(ticker: str, side: str, fee_usd: float):
+    """Record a trading fee for a single trade."""
+    TRADE_FEE_PER_TRADE.labels(ticker=ticker, side=side).observe(fee_usd)
+    TRADING_FEES_USD.labels(ticker=ticker).set(fee_usd)
+
+
+def update_net_roi(ticker: str, net_roi_pct: float):
+    """Update net ROI after fees for a ticker."""
+    NET_ROI_PCT.labels(ticker=ticker).set(net_roi_pct)
 
 
 # ============================================================

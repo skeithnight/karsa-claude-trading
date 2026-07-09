@@ -303,9 +303,10 @@ class AutonomousSessionManager:
             unrealized_pnl += pnl
             emoji = "🟢" if pnl >= 0 else "🔴"
             side = "L" if p.get("side") == "Buy" else "S"
+            symbol = p.get("symbol", "?")
+            # Format as plain text (not raw HTML tags)
             pos_lines.append(
-                f"  {emoji} <code>{p.get('symbol', '?')}</code> {side} "
-                f"| uPnL: <code>${pnl:+,.2f}</code>"
+                f"  {emoji} {symbol} {side} | uPnL: ${pnl:+,.2f}"
             )
 
         # Regime
@@ -1078,9 +1079,13 @@ class AutonomousSessionManager:
         realized = await self._get_session_realized_pnl()
         unrealized = 0.0
         try:
-            positions = await self.bybit.get_open_positions()
-            for p in positions:
-                unrealized += float(p.get("unrealised_pnl", 0))
+            positions = await self.bybit.get_positions()
+            for p in (positions or []):
+                size = float(p.get("size", 0) or 0)
+                if size <= 0:
+                    continue
+                # Support both spellings from Bybit (unrealized_pnl) and DB (unrealised_pnl)
+                unrealized += float(p.get("unrealized_pnl", 0) or p.get("unrealised_pnl", 0) or 0)
         except Exception:
             pass
         return realized, unrealized
