@@ -31,7 +31,7 @@ from src.models.database import async_session
 from src.models.tables import CryptoPosition, CryptoReconciliationLog
 from src.metrics.crypto_metrics import record_reconciliation_ghost
 from src.utils.logging import get_logger
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, and_
 
 logger = get_logger("position_sync")
 
@@ -337,37 +337,45 @@ class PositionReconciler:
             tp_price = Decimal(str(tp_raw)) if tp_raw and float(tp_raw) > 0 else None
 
             async with async_session() as session:
-                # UPSERT: insert or update if position already exists
-                from sqlalchemy.dialects.postgresql import insert as pg_insert
-                stmt = pg_insert(CryptoPosition).values(
-                    ticker=symbol,
-                    side=side,
-                    size=size,
-                    entry_price=entry_price,
-                    current_price=mark_price,
-                    leverage=leverage,
-                    margin_mode=exch_pos.get("marginMode", "isolated"),
-                    unrealized_pnl=Decimal(str(exch_pos.get("unrealisedPnl", 0))),
-                    stop_loss=sl_price,
-                    take_profit=tp_price,
-                    trailing_stop_price=sl_price,
-                    highest_price=max(entry_price, mark_price),
-                    status="OPEN",
-                    opened_at=datetime.utcnow(),
-                    last_synced_at=datetime.utcnow(),
-                ).on_conflict_do_update(
-                    index_elements=["ticker", "side"],
-                    index_where=CryptoPosition.status == "OPEN",
-                    set_={
-                        "size": size,
-                        "current_price": mark_price,
-                        "unrealized_pnl": Decimal(str(exch_pos.get("unrealisedPnl", 0))),
-                        "stop_loss": sl_price,
-                        "take_profit": tp_price,
-                        "last_synced_at": datetime.utcnow(),
-                    },
+                # ponytail: ON CONFLICT requires a UNIQUE constraint that
+                # doesn't exist on (ticker, side).  SELECT-then-INSERT/UPDATE
+                # is the lazy fix — add a unique partial index when perf matters.
+                existing = await session.execute(
+                    select(CryptoPosition).where(
+                        and_(
+                            CryptoPosition.ticker == symbol,
+                            CryptoPosition.side == side,
+                            CryptoPosition.status == "OPEN",
+                        )
+                    )
                 )
-                await session.execute(stmt)
+                pos = existing.scalar_one_or_none()
+                now = datetime.utcnow()
+                if pos:
+                    pos.size = size
+                    pos.current_price = mark_price
+                    pos.unrealized_pnl = Decimal(str(exch_pos.get("unrealisedPnl", 0)))
+                    pos.stop_loss = sl_price
+                    pos.take_profit = tp_price
+                    pos.last_synced_at = now
+                else:
+                    session.add(CryptoPosition(
+                        ticker=symbol,
+                        side=side,
+                        size=size,
+                        entry_price=entry_price,
+                        current_price=mark_price,
+                        leverage=leverage,
+                        margin_mode=exch_pos.get("marginMode", "isolated"),
+                        unrealized_pnl=Decimal(str(exch_pos.get("unrealisedPnl", 0))),
+                        stop_loss=sl_price,
+                        take_profit=tp_price,
+                        trailing_stop_price=sl_price,
+                        highest_price=max(entry_price, mark_price),
+                        status="OPEN",
+                        opened_at=now,
+                        last_synced_at=now,
+                    ))
 
                 session.add(CryptoReconciliationLog(
                     position_id=db_pos.id,

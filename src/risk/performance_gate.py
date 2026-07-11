@@ -48,6 +48,11 @@ from enum import Enum
 from typing import Any
 
 from src.utils.logging import get_logger
+
+# ponytail: record_asm_checkpoint was referenced but never defined.
+# Stub — add Prometheus metric wiring here when ready.
+def record_asm_checkpoint(ticker: str, action: str) -> None:
+    pass
 from src.metrics.crypto_metrics import (
     update_dynamic_stop_active,
     record_drawdown_trigger,

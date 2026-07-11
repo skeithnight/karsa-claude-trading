@@ -62,10 +62,12 @@ class NotificationRouter:
             reply_markup: Optional Telegram InlineKeyboardMarkup.
         """
         # Always log for Grafana/Loki
+        # ponytail: stdlib logging.Logger._log() rejects unknown kwargs.
+        # Embed category in message string instead.
         logger.info(
-            "notification",
-            category=category,
-            message_preview=message[:120],
+            "notification category=%s %s",
+            category.value,
+            message[:120],
         )
 
         # Decide whether to send to Telegram

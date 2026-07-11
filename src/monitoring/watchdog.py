@@ -482,21 +482,30 @@ class ServiceWatchdog:
             return HealthSignal("warp_proxy", False, 0, str(e)[:80])
 
     async def _check_pool_leak(self) -> HealthSignal:
-        """Check for DB pool overflow leak (negative overflow = double-returns)."""
-        # Startup grace: skip first 2 cycles — fresh engine may report stale stats
+        """Check DB pool health via actual Postgres idle connection count.
+
+        ponytail: pool.overflow() < 0 is NORMAL — means fewer checked-out
+        connections than pool_size.  Use actual pg_stat_activity count instead.
+        """
         self._check_cycle += 1
         if self._check_cycle <= 2:
             return HealthSignal("pool_leak", True, 100, "startup_grace")
         try:
-            from src.models.database import get_engine
-            engine = get_engine()
-            pool = engine.pool
-            overflow = pool.overflow()
-            if overflow < 0:
-                # Pool leak detected — trigger auto-fix
-                logger.warning("watchdog_pool_leak_detected", overflow=overflow)
-                return HealthSignal("pool_leak", False, 0, f"overflow={overflow}")
-            return HealthSignal("pool_leak", True, 100, f"overflow={overflow}")
+            from src.models.database import get_health_engine, _POOL_SIZE, _MAX_OVERFLOW
+            from sqlalchemy import text
+            health = get_health_engine()
+            async with health.connect() as conn:
+                result = await conn.execute(text(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE datname = current_database() "
+                    "AND state IN ('idle', 'idle in transaction')"
+                ))
+                idle = result.scalar() or 0
+                expected_max = _POOL_SIZE + _MAX_OVERFLOW
+                if idle > expected_max + 3:
+                    logger.warning("watchdog_pool_leak_detected", idle=idle, expected=expected_max)
+                    return HealthSignal("pool_leak", False, 0, f"idle={idle}")
+            return HealthSignal("pool_leak", True, 100, f"idle={idle}")
         except Exception as e:
             return HealthSignal("pool_leak", True, 50, str(e)[:80])
 
