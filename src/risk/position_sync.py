@@ -29,6 +29,7 @@ from typing import Optional
 
 from src.models.database import async_session
 from src.models.tables import CryptoPosition, CryptoReconciliationLog
+from src.metrics.crypto_metrics import record_reconciliation_ghost
 from src.utils.logging import get_logger
 from sqlalchemy import select, desc
 
@@ -96,6 +97,8 @@ class PositionReconciler:
 
             if drifts:
                 logger.warning("reconciliation_drifts_detected", count=len(drifts))
+                for _ in drifts:
+                    record_reconciliation_ghost()
                 for d in drifts:
                     logger.warning("drift_detail", **d)
 
@@ -258,7 +261,9 @@ class PositionReconciler:
             tp_price = Decimal(str(tp_raw)) if tp_raw and float(tp_raw) > 0 else None
 
             async with async_session() as session:
-                session.add(CryptoPosition(
+                # UPSERT: insert or update if position already exists
+                from sqlalchemy.dialects.postgresql import insert as pg_insert
+                stmt = pg_insert(CryptoPosition).values(
                     ticker=symbol,
                     side=side,
                     size=size,
@@ -270,12 +275,24 @@ class PositionReconciler:
                     unrealized_pnl=Decimal(str(exch_pos.get("unrealisedPnl", 0))),
                     stop_loss=sl_price,
                     take_profit=tp_price,
-                    trailing_stop_price=sl_price,  # SL = initial trailing baseline
+                    trailing_stop_price=sl_price,
                     highest_price=max(entry_price, mark_price),
                     status="OPEN",
                     opened_at=datetime.utcnow(),
                     last_synced_at=datetime.utcnow(),
-                ))
+                ).on_conflict_do_update(
+                    index_elements=["ticker", "side"],
+                    index_where=CryptoPosition.status == "OPEN",
+                    set_={
+                        "size": size,
+                        "current_price": mark_price,
+                        "unrealized_pnl": Decimal(str(exch_pos.get("unrealisedPnl", 0))),
+                        "stop_loss": sl_price,
+                        "take_profit": tp_price,
+                        "last_synced_at": datetime.utcnow(),
+                    },
+                )
+                await session.execute(stmt)
 
                 session.add(CryptoReconciliationLog(
                     drift_type="MISSING",
@@ -320,7 +337,9 @@ class PositionReconciler:
             tp_price = Decimal(str(tp_raw)) if tp_raw and float(tp_raw) > 0 else None
 
             async with async_session() as session:
-                session.add(CryptoPosition(
+                # UPSERT: insert or update if position already exists
+                from sqlalchemy.dialects.postgresql import insert as pg_insert
+                stmt = pg_insert(CryptoPosition).values(
                     ticker=symbol,
                     side=side,
                     size=size,
@@ -336,11 +355,23 @@ class PositionReconciler:
                     status="OPEN",
                     opened_at=datetime.utcnow(),
                     last_synced_at=datetime.utcnow(),
-                ))
+                ).on_conflict_do_update(
+                    index_elements=["ticker", "side"],
+                    index_where=CryptoPosition.status == "OPEN",
+                    set_={
+                        "size": size,
+                        "current_price": mark_price,
+                        "unrealized_pnl": Decimal(str(exch_pos.get("unrealisedPnl", 0))),
+                        "stop_loss": sl_price,
+                        "take_profit": tp_price,
+                        "last_synced_at": datetime.utcnow(),
+                    },
+                )
+                await session.execute(stmt)
 
                 session.add(CryptoReconciliationLog(
                     position_id=db_pos.id,
-                    drift_type="MISSING",
+                    drift_type="STALE_CLOSED",
                     exchange_state={"symbol": symbol, "side": side, "size": str(size)},
                     db_state={"status": db_pos.status, "id": db_pos.id},
                     resolution="reopened_from_exchange",

@@ -11,6 +11,9 @@ Shares the same Redis, Postgres, and 9router as the main orchestrator.
 Health endpoint on port 8001 (main orchestrator uses 8000).
 """
 
+# asyncpg monkey-patch is applied in src/models/database.py at import time.
+# Do NOT duplicate it here — see docs/DATABASE_AUDIT.md Finding 1.
+
 import asyncio
 import os
 import signal
@@ -250,6 +253,16 @@ class CryptoKarsaApp:
             name="Crypto Market Scan (Startup)"
         )
 
+        # Service watchdog — monitors health with graduated recovery
+        try:
+            from src.monitoring.watchdog import ServiceWatchdog
+            chat_id = int(settings.TELEGRAM_CHAT_ID) if settings.TELEGRAM_CHAT_ID else 0
+            self.watchdog = ServiceWatchdog(self.redis_client, "orchestrator", chat_id)
+            asyncio.create_task(self.watchdog.start())
+            logger.info("watchdog_started")
+        except Exception as e:
+            logger.warning("watchdog_setup_failed", error=str(e))
+
         self._register_health_routes()
         global karsa_app
         karsa_app = self
@@ -262,21 +275,22 @@ class CryptoKarsaApp:
             pool_healthy = True
             try:
                 from sqlalchemy import text
-                from src.models.database import get_engine
-                engine = get_engine()
+                from src.models.database import (
+                    get_engine, pool_reset, _get_or_create_engine
+                )
+
+                # Ensure engine exists (may have been reset since last check)
+                engine = await _get_or_create_engine()
                 pool = engine.pool
 
-                # Check for negative overflow (connection leak)
-                if pool.overflow() < 0:
-                    logger.warning("health_check_pool_leak overflow=%d — forcing dispose", pool.overflow())
-                    await engine.dispose()
-                    import src.models.database as db_module
-                    db_module._engine = None
-                    db_module._session_factory = None
-                    pool_healthy = False
+                # ponytail: pool.overflow() < 0 is NORMAL — it just means
+                # fewer connections checked out than pool_size.  The old check
+                # was triggering pool_reset() on every health check, destroying
+                # the engine and cascading errors.  Removed.
 
                 async with async_session() as session:
                     await session.execute(text("SELECT 1"))
+                    await session.commit()
                     db_ok = True
             except Exception:
                 pass
@@ -394,6 +408,9 @@ class CryptoKarsaApp:
         except Exception as e:
             JOB_ERRORS.labels(job_id="scan_crypto").inc()
             logger.error("crypto_scan_failed", error=str(e))
+        finally:
+            if hasattr(self, 'watchdog'):
+                await self.watchdog.register_heartbeat("scan_crypto")
 
     async def _job_metrics_sync(self):
         """Polls health checks and balances to update Grafana metrics."""
@@ -457,6 +474,8 @@ class CryptoKarsaApp:
 
         JOB_LAST_RUN.labels(job_id="metrics_sync").set(time.time())
         JOB_DURATION.labels(job_id="metrics_sync").observe(time.time() - start)
+        if hasattr(self, 'watchdog'):
+            await self.watchdog.register_heartbeat("metrics_sync")
 
     async def _job_refresh_universe(self):
         start = time.time()
@@ -482,6 +501,9 @@ class CryptoKarsaApp:
             JOB_DURATION.labels(job_id="crypto_monitor").observe(time.time() - start)
         except Exception as e:
             JOB_ERRORS.labels(job_id="crypto_monitor").inc()
+        finally:
+            if hasattr(self, 'watchdog'):
+                await self.watchdog.register_heartbeat("crypto_monitor")
             logger.error("crypto_monitor_failed", error=str(e))
 
     async def _job_sync_crypto_funding(self):
@@ -1144,6 +1166,50 @@ class CryptoKarsaApp:
             JOB_DURATION.labels(job_id="reconciliation").observe(time.time() - start)
             if result:
                 logger.info("reconciliation_done", drifts=result)
+
+            # Count-based health check: alert if DB and exchange position counts diverge
+            try:
+                from src.models.database import async_session
+                from src.models.tables import CryptoPosition
+                from sqlalchemy import select
+                async with async_session() as session:
+                    db_result = await session.execute(
+                        select(CryptoPosition).where(CryptoPosition.status == "OPEN")
+                    )
+                    db_count = len(list(db_result.scalars().all()))
+
+                exchange_positions = await reconciler._get_exchange_positions()
+                exch_count = len(exchange_positions)
+
+                if db_count != exch_count:
+                    logger.warning("position_count_mismatch", db_open=db_count, exchange_open=exch_count)
+                    # Telegram alert for mismatch
+                    try:
+                        import httpx
+                        import logging as _logging
+                        from src.config import settings
+                        _log = _logging.getLogger(__name__)
+                        token = settings.CRYPTO_TELEGRAM_TOKEN or settings.TELEGRAM_TOKEN
+                        chat_id = await self.redis_client.get("karsa:telegram_chat_id")
+                        if token and chat_id:
+                            msg = (
+                                f"⚠️ <b>Position Count Mismatch</b>\n"
+                                f"  DB Open: {db_count}\n"
+                                f"  Exchange Open: {exch_count}\n"
+                                f"  Diff: {db_count - exch_count} phantom/missing"
+                            )
+                            _log.info("notification", category="INFRASTRUCTURE", message_preview=msg[:120])
+                            # No bot object available in orchestrator; send via raw API
+                            async with httpx.AsyncClient(timeout=10) as client:
+                                await client.post(
+                                    f"https://api.telegram.org/bot{token}/sendMessage",
+                                    json={"chat_id": int(chat_id), "text": msg, "parse_mode": "HTML"},
+                                )
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.debug("position_count_check_failed", error=str(e))
+
         except Exception as e:
             JOB_ERRORS.labels(job_id="reconciliation").inc()
             logger.error("reconciliation_job_failed", error=str(e))
@@ -1218,6 +1284,9 @@ class CryptoKarsaApp:
         except Exception as e:
             JOB_ERRORS.labels(job_id="kill_switch").inc()
             logger.error("kill_switch_failed", error=str(e))
+        finally:
+            if hasattr(self, 'watchdog'):
+                await self.watchdog.register_heartbeat("kill_switch")
 
     # DLQ Consumer Job
     async def _job_process_dlq(self):
@@ -1293,7 +1362,9 @@ class CryptoKarsaApp:
                     # Send Telegram alert
                     try:
                         import httpx
+                        import logging as _logging
                         from src.config import settings
+                        _log = _logging.getLogger(__name__)
                         token = settings.CRYPTO_TELEGRAM_TOKEN or settings.TELEGRAM_TOKEN
                         chat_id = await self.redis_client.get("karsa:telegram_chat_id")
                         if token and chat_id:
@@ -1304,6 +1375,8 @@ class CryptoKarsaApp:
                                 f"  <b>Z-Score:</b> {anomaly['zscore']}\n"
                                 f"  <b>Mean:</b> {anomaly['mean']}"
                             )
+                            _log.info("notification", category="RISK_ALERT", message_preview=msg[:120])
+                            # No bot object available in orchestrator; send via raw API
                             async with httpx.AsyncClient(timeout=10) as client:
                                 await client.post(
                                     f"https://api.telegram.org/bot{token}/sendMessage",
@@ -1363,11 +1436,15 @@ class CryptoKarsaApp:
         if hasattr(self, 'ws_manager') and self.ws_manager:
             await self.ws_manager.stop()
         if self.scheduler and self.scheduler.running:
-            self.scheduler.shutdown(wait=False)
+            # Finding 4: wait=True to let in-flight DB jobs complete (5s timeout)
+            self.scheduler.shutdown(wait=True)
         if self.mcp:
             await self.mcp.close()
         if self.redis_client:
             await self.redis_client.close()
+        # Finding 6: close emergency module's separate Redis client
+        from src.risk import emergency as _emergency
+        await _emergency.close()
         await close_db()
         logger.info("shutdown_complete")
 
@@ -1379,19 +1456,14 @@ class CryptoKarsaApp:
 
         logger.info("scheduler_running", jobs=len(self.scheduler.get_jobs()))
 
-        # Run uvicorn in a dedicated thread so APScheduler/LLM jobs
-        # cannot starve the HTTP server of event-loop time.
-        import threading
-
+        # Run uvicorn on the main event loop to prevent cross-loop asyncpg
+        # connection leaks (Finding 4 / P0). The previous threading.Thread
+        # approach created a separate event loop, causing "Future attached
+        # to different loop" errors on every health check.
         config = uvicorn.Config(app, host="0.0.0.0", port=8001, log_level="warning")
         server = uvicorn.Server(config)
-
-        def _run_uvicorn():
-            asyncio.run(server.serve())
-
-        uvicorn_thread = threading.Thread(target=_run_uvicorn, daemon=True, name="uvicorn-server")
-        uvicorn_thread.start()
-        logger.info("uvicorn_thread_started", port=8001)
+        loop.create_task(server.serve())
+        logger.info("uvicorn_task_started", port=8001)
 
         if self.universe_engine:
             loop.create_task(self.universe_engine.listen_profile_changes())

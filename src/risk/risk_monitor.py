@@ -148,21 +148,21 @@ class HighFrequencyRiskMonitor:
             sor = SmartOrderRouter(self.bybit)
             await sor.flatten_all()
 
-            # Notify via Telegram
+            # Notify via Telegram (force=True — emergency always reaches user)
             if self.chat_id:
                 try:
                     from src.main_crypto import telegram_app
+                    from src.notifications.router import NotificationRouter, NotificationCategory
                     if telegram_app and telegram_app.bot:
-                        await telegram_app.bot.send_message(
-                            chat_id=self.chat_id,
-                            text=(
-                                f"🚨 <b>RISK MONITOR EMERGENCY</b>\n"
-                                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                f"Reason: {reason}\n"
-                                f"All positions closed. Global halt active.\n"
-                                f"Use /clear_halt to reset after review."
-                            ),
-                            parse_mode="HTML",
+                        notifier = NotificationRouter(telegram_app.bot, self.chat_id)
+                        await notifier.send(
+                            f"🚨 <b>RISK MONITOR EMERGENCY</b>\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"Reason: {reason}\n"
+                            f"All positions closed. Global halt active.\n"
+                            f"Use /clear_halt to reset after review.",
+                            NotificationCategory.RISK_ALERT,
+                            force=True,
                         )
                 except Exception:
                     pass

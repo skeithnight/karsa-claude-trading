@@ -23,6 +23,11 @@ def _get_redis(context: ContextTypes.DEFAULT_TYPE):
     client = context.bot_data.get("redis_client")
     if client:
         return client
+    # Finding 10: fallback creates a new Redis client per call — log warning
+    import logging
+    logging.getLogger("crypto_handlers").warning(
+        "redis_fallback_client_created — bot_data[redis_client] is None"
+    )
     return redis.from_url(settings.REDIS_URL, decode_responses=True)
 
 def _is_authorized(update: Update) -> bool:
@@ -245,6 +250,7 @@ async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [
             [InlineKeyboardButton("📊 View Positions", callback_data="view_positions_detail"),
              InlineKeyboardButton("🔄 Refresh", callback_data="cmd_dashboard")],
+            [InlineKeyboardButton("📜 Trade History", callback_data="cmd_trade_history")],
             [InlineKeyboardButton("⏸ Pause Session", callback_data="auto_pause"),
              InlineKeyboardButton("🛑 Stop & Close All", callback_data="auto_stop")],
         ]
@@ -1486,64 +1492,71 @@ async def _close_position(update: Update, context: ContextTypes.DEFAULT_TYPE, sy
         await _reply(update, f"❌ Failed to close {symbol}: {e}")
 
 
-# --- Trade History (P3.4) ---
+# --- Trade History (Paginated) ---
+
+async def _fetch_trade_history_page(page: int = 1):
+    """Fetch a page of trades + summary stats. Returns (trades, total, wins, losses, net_pnl)."""
+    from src.models.database import async_session
+    from src.models.tables import ClosedPaperTrade
+    from sqlalchemy import select, desc, func
+
+    PAGE_SIZE = 5
+    offset = (page - 1) * PAGE_SIZE
+
+    async with async_session() as session:
+        # Fetch page slice
+        result = await session.execute(
+            select(ClosedPaperTrade)
+            .where(ClosedPaperTrade.market == "CRYPTO")
+            .order_by(desc(ClosedPaperTrade.exit_date))
+            .limit(PAGE_SIZE)
+            .offset(offset)
+        )
+        trades = result.scalars().all()
+
+        # Count total trades
+        total_result = await session.execute(
+            select(func.count(ClosedPaperTrade.id))
+            .where(ClosedPaperTrade.market == "CRYPTO")
+        )
+        total = total_result.scalar() or 0
+
+        # Count wins (pnl > 0)
+        wins_result = await session.execute(
+            select(func.count(ClosedPaperTrade.id))
+            .where(ClosedPaperTrade.market == "CRYPTO")
+            .where(ClosedPaperTrade.realized_pnl_pct > 0)
+        )
+        wins = wins_result.scalar() or 0
+        losses = total - wins
+
+        # Sum net PnL
+        pnl_result = await session.execute(
+            select(func.sum(ClosedPaperTrade.realized_pnl))
+            .where(ClosedPaperTrade.market == "CRYPTO")
+        )
+        net_pnl = float(pnl_result.scalar() or 0)
+
+    return trades, total, wins, losses, net_pnl
+
 
 async def trade_history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show recent closed trades and session performance."""
+    """Show paginated trade history with Prev/Next navigation."""
     if not _is_authorized(update): return
 
     try:
-        from src.models.database import async_session
-        from src.models.tables import ClosedPaperTrade
-        from sqlalchemy import select, desc
+        from src.utils.formatters.trade_history_formatter import TradeHistoryFormatter
 
-        async with async_session() as session:
-            result = await session.execute(
-                select(ClosedPaperTrade)
-                .where(ClosedPaperTrade.market == "CRYPTO")
-                .order_by(desc(ClosedPaperTrade.exit_date))
-                .limit(15)
-            )
-            trades = result.scalars().all()
+        trades, total, wins, losses, net_pnl = await _fetch_trade_history_page(1)
+        text, keyboard = TradeHistoryFormatter.build_message(trades, 1, total, wins, losses, net_pnl)
 
-        lines = [
-            bold("📜 TRADE HISTORY"), "\n",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "\n",
-        ]
-
-        if not trades:
-            lines.append("No closed trades yet.")
-        else:
-            total_pnl = 0.0
-            wins = 0
-            losses = 0
-            for t in trades:
-                pnl = float(t.realized_pnl_pct or 0)
-                total_pnl += float(t.realized_pnl or 0)
-                if pnl > 0:
-                    wins += 1
-                else:
-                    losses += 1
-                pnl_icon = "🟢" if pnl > 0 else "🔴"
-                side_icon = "⬆️" if t.side == "Buy" else "⬇️"
-                exit_reason = t.exit_reason or "N/A"
-                ts = t.exit_date.strftime("%m-%d %H:%M") if t.exit_date else "?"
-                lines.append(
-                    f"{pnl_icon} {code(ts)} {side_icon} {bold(t.ticker)} "
-                    f"{pnl:+.2f}% | {exit_reason}"
-                )
-
-            win_rate = (wins / max(wins + losses, 1)) * 100
-            lines.append("")
-            lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-            lines.append(bold(f"Summary: {wins}W / {losses}L • WR: {win_rate:.0f}% • Net: ${total_pnl:+,.2f}"))
-
-        keyboard = [[InlineKeyboardButton("🏠 Back to Dashboard", callback_data="cmd_dashboard")]]
-        await send_or_edit_message(update, fmt(*lines, sep="\n"), reply_markup=InlineKeyboardMarkup(keyboard))
+        # parse_mode=None — pure Unicode, immune to AI < > formatting crashes
+        await send_or_edit_message(update, text, reply_markup=keyboard, parse_mode=None)
 
     except Exception as e:
         logger.error("trade_history_failed", error=str(e))
-        await _reply(update, "❌ Trade history load failed.", reply_markup=build_main_keyboard())
+        await _reply(update, "❌ Trade history load failed.", reply_markup=InlineKeyboardMarkup(
+                         [[InlineKeyboardButton("🏠 Back to Dashboard", callback_data="cmd_dashboard")]]))
 
 
 # --- Global Callback Router ---
@@ -1589,6 +1602,18 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "cmd_positions": await open_positions_cmd(update, context)
     elif data == "view_positions_detail": await view_positions_detail_cmd(update, context)
     elif data == "cmd_trade_history": await trade_history_cmd(update, context)
+    elif data.startswith("karsa:history:page:"):
+        try:
+            page = int(data.split(":")[-1])
+            from src.utils.formatters.trade_history_formatter import TradeHistoryFormatter
+            trades, total, wins, losses, net_pnl = await _fetch_trade_history_page(page)
+            text, keyboard = TradeHistoryFormatter.build_message(trades, page, total, wins, losses, net_pnl)
+            await query.edit_message_text(text, reply_markup=keyboard, parse_mode=None)
+        except Exception as e:
+            logger.error("history_pagination_failed", error=str(e))
+            await query.answer("Failed to load page", show_alert=True)
+    elif data == "noop":
+        await query.answer()
     elif data.startswith("move_sl_be_"):
         symbol = data.replace("move_sl_be_", "")
         await _move_sl_to_be(update, context, symbol)
@@ -1766,25 +1791,28 @@ async def events_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from src.architecture.events.redis_bus import get_event_history
 
         r = redis.from_url(settings.REDIS_URL, decode_responses=True)
-        events = await get_event_history(r, limit)
+        try:
+            events = await get_event_history(r, limit)
 
-        if not events:
-            await update.message.reply_text("No events in history yet")
-            return
+            if not events:
+                await update.message.reply_text("No events in history yet")
+                return
 
-        lines = [f"📊 <b>Recent Events ({len(events)})</b>\n"]
-        emoji_map = {
-            "PositionOpened": "🟢", "PositionReduced": "🟡",
-            "PositionClosed": "🔴", "TrailingActivated": "📈",
-            "BreakEvenActivated": "🔒", "StopLossTriggered": "⛔",
-            "StopLossRecovered": "🛡️", "TestCrossProcess": "🧪",
-        }
-        for ev in events:
-            e = emoji_map.get(ev.get("event_type", ""), "📌")
-            lines.append(f"{e} {ev.get('event_type')} → {ev.get('aggregate_id')}")
-            if ev.get("publisher"):
-                lines.append(f"   by: {ev['publisher']}")
+            lines = [f"📊 <b>Recent Events ({len(events)})</b>\n"]
+            emoji_map = {
+                "PositionOpened": "🟢", "PositionReduced": "🟡",
+                "PositionClosed": "🔴", "TrailingActivated": "📈",
+                "BreakEvenActivated": "🔒", "StopLossTriggered": "⛔",
+                "StopLossRecovered": "🛡️", "TestCrossProcess": "🧪",
+            }
+            for ev in events:
+                e = emoji_map.get(ev.get("event_type", ""), "📌")
+                lines.append(f"{e} {ev.get('event_type')} → {ev.get('aggregate_id')}")
+                if ev.get("publisher"):
+                    lines.append(f"   by: {ev['publisher']}")
 
-        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        finally:
+            await r.close()
     except Exception as e:
         await update.message.reply_text(f"Events error: {e}")

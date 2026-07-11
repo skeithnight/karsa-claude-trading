@@ -54,93 +54,98 @@ class OpportunityScorer:
         smart_money = SmartMoneyIntelligence(cache=self._cache)
         risk = RiskIntelligence(cache=self._cache)
 
-        # Run all intel modules in parallel
-        results = await asyncio.gather(
-            onchain.snapshot(symbol, chain),
-            developer.snapshot(symbol, coingecko_id),
-            community.snapshot(symbol, coingecko_id),
-            narrative.analyze_token(symbol, coingecko_id),
-            smart_money.detect_accumulation(symbol, contract, chain),
-            risk.full_assessment(symbol, contract, chain, coingecko_id),
-            return_exceptions=True,
-        )
-
-        # Extract scores (default 0 on failure)
-        onchain_score = results[0].get("score", 0) if isinstance(results[0], dict) else 0
-        developer_score = results[1].get("score", 0) if isinstance(results[1], dict) else 0
-        community_score = results[2].get("score", 0) if isinstance(results[2], dict) else 0
-        narrative_score = results[3].get("score", 0) if isinstance(results[3], dict) else 0
-        smart_money_score = results[4].get("score", 0) if isinstance(results[4], dict) else 0
-        risk_data = results[5] if isinstance(results[5], dict) else {}
-        risk_score = risk_data.get("risk_score", 50)
-
-        # Market score (from regime data — reuse existing)
-        market_score = 50  # neutral default
         try:
-            regime = get_crypto_regime()
-            if regime:
-                regime_state = regime.get("regime", "CHOP")
-                if regime_state == "TREND_BULL":
-                    market_score = 80
-                elif regime_state == "TREND_BEAR":
-                    market_score = 20
-                elif regime_state == "MEAN_REVERSION":
-                    market_score = 50
-                else:
-                    market_score = 40
-        except Exception:
-            pass
+            # Run all intel modules in parallel
+            results = await asyncio.gather(
+                onchain.snapshot(symbol, chain),
+                developer.snapshot(symbol, coingecko_id),
+                community.snapshot(symbol, coingecko_id),
+                narrative.analyze_token(symbol, coingecko_id),
+                smart_money.detect_accumulation(symbol, contract, chain),
+                risk.full_assessment(symbol, contract, chain, coingecko_id),
+                return_exceptions=True,
+            )
 
-        # Technical score placeholder (would need BybitClient OHLCV data)
-        technical_score = 50
+            # Extract scores (default 0 on failure)
+            onchain_score = results[0].get("score", 0) if isinstance(results[0], dict) else 0
+            developer_score = results[1].get("score", 0) if isinstance(results[1], dict) else 0
+            community_score = results[2].get("score", 0) if isinstance(results[2], dict) else 0
+            narrative_score = results[3].get("score", 0) if isinstance(results[3], dict) else 0
+            smart_money_score = results[4].get("score", 0) if isinstance(results[4], dict) else 0
+            risk_data = results[5] if isinstance(results[5], dict) else {}
+            risk_score = risk_data.get("risk_score", 50)
 
-        # Weighted composite
-        scores = {
-            "fundamental": 50,  # needs LLM analysis — use default
-            "narrative": narrative_score,
-            "smart_money": smart_money_score,
-            "onchain": onchain_score,
-            "developer": developer_score,
-            "community": community_score,
-            "market": market_score,
-            "technical": technical_score,
-        }
+            # Market score (from regime data — reuse existing)
+            market_score = 50  # neutral default
+            try:
+                regime = get_crypto_regime()
+                if regime:
+                    regime_state = regime.get("regime", "CHOP")
+                    if regime_state == "TREND_BULL":
+                        market_score = 80
+                    elif regime_state == "TREND_BEAR":
+                        market_score = 20
+                    elif regime_state == "MEAN_REVERSION":
+                        market_score = 50
+                    else:
+                        market_score = 40
+            except Exception:
+                pass
 
-        composite = sum(scores[k] * self.weights.get(k, 0) for k in scores)
+            # Technical score placeholder (would need BybitClient OHLCV data)
+            technical_score = 50
 
-        # Risk deduction
-        risk_deduction = 0
-        if risk_score > 75:
-            risk_deduction = 20
-        elif risk_score > 50:
-            risk_deduction = 10
-        composite = max(0, composite - risk_deduction)
+            # Weighted composite
+            scores = {
+                "fundamental": 50,  # needs LLM analysis — use default
+                "narrative": narrative_score,
+                "smart_money": smart_money_score,
+                "onchain": onchain_score,
+                "developer": developer_score,
+                "community": community_score,
+                "market": market_score,
+                "technical": technical_score,
+            }
 
-        # Confidence: based on data completeness
-        modules_with_data = sum(1 for r in results if isinstance(r, dict) and r.get("score", 0) > 0)
-        confidence = round((modules_with_data / 6) * 100, 2)
+            composite = sum(scores[k] * self.weights.get(k, 0) for k in scores)
 
-        # Bucket classification
-        bucket = self.classify_bucket(composite)
+            # Risk deduction
+            risk_deduction = 0
+            if risk_score > 75:
+                risk_deduction = 20
+            elif risk_score > 50:
+                risk_deduction = 10
+            composite = max(0, composite - risk_deduction)
 
-        return {
-            "symbol": symbol,
-            "composite_score": round(composite, 2),
-            "confidence": confidence,
-            "risk_category": risk_data.get("risk_category", "UNKNOWN"),
-            "risk_score": risk_score,
-            "investment_bucket": bucket,
-            "scores": scores,
-            "risk_deduction": risk_deduction,
-            "evidence": {
-                "onchain": results[0] if isinstance(results[0], dict) else {},
-                "developer": results[1] if isinstance(results[1], dict) else {},
-                "community": results[2] if isinstance(results[2], dict) else {},
-                "narrative": results[3] if isinstance(results[3], dict) else {},
-                "smart_money": results[4] if isinstance(results[4], dict) else {},
-                "risk": risk_data,
-            },
-        }
+            # Confidence: based on data completeness
+            modules_with_data = sum(1 for r in results if isinstance(r, dict) and r.get("score", 0) > 0)
+            confidence = round((modules_with_data / 6) * 100, 2)
+
+            # Bucket classification
+            bucket = self.classify_bucket(composite)
+
+            return {
+                "symbol": symbol,
+                "composite_score": round(composite, 2),
+                "confidence": confidence,
+                "risk_category": risk_data.get("risk_category", "UNKNOWN"),
+                "risk_score": risk_score,
+                "investment_bucket": bucket,
+                "scores": scores,
+                "risk_deduction": risk_deduction,
+                "evidence": {
+                    "onchain": results[0] if isinstance(results[0], dict) else {},
+                    "developer": results[1] if isinstance(results[1], dict) else {},
+                    "community": results[2] if isinstance(results[2], dict) else {},
+                    "narrative": results[3] if isinstance(results[3], dict) else {},
+                    "smart_money": results[4] if isinstance(results[4], dict) else {},
+                    "risk": risk_data,
+                },
+            }
+        finally:
+            # Close all HTTP clients to prevent aiohttp connection leaks (Finding 5)
+            for intel in (onchain, developer, community, narrative, smart_money, risk):
+                await intel.close()
 
     @staticmethod
     def classify_bucket(score: float) -> str:

@@ -15,6 +15,7 @@ import uuid
 
 from src.config import settings
 from src.data.bybit_client import BybitClient
+from src.metrics.crypto_metrics import record_order_maker, record_order_taker, update_cumulative_slippage
 from src.metrics.crypto_metrics import (
     record_order_fill, record_slippage, record_fill_latency,
     record_limit_fallback, record_order_rejected,

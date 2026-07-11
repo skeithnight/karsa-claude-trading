@@ -1010,8 +1010,10 @@ class Orchestrator:
                 )
                 session.add(trace)
                 await session.commit()
+        except RuntimeError:
+            pass  # Engine disposing during pool reset — non-fatal, skip trace
         except Exception as e:
-            logger.error("trace_save_failed", error=str(e))
+            logger.warning("trace_save_failed", error=str(e))
 
     async def _save_signal(self, signal_data: dict):
         """Save a signal to the database with IDX order validation."""

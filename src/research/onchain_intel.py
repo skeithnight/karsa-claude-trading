@@ -29,6 +29,12 @@ class OnchainIntelligence:
         if not self._ds:
             self._ds = DexScreenerClient(cache=self._cache)
 
+    async def close(self):
+        """Close all underlying HTTP clients to prevent connection leaks."""
+        for client in (self._dl, self._oc, self._ds):
+            if client and hasattr(client, 'close'):
+                await client.close()
+
     async def get_tvl(self, slug: str) -> dict | None:
         await self._ensure_clients()
         return await self._dl.get_protocol_tvl(slug)

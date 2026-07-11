@@ -9,6 +9,7 @@ Uses Bybit testnet by default. Circuit breaker + caching reuse from MCPClient pa
 
 import asyncio
 import random
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -91,6 +92,9 @@ class BybitClient:
         # Rate limiting
         self._last_request = 0.0
         self._min_interval = 0.1  # 100ms between requests
+
+        # Thread safety for sync pybit calls through SOCKS proxy
+        self._api_lock = threading.Lock()
         self._semaphore = asyncio.Semaphore(5)
 
     def _is_blocked(self, provider: str) -> bool:
@@ -116,6 +120,18 @@ class BybitClient:
             await asyncio.sleep(self._min_interval - elapsed)
         self._last_request = time.time()
 
+    def _safe_pybit_call(self, func, *args, **kwargs):
+        """Thread-safe wrapper for sync pybit calls.
+
+        Serializes concurrent calls through the SOCKS5 proxy to prevent
+        urllib3 connection pool race conditions. Passes timeout=5 to the
+        pybit method so the underlying requests call drops the socket
+        at the OS level (prevents thread leaks when WARP hangs).
+        """
+        with self._api_lock:
+            kwargs.setdefault("timeout", 5)
+            return func(*args, **kwargs)
+
     async def _retry_call(self, func, *args, **kwargs):
         """Retry wrapper with exponential backoff for transient Bybit errors.
 
@@ -132,7 +148,7 @@ class BybitClient:
             try:
                 async with self._semaphore:
                     await self._throttle()
-                    resp = await asyncio.to_thread(func, *args, **kwargs)
+                    resp = await asyncio.wait_for(asyncio.to_thread(self._safe_pybit_call, func, *args, **kwargs), timeout=10.0)
 
                 ret_code = resp.get("retCode", 0)
 
@@ -269,9 +285,9 @@ class BybitClient:
         try:
             async with self._semaphore:
                 await self._throttle()
-                resp = await asyncio.to_thread(
-                    self._http_client.get_tickers,
-                    category="linear",
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_tickers, category="linear"),
+                    timeout=10.0,
                 )
 
             if resp.get("retCode") != 0:
@@ -320,9 +336,9 @@ class BybitClient:
         try:
             async with self._semaphore:
                 await self._throttle()
-                resp = await asyncio.to_thread(
-                    self._http_client.get_tickers,
-                    category="linear",
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_tickers, category="linear"),
+                    timeout=10.0,
                 )
 
             if resp.get("retCode") != 0:
@@ -369,10 +385,9 @@ class BybitClient:
         try:
             async with self._semaphore:
                 await self._throttle()
-                resp = await asyncio.to_thread(
-                    self._http_client.get_tickers,
-                    category="linear",
-                    symbol=symbol,
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_tickers, category="linear", symbol=symbol),
+                    timeout=10.0,
                 )
 
             if resp.get("retCode") != 0:
@@ -437,12 +452,9 @@ class BybitClient:
             bybit_interval = _INTERVAL_MAP.get(interval, "D")
             async with self._semaphore:
                 await self._throttle()
-                resp = await asyncio.to_thread(
-                    self._http_client.get_kline,
-                    category="linear",
-                    symbol=symbol,
-                    interval=bybit_interval,
-                    limit=limit,
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_kline, category="linear", symbol=symbol, interval=bybit_interval, limit=limit),
+                    timeout=10.0,
                 )
 
             if resp.get("retCode") != 0:
@@ -473,11 +485,9 @@ class BybitClient:
         try:
             async with self._semaphore:
                 await self._throttle()
-                resp = await asyncio.to_thread(
-                    self._http_client.get_funding_rate_history,
-                    category="linear",
-                    symbol=symbol,
-                    limit=1,
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_funding_rate_history, category="linear", symbol=symbol, limit=1),
+                    timeout=10.0,
                 )
 
             if resp.get("retCode") != 0:
@@ -511,9 +521,9 @@ class BybitClient:
 
             async with self._semaphore:
                 await self._throttle()
-                resp = await asyncio.to_thread(
-                    self._http_client.get_funding_history,
-                    **params,
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_funding_history, **params),
+                    timeout=10.0,
                 )
 
             if resp.get("retCode") != 0:
@@ -543,12 +553,9 @@ class BybitClient:
         try:
             async with self._semaphore:
                 await self._throttle()
-                resp = await asyncio.to_thread(
-                    self._http_client.get_open_interest,
-                    category="linear",
-                    symbol=symbol,
-                    intervalTime="1d",
-                    limit=1,
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_open_interest, category="linear", symbol=symbol, intervalTime="1d", limit=1),
+                    timeout=10.0,
                 )
 
             if resp.get("retCode") != 0:
@@ -574,11 +581,9 @@ class BybitClient:
         try:
             async with self._semaphore:
                 await self._throttle()
-                resp = await asyncio.to_thread(
-                    self._http_client.get_orderbook,
-                    category="linear",
-                    symbol=symbol,
-                    limit=limit,
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_orderbook, category="linear", symbol=symbol, limit=limit),
+                    timeout=10.0,
                 )
 
             if resp.get("retCode") != 0:
@@ -645,9 +650,9 @@ class BybitClient:
 
             async with self._semaphore:
                 await self._throttle()
-                resp = await asyncio.to_thread(
-                    self._http_client.place_order,
-                    **params,
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(self._safe_pybit_call, self._http_client.place_order, **params),
+                    timeout=10.0,
                 )
 
             if resp.get("retCode") != 0:
@@ -678,9 +683,9 @@ class BybitClient:
 
             async with self._semaphore:
                 await self._throttle()
-                resp = await asyncio.to_thread(
-                    self._http_client.get_open_orders,
-                    **params,
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_open_orders, **params),
+                    timeout=10.0,
                 )
 
             if resp.get("retCode") != 0:
@@ -697,11 +702,9 @@ class BybitClient:
         try:
             async with self._semaphore:
                 await self._throttle()
-                resp = await asyncio.to_thread(
-                    self._http_client.cancel_order,
-                    category="linear",
-                    symbol=symbol,
-                    orderId=order_id,
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(self._safe_pybit_call, self._http_client.cancel_order, category="linear", symbol=symbol, orderId=order_id),
+                    timeout=10.0,
                 )
 
             if resp.get("retCode") != 0:
@@ -722,9 +725,9 @@ class BybitClient:
 
             async with self._semaphore:
                 await self._throttle()
-                resp = await asyncio.to_thread(
-                    self._http_client.get_positions,
-                    **params,
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_positions, **params),
+                    timeout=10.0,
                 )
 
             if resp.get("retCode") != 0:
@@ -765,13 +768,9 @@ class BybitClient:
         try:
             async with self._semaphore:
                 await self._throttle()
-                resp = await asyncio.to_thread(
-                    self._http_client.set_trading_stop,
-                    category="linear",
-                    symbol=symbol,
-                    stopLoss=str(stop_price),
-                    tpslMode="Full",
-                    positionIdx=0,
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(self._safe_pybit_call, self._http_client.set_trading_stop, category="linear", symbol=symbol, stopLoss=str(stop_price), tpslMode="Full", positionIdx=0),
+                    timeout=10.0,
                 )
 
             if resp.get("retCode") != 0:
@@ -789,13 +788,9 @@ class BybitClient:
         try:
             async with self._semaphore:
                 await self._throttle()
-                resp = await asyncio.to_thread(
-                    self._http_client.set_trading_stop,
-                    category="linear",
-                    symbol=symbol,
-                    takeProfit=str(tp_price),
-                    tpslMode="Full",
-                    positionIdx=0,
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(self._safe_pybit_call, self._http_client.set_trading_stop, category="linear", symbol=symbol, takeProfit=str(tp_price), tpslMode="Full", positionIdx=0),
+                    timeout=10.0,
                 )
 
             if resp.get("retCode") != 0:
@@ -813,10 +808,9 @@ class BybitClient:
         try:
             async with self._semaphore:
                 await self._throttle()
-                resp = await asyncio.to_thread(
-                    self._http_client.get_order_history,
-                    category="linear",
-                    orderId=order_id,
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_order_history, category="linear", orderId=order_id),
+                    timeout=10.0,
                 )
 
             if resp.get("retCode") != 0:
@@ -848,9 +842,9 @@ class BybitClient:
 
             async with self._semaphore:
                 await self._throttle()
-                resp = await asyncio.to_thread(
-                    self._http_client.get_closed_pnl,
-                    **params,
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_closed_pnl, **params),
+                    timeout=10.0,
                 )
 
             if resp.get("retCode") != 0:
@@ -885,9 +879,9 @@ class BybitClient:
                 params = {"accountType": "UNIFIED"}
                 if coin:
                     params["coin"] = coin
-                resp = await asyncio.to_thread(
-                    self._http_client.get_wallet_balance,
-                    **params,
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_wallet_balance, **params),
+                    timeout=10.0,
                 )
 
             if resp.get("retCode") != 0:
@@ -931,8 +925,9 @@ class BybitClient:
         try:
             async with self._semaphore:
                 await self._throttle()
-                resp = await asyncio.to_thread(
-                    self._http_client.get_api_key_information,
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_api_key_information),
+                    timeout=10.0,
                 )
 
             if resp.get("retCode") != 0:
@@ -951,5 +946,9 @@ class BybitClient:
             return {"valid": False, "error": str(e)[:100]}
 
     async def close(self):
-        """Cleanup (pybit HTTP client doesn't have explicit close)."""
-        pass
+        """Cleanly shut down the underlying requests session and connection pool."""
+        try:
+            if hasattr(self._http_client, 'client') and self._http_client.client:
+                self._http_client.client.close()
+        except Exception as e:
+            logger.warning("bybit_close_failed", error=str(e))

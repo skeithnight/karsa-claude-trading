@@ -14,6 +14,7 @@ Flow:
 
 import asyncio
 import json
+from src.metrics.crypto_metrics import update_dlq_depth
 import time
 from typing import Any
 
@@ -53,6 +54,11 @@ class DeadLetterQueue:
         try:
             await self._redis.rpush(key, json.dumps(entry))
             logger.warning("dlq_pushed", queue=queue_name, error=error)
+            try:
+                depth = await self.get_depth(queue_name)
+                update_dlq_depth(depth)
+            except Exception:
+                pass
         except Exception as e:
             logger.error("dlq_push_failed", queue=queue_name, error=str(e))
 

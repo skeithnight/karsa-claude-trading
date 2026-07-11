@@ -125,10 +125,10 @@ async def telegram_subscriber(event: EventEnvelope) -> None:
             keyboard = [[InlineKeyboardButton("👀 View Dashboard", callback_data="cmd_dashboard")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
 
-        await _telegram_bot.send_message(
-            chat_id=_telegram_chat_id, text=text, parse_mode="HTML",
-            reply_markup=reply_markup,
-        )
+        from src.notifications.router import NotificationRouter, NotificationCategory
+        notifier = NotificationRouter(_telegram_bot, _telegram_chat_id)
+        cat = NotificationCategory.ASM_REGIME if event.event_type == "RegimeShift" else NotificationCategory.ASM_TRADE
+        await notifier.send(text, cat, reply_markup=reply_markup)
     except Exception as e:
         logger.warning("telegram_subscriber_failed", error=str(e))
 

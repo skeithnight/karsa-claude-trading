@@ -1,5 +1,8 @@
 """Karsa Trading System - Entry Point & Scheduler"""
 
+# asyncpg monkey-patch is applied in src/models/database.py at import time.
+# Do NOT duplicate it here — see docs/DATABASE_AUDIT.md Finding 1.
+
 import asyncio
 import signal
 import sys
@@ -1129,11 +1132,15 @@ class KarsaApp:
         if hasattr(self, 'ws_manager') and self.ws_manager:
             await self.ws_manager.stop()
         if self.scheduler and self.scheduler.running:
-            self.scheduler.shutdown(wait=False)
+            # Finding 4: wait=True to let in-flight DB jobs complete
+            self.scheduler.shutdown(wait=True)
         if self.mcp:
             await self.mcp.close()
         if self.redis_client:
             await self.redis_client.close()
+        # Finding 6: close emergency module's separate Redis client
+        from src.risk import emergency as _emergency
+        await _emergency.close()
         await close_db()
         logger.info("shutdown_complete")
 
@@ -1147,19 +1154,12 @@ class KarsaApp:
 
         logger.info("scheduler_running", jobs=len(self.scheduler.get_jobs()))
 
-        # Run uvicorn in a dedicated thread so APScheduler/LLM jobs
-        # cannot starve the HTTP server of event-loop time.
-        import threading
-
+        # Run uvicorn on the main event loop to prevent cross-loop asyncpg
+        # connection leaks (Finding 4 / P0).
         config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="warning")
         server = uvicorn.Server(config)
-
-        def _run_uvicorn():
-            asyncio.run(server.serve())
-
-        uvicorn_thread = threading.Thread(target=_run_uvicorn, daemon=True, name="uvicorn-server")
-        uvicorn_thread.start()
-        logger.info("uvicorn_thread_started", port=8000)
+        loop.create_task(server.serve())
+        logger.info("uvicorn_task_started", port=8000)
 
         # Listen for profile changes to auto-refresh universe
         if self.universe_engine:

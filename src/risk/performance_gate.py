@@ -309,6 +309,7 @@ class PerformanceGate:
                     ticker=ticker, gain_pct=round(gain_pct, 2),
                     dynamic_stop=dynamic_stop_float,
                 )
+                record_asm_checkpoint(ticker, "EXIT")
                 return GateResult(
                     position_id=pos.id, ticker=ticker, bucket=bucket.value,
                     zone=Zone.DYNAMIC_STOP, action=GateAction.EXIT,

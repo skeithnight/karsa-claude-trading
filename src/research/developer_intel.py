@@ -25,6 +25,12 @@ class DeveloperIntelligence:
         if not self._cg:
             self._cg = CoinGeckoClient(cache=self._cache)
 
+    async def close(self):
+        """Close all underlying HTTP clients to prevent connection leaks."""
+        for client in (self._gh, self._cg):
+            if client and hasattr(client, 'close'):
+                await client.close()
+
     async def get_repo_stats(self, owner: str, repo: str) -> dict | None:
         await self._ensure_clients()
         return await self._gh.get_repo_stats(owner, repo)

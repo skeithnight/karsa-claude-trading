@@ -683,15 +683,23 @@ class AutonomousSessionManager:
 
     async def _check_regime(self) -> tuple[bool, str]:
         """Returns (should_pause, alert_message).
-        Pauses ASM during PURE_DEAD_CHOP to avoid wasting LLM calls.
+
+        Previously paused on PURE_DEAD_CHOP, but individual coins can still
+        have good setups (FULL_ALIGNMENT, SQUEEZE_ALERT, TREND_BULL) even when
+        BTC global regime is dead chop. Now only pauses on extreme fear (<15)
+        or when the global regime AND all coin regimes are hostile.
         """
         try:
             from src.advisory.crypto_regime import CryptoRegimeFilter
             crf = CryptoRegimeFilter(self.orchestrator.mcp)
             regime = await crf.get_current_regime()
             state = regime.get("state", "UNKNOWN")
-            if state == "PURE_DEAD_CHOP":
-                return True, f"⏸️ <b>ASM paused</b> — regime: {state}. Re-checking every 10min."
+            fear_greed = regime.get("fear_greed", 50)
+
+            # Only pause on extreme market fear
+            if fear_greed is not None and fear_greed < 15:
+                return True, f"⏸️ <b>ASM paused</b> — extreme fear ({fear_greed}). Re-checking every 10min."
+
             return False, ""
         except Exception as e:
             logger.warning("asm_regime_check_failed", error=str(e))
