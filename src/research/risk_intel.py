@@ -29,6 +29,12 @@ class RiskIntelligence:
         if not self._cg:
             self._cg = CoinGeckoClient(cache=self._cache)
 
+    async def close(self):
+        """Close all underlying HTTP clients to prevent connection leaks."""
+        for client in (self._oc, self._dl, self._cg):
+            if client and hasattr(client, 'close'):
+                await client.close()
+
     async def check_contract_risk(self, contract: str, chain: str = "ethereum") -> dict:
         """Check smart contract verification, proxy pattern, ownership."""
         await self._ensure_clients()

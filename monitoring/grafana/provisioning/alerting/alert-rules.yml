@@ -1,0 +1,134 @@
+# Grafana Alert Rules for Karsa Trading Engine
+# Place in monitoring/grafana/provisioning/alerting/
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: karsa-critical
+    folder: Karsa
+    interval: 1m
+    rules:
+      # CRITICAL — Page-worthy
+      - uid: karsa-event-loop-starvation
+        title: "Event Loop Starvation"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              expr: karsa_watchdog_event_loop_lag_seconds{service="orchestrator"}
+              instant: true
+          - refId: B
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              expr: karsa_watchdog_event_loop_lag_seconds{service="orchestrator"} > 5.0
+              instant: true
+          - refId: C
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: {type: gt, params: [0]}
+                  operator: {type: and}
+                  query: {params: [C, "1", "5"]}
+                  reducer: {type: count}
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Event loop starved > 5s for 2 minutes"
+          description: "The asyncio event loop is blocked. Check WARP proxy latency or heavy CPU tasks."
+
+      - uid: karsa-watchdog-hard-restart
+        title: "Watchdog Hard Restart"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              expr: karsa_watchdog_current_level{service="orchestrator"} == 3
+              instant: true
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Watchdog triggered Level 3 Hard Restart"
+          description: "The bot was unresponsive and had to be hard-killed by the Watchdog."
+
+      - uid: karsa-drawdown-breach
+        title: "Drawdown Breach"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              expr: karsa_daily_loss_pct > 5.0
+              instant: true
+        for: 0s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Portfolio drawdown exceeded 5%"
+          description: "Emergency flatten should have been triggered. Verify positions."
+
+  - orgId: 1
+    name: karsa-warnings
+    folder: Karsa
+    interval: 5m
+    rules:
+      # WARNING — Investigate
+      - uid: karsa-db-pool-leak
+        title: "DB Pool Leak"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: prometheus
+            model:
+              expr: karsa_db_pool_overflow < 0
+              instant: true
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Database connection pool leak detected"
+          description: "SQLAlchemy lost track of connections. Check for missing async context managers."
+
+      - uid: karsa-memory-trend
+        title: "High Memory Usage"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: prometheus
+            model:
+              expr: karsa_watchdog_memory_mb{service="orchestrator"} > 1200
+              instant: true
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Process memory > 1.2GB for 10 minutes"
+          description: "Possible memory leak. Watch for slow upward trends."
+
+      - uid: karsa-dlq-depth
+        title: "DLQ Depth"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              expr: karsa_dlq_depth > 0
+              instant: true
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Dead letter queue has items"
+          description: "Operations are failing after retries. Check DLQ contents."

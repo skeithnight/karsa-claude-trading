@@ -25,6 +25,14 @@ def _get_redis() -> aioredis.Redis:
     return _client
 
 
+async def close() -> None:
+    """Close the module-level Redis client. Call during shutdown (Finding 6)."""
+    global _client
+    if _client is not None:
+        await _client.close()
+        _client = None
+
+
 async def _flatten_open_positions() -> None:
     """Close all open positions on Bybit. Fire-and-forget."""
     try:

@@ -48,6 +48,11 @@ from enum import Enum
 from typing import Any
 
 from src.utils.logging import get_logger
+
+# ponytail: record_asm_checkpoint was referenced but never defined.
+# Stub — add Prometheus metric wiring here when ready.
+def record_asm_checkpoint(ticker: str, action: str) -> None:
+    pass
 from src.metrics.crypto_metrics import (
     update_dynamic_stop_active,
     record_drawdown_trigger,
@@ -309,6 +314,7 @@ class PerformanceGate:
                     ticker=ticker, gain_pct=round(gain_pct, 2),
                     dynamic_stop=dynamic_stop_float,
                 )
+                record_asm_checkpoint(ticker, "EXIT")
                 return GateResult(
                     position_id=pos.id, ticker=ticker, bucket=bucket.value,
                     zone=Zone.DYNAMIC_STOP, action=GateAction.EXIT,

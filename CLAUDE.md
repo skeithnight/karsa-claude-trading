@@ -58,12 +58,18 @@ Testing/debug one-liners: `docs/reference/TOOLING.md`.
 - APScheduler uses `MemoryJobStore` — jobs don't survive container restarts.
 - `/kill` sets both `karsa:global_halt` and `karsa:emergency_stop` Redis keys.
 - Postgres image must be `pgvector/pgvector:pg15`, not `postgres:15-alpine` (needed for `trade_memory` vector column).
-- **Database Pool**: NullPool health engine for watchdog, asyncio.Lock on engine creation/dispose. Pool metrics: `karsa_db_pool_checked_out`, `karsa_db_pool_overflow`. See `docs/FIX_DATABASE_LEAK.md`.
-- **Universe Scorer**: Uses early breakout detection (1h vs 24h), overextension penalty (>30% 24h), and short squeeze multiplier (negative funding). See `docs/OPTIMIZE_UNIVERSE.md`.
+- **Database Pool**: NullPool health engine for watchdog, asyncio.Lock on engine creation/dispose. Pool: `pool_size=20, max_overflow=10` (30 max connections). Dispose happens INSIDE lock (race condition fixed). Session factory cached (not recreated per call). Uvicorn runs on main event loop (no cross-loop asyncpg leaks). Pool metrics: `karsa_db_pool_checked_out`, `karsa_db_pool_overflow`. See `docs/archive/DATABASE_AUDIT.md`, `docs/archive/db_audit_second_pass.md`, `docs/archive/DATABASE_AUDIT_WALKTHROUGH.md`, `docs/archive/final_audit_report.md`.
+- **Universe Scorer**: Uses early breakout detection (1h vs 24h), overextension penalty (>30% 24h), and short squeeze multiplier (negative funding). See `docs/archive/OPTIMIZE_UNIVERSE.md`.
 - **Asyncpg Patch**: Monkey-patch applied to fix `asyncio.shield()` bug in connection terminate method. Import path: `sqlalchemy.dialects.postgresql.asyncpg.AsyncAdapt_asyncpg_connection`.
 - **Position Deduplication**: Unique index `idx_crypto_positions_ticker_side_open` prevents duplicate OPEN positions per ticker+side. Code check in `orchestrator.py:_save_crypto_position()`.
 - **Entry Price Validation**: Risk manager validates signal entry_price within 30% of market price; uses actual price if deviation > 30%.
 - **Kelly Fraction**: Uses `datetime.utcnow()` (not timezone-aware) to match `TIMESTAMP WITHOUT TIME ZONE` DB columns.
+- **NotificationRouter**: All Telegram sends must go through `src/notifications/router.py`. Only `ASM_TRADE`, `ASM_REGIME`, `MANUAL_COMMAND` reach Telegram. Infrastructure alerts go to Grafana. Emergency alerts use `force=True`.
+- **Formatters Package**: `src/utils/formatters/` is a package (not a file). `format_position_card` lives in `formatters/__init__.py`. `TradeHistoryFormatter` lives in `formatters/trade_history_formatter.py`.
+- **Trade History Pagination**: Uses `parse_mode=None` (pure Unicode) to avoid AI `<`/`>` formatting crashes. Callback pattern: `karsa:history:page:N`.
+- **ServiceWatchdog**: In-process health monitor in `src/monitoring/watchdog.py`. Health score 0-100, graduated recovery (L1 self-heal, L2 soft restart, L3 hard restart). Metrics: `karsa_watchdog_health_score`, `karsa_watchdog_current_level`.
+- **Thread Lock on BybitClient**: `src/data/bybit_client.py` uses `threading.Lock()` to serialize SOCKS5 proxy calls. All pybit calls go through `_safe_pybit_call()` with 5s timeout + `asyncio.wait_for(timeout=10.0)`.
+- **Docker Compose**: `LOG_LEVEL=INFO` set for orchestrator. All healthchecks use `--max-time 5`.
 
 Full gotchas list (Redis auth, IDX lot sizing, 9router port mapping, etc.): `docs/reference/GOTCHAS.md`.
 
@@ -76,6 +82,7 @@ Grafana: http://localhost:3000 (admin/admin). Dashboards + Prometheus metric nam
 - **Trading Operations v2** — full metrics dashboard
 - **ASM - Core Operations** (`monitoring/asm-core-operations.json`) — 9-panel dashboard with live tables and AI Judge analytics
 - **Karsa Crypto-Only Operations** (`monitoring/grafana/dashboards/karsa-crypto-ops.json`) — crypto-only operational dashboard
+- **Karsa Quant** (`monitoring/grafana/dashboards/karsa-quant.json`) — 26-panel dashboard: Executive Summary, ASM Trading, Infrastructure, Execution, Alerts. Alert rules: `monitoring/grafana/provisioning/alerting/alert-rules.yml`
 
 ### Prometheus Metrics
 
@@ -97,4 +104,4 @@ Grafana: http://localhost:3000 (admin/admin). Dashboards + Prometheus metric nam
 
 Metrics endpoint: `curl http://localhost:8001/metrics` (crypto) or `http://localhost:8000/metrics` (main).
 
-Full wiring status: `docs/METRIC_WIRED.md`. Implementation summary: `docs/METRICS_IMPLEMENTATION_SUMMARY.md`.
+Full wiring status: `docs/archive/METRIC_WIRED.md`. Implementation summary: `docs/archive/METRICS_IMPLEMENTATION_SUMMARY.md`.

@@ -22,25 +22,21 @@ def _get_app_state(request: Request):
 def _make_asm(request: Request):
     """Create ASM instance with all dependencies."""
     orch, redis_client = _get_app_state(request)
-    from src.data.cache import CacheManager
-    from src.data.bybit_client import BybitClient
     from src.agents.autonomous_session import AutonomousSessionManager
-    cache = CacheManager(redis_client)
-    bybit = BybitClient(cache)
+    bybit = orch.mcp._get_bybit()  # Reuse shared client — no new connection pool
     return AutonomousSessionManager(orch, redis_client, bybit)
 
 
 # --- ASM Endpoints ---
 
 @router.get("/asm/status")
-async def asm_status():
+async def asm_status(request: Request):
     """Get ASM state, config, equity, and emergency status."""
     from src.risk import emergency
     import json
-    from src.config import settings
-    import redis.asyncio as aioredis
 
-    r = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+    # Use shared Redis client from app.state instead of creating a new pool per request
+    _, r = _get_app_state(request)
     active = await r.get("karsa:asm:active")
     paused = await r.get("karsa:asm:paused")
     config_raw = await r.get("karsa:asm:config")
@@ -121,3 +117,109 @@ async def emergency_status():
     """Get emergency stop status."""
     from src.risk import emergency
     return await emergency.get_status() or {"active": False}
+
+
+# --- Watchdog Endpoints ---
+
+@router.get("/watchdog")
+async def watchdog_status(request: Request):
+    """Get watchdog health status with score, diagnostics, and subsystems."""
+    import time
+    import json
+    _, redis_client = _get_app_state(request)
+    now = time.time()
+
+    # Health score
+    health_score = None
+    try:
+        score_raw = await redis_client.get("karsa:watchdog:health_score")
+        if score_raw:
+            health_score = float(score_raw)
+    except Exception:
+        pass
+
+    # Sentinel (event loop health)
+    sentinel_lag = None
+    try:
+        sentinel_raw = await redis_client.get("karsa:watchdog:sentinel")
+        if sentinel_raw:
+            sentinel_lag = round(now - float(sentinel_raw), 1)
+    except Exception:
+        pass
+
+    # Subsystem heartbeats
+    subsystems = {}
+    try:
+        keys = await redis_client.keys("karsa:watchdog:*")
+        for key in keys:
+            # Skip non-heartbeat keys
+            if any(skip in key for skip in [":restart", ":diagnostic", ":health_score", ":sentinel"]):
+                continue
+            val = await redis_client.get(key)
+            parts = key.split(":")
+            if len(parts) >= 4:
+                service = parts[2]
+                subsystem = parts[3]
+                age = now - float(val) if val else 999
+                subsystems[f"{service}:{subsystem}"] = {
+                    "last_heartbeat": float(val) if val else None,
+                    "age_seconds": round(age, 1),
+                    "healthy": age < 180,
+                }
+    except Exception:
+        pass
+
+    # Last restart reason
+    restart_reason = None
+    try:
+        raw = await redis_client.get("karsa:watchdog:restart_reason")
+        if raw:
+            try:
+                restart_reason = json.loads(raw)
+            except Exception:
+                restart_reason = raw
+    except Exception:
+        pass
+
+    # Diagnostic snapshot (from last hard restart)
+    diagnostic = None
+    try:
+        raw = await redis_client.get("karsa:watchdog:diagnostic")
+        if raw:
+            try:
+                diagnostic = json.loads(raw)
+            except Exception:
+                diagnostic = raw
+    except Exception:
+        pass
+
+    # Overall status
+    status = "healthy"
+    if health_score is not None:
+        if health_score < 40:
+            status = "critical"
+        elif health_score < 70:
+            status = "degraded"
+
+    return {
+        "status": status,
+        "health_score": health_score,
+        "sentinel_lag_sec": sentinel_lag,
+        "subsystems": subsystems,
+        "restart_reason": restart_reason,
+        "diagnostic": diagnostic,
+    }
+
+
+@router.get("/watchdog/diagnostic")
+async def watchdog_diagnostic(request: Request):
+    """Get last diagnostic snapshot from hard restart."""
+    import json
+    _, redis_client = _get_app_state(request)
+    try:
+        raw = await redis_client.get("karsa:watchdog:diagnostic")
+        if raw:
+            return json.loads(raw)
+        return {"status": "no diagnostic available"}
+    except Exception as e:
+        raise HTTPException(500, f"Failed to read diagnostic: {e}")

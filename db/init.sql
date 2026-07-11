@@ -332,7 +332,7 @@ CREATE TABLE IF NOT EXISTS crypto_circuit_breaker_events (
 CREATE TABLE IF NOT EXISTS crypto_reconciliation_logs (
     id BIGSERIAL PRIMARY KEY,
     position_id BIGINT,
-    drift_type VARCHAR(20) NOT NULL CHECK (drift_type IN ('PHANTOM', 'MISSING', 'SIZE_DRIFT')),
+    drift_type VARCHAR(20) NOT NULL CHECK (drift_type IN ('PHANTOM', 'MISSING', 'SIZE_DRIFT', 'STALE_CLOSED', 'ORPHANED', 'UNKNOWN', 'BALANCE')),
     exchange_state JSONB,
     db_state JSONB,
     resolution VARCHAR(50),

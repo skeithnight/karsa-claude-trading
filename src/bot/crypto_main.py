@@ -37,7 +37,15 @@ telegram_app = None
 async def lifespan(app: FastAPI):
     global telegram_app
     token = settings.CRYPTO_TELEGRAM_TOKEN or settings.TELEGRAM_TOKEN
-    
+
+    # Init DB engine (required for trade history, health checks, reconciliation)
+    from src.models.database import init_db, close_db
+    try:
+        await init_db()
+        logger.info("db_engine_initialized")
+    except Exception as e:
+        logger.error("db_init_failed", error=str(e))
+
     telegram_app = Application.builder().token(token).build()
 
     # Core 5 Commands Maps to the 5 dashboards
@@ -126,13 +134,17 @@ async def lifespan(app: FastAPI):
                 else:
                     transient_checks.append(entry)
 
-            # 2. Bybit check
+            # 2. Bybit check — reuse shared client, thread-safe with timeout
             try:
-                from src.data.bybit_client import BybitClient
-                bybit = BybitClient(cache)
+                bybit = orch.mcp._get_bybit()
                 await bybit._throttle()
-                import asyncio as _aio
-                resp = await _aio.to_thread(bybit._http_client.get_server_time)
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        bybit._safe_pybit_call,
+                        bybit._http_client.get_server_time,
+                    ),
+                    timeout=10.0,
+                )
                 if resp.get("retCode") != 0:
                     sev = classify_error(Exception(resp.get("retMsg", "")))
                     entry = ("🔴 Bybit API", resp.get("retMsg", "unknown error"))
@@ -215,10 +227,11 @@ async def lifespan(app: FastAPI):
                     lines.append("🛑 Bot cannot auto-recover. Check .env and restart.")
 
                 try:
-                    await telegram_app.bot.send_message(
-                        chat_id=chat_id,
-                        text="\n".join(lines),
-                        parse_mode="HTML"
+                    from src.notifications.router import NotificationRouter, NotificationCategory
+                    notifier = NotificationRouter(telegram_app.bot, chat_id)
+                    await notifier.send(
+                        "\n".join(lines),
+                        NotificationCategory.INFRASTRUCTURE,
                     )
                     last_alerts[alert_key] = now
                 except Exception:
@@ -227,10 +240,11 @@ async def lifespan(app: FastAPI):
             # Send recovery alert if previously down and now all ok
             elif last_alerts:
                 try:
-                    await telegram_app.bot.send_message(
-                        chat_id=chat_id,
-                        text=f"✅ <b>All connections restored</b> — {now.strftime('%H:%M')}",
-                        parse_mode="HTML"
+                    from src.notifications.router import NotificationRouter, NotificationCategory
+                    notifier = NotificationRouter(telegram_app.bot, chat_id)
+                    await notifier.send(
+                        f"✅ <b>All connections restored</b> — {now.strftime('%H:%M')}",
+                        NotificationCategory.INFRASTRUCTURE,
                     )
                     last_alerts.clear()
                 except Exception:
@@ -250,15 +264,26 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("risk_monitor_setup_failed", error=str(e))
 
+    # Service watchdog — monitors health with graduated recovery
+    try:
+        from src.monitoring.watchdog import ServiceWatchdog
+        chat_id = int(settings.TELEGRAM_CHAT_ID) if settings.TELEGRAM_CHAT_ID else 0
+        watchdog = ServiceWatchdog(redis_client, "bot", chat_id)
+        watchdog.set_telegram_bot(telegram_app.bot)
+        await watchdog.start()
+        logger.info("bot_watchdog_started")
+    except Exception as e:
+        logger.warning("bot_watchdog_setup_failed", error=str(e))
+
     # Startup reconciliation — sync Bybit positions with DB/Redis
     try:
         from src.agents.autonomous_session import AutonomousSessionManager
         asm = AutonomousSessionManager(orch, redis_client, bybit)
         reconcile_msg = await asm.reconcile_state()
         if reconcile_msg and chat_id:
-            await telegram_app.bot.send_message(
-                chat_id=chat_id, text=reconcile_msg, parse_mode="HTML"
-            )
+            from src.notifications.router import NotificationRouter, NotificationCategory
+            notifier = NotificationRouter(telegram_app.bot, chat_id)
+            await notifier.send(reconcile_msg, NotificationCategory.MANUAL_COMMAND)
         # If session is active, resume the loop
         if await asm.is_active():
             asyncio.create_task(asm._run_loop(chat_id))
@@ -323,6 +348,7 @@ async def lifespan(app: FastAPI):
     await telegram_app.shutdown()
     await redis_client.aclose()
     await mcp.close()
+    await close_db()
     logger.info("crypto_bot_stopped")
 
 
@@ -372,9 +398,9 @@ async def alertmanager_webhook(payload: dict):
         try:
             chat_id = settings.TELEGRAM_CHAT_ID
             if chat_id and telegram_app:
-                await telegram_app.bot.send_message(
-                    chat_id=chat_id, text=text, parse_mode="HTML"
-                )
+                from src.notifications.router import NotificationRouter, NotificationCategory
+                notifier = NotificationRouter(telegram_app.bot, chat_id)
+                await notifier.send(text, NotificationCategory.INFRASTRUCTURE)
                 logger.info("alert_forwarded", status=status, severity=severity)
         except Exception as e:
             logger.error("alert_forward_failed", error=str(e))

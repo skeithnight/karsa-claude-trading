@@ -906,3 +906,138 @@ DAILY_TRADE_COUNT = Gauge(
 def update_daily_trade_count(count: int):
     """Update daily trade count gauge."""
     DAILY_TRADE_COUNT.set(count)
+
+
+# ============================================================
+# DOMAIN 12 — Service Watchdog
+# ============================================================
+
+WATCHDOG_CHECKS = Counter(
+    "karsa_watchdog_checks_total",
+    "Total watchdog health checks performed",
+    ["service"],
+)
+
+WATCHDOG_FAILURES = Counter(
+    "karsa_watchdog_failures_total",
+    "Total watchdog failures detected",
+    ["service", "issue"],
+)
+
+WATCHDOG_RECOVERIES = Counter(
+    "karsa_watchdog_recoveries_total",
+    "Total watchdog recovery actions taken",
+    ["service", "level"],
+)
+
+WATCHDOG_HEARTBEAT = Gauge(
+    "karsa_watchdog_heartbeat_timestamp",
+    "Last heartbeat timestamp per subsystem",
+    ["service", "subsystem"],
+)
+
+WATCHDOG_FAILURE_COUNT = Gauge(
+    "karsa_watchdog_failure_count",
+    "Current consecutive failure count",
+    ["service"],
+)
+
+WATCHDOG_HEALTH_SCORE = Gauge(
+    "karsa_watchdog_health_score",
+    "Current health score (0-100)",
+    ["service"],
+)
+
+WATCHDOG_EVENT_LOOP_LAG = Gauge(
+    "karsa_watchdog_event_loop_lag_seconds",
+    "Event loop lag detected by sentinel",
+    ["service"],
+)
+
+WATCHDOG_MEMORY_MB = Gauge(
+    "karsa_watchdog_memory_mb",
+    "Process RSS memory in MB",
+    ["service"],
+)
+
+WATCHDOG_LEVEL = Gauge(
+    "karsa_watchdog_current_level",
+    "Current watchdog recovery level (0=healthy, 1=heal, 2=soft, 3=hard)",
+    ["service"],
+)
+
+# ============================================================
+# DOMAIN 8 — Karsa Quant Dashboard (ALERT_TELEGRAM.md)
+# ============================================================
+
+ASM_CHECKPOINT_TOTAL = Counter(
+    "karsa_asm_checkpoint_total",
+    "ASM checkpoint evaluations (PerformanceGate + AI Judge)",
+    ["ticker", "decision"],
+)
+
+LLM_CONFIDENCE_SCORE = Gauge(
+    "karsa_llm_confidence_score",
+    "AI judge confidence score per position",
+    ["ticker"],
+)
+
+CUMULATIVE_SLIPPAGE_BPS = Gauge(
+    "karsa_sor_slippage_bps_cumulative",
+    "Cumulative slippage in basis points across all orders",
+)
+
+ORDERS_MAKER = Counter(
+    "karsa_orders_maker_total",
+    "Total maker (limit) orders filled",
+)
+
+ORDERS_TAKER = Counter(
+    "karsa_orders_taker_total",
+    "Total taker (market) orders filled",
+)
+
+DLQ_DEPTH = Gauge(
+    "karsa_dlq_depth",
+    "Number of items in dead letter queue (exhausted retries)",
+)
+
+RECONCILIATION_GHOSTS = Counter(
+    "karsa_reconciliation_ghosts_total",
+    "Ghost positions detected during reconciliation",
+)
+
+
+def record_asm_checkpoint(ticker: str, decision: str):
+    """Record ASM checkpoint evaluation."""
+    ASM_CHECKPOINT_TOTAL.labels(ticker=ticker, decision=decision).inc()
+
+
+def update_llm_confidence(ticker: str, score: float):
+    """Update AI judge confidence for a position."""
+    LLM_CONFIDENCE_SCORE.labels(ticker=ticker).set(score)
+
+
+def update_cumulative_slippage(bps: float):
+    """Update cumulative slippage gauge."""
+    CUMULATIVE_SLIPPAGE_BPS.set(bps)
+
+
+def record_order_maker():
+    """Record a maker (limit) order fill."""
+    ORDERS_MAKER.inc()
+
+
+def record_order_taker():
+    """Record a taker (market) order fill."""
+    ORDERS_TAKER.inc()
+
+
+def update_dlq_depth(depth: int):
+    """Update DLQ depth gauge. Call from dlq.py."""
+    DLQ_DEPTH.set(depth)
+
+
+def record_reconciliation_ghost():
+    """Record a ghost position found during reconciliation."""
+    RECONCILIATION_GHOSTS.inc()

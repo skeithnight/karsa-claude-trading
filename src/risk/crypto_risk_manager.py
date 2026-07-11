@@ -502,9 +502,9 @@ class CryptoRiskManager:
         # Validate entry_price is within 30% of current market price
         if self.mcp:
             try:
-                ticker_info = await self.mcp.get_ticker(ticker, "CRYPTO")
-                if ticker_info and ticker_info.get("last_price"):
-                    current_price = float(ticker_info["last_price"])
+                ticker_info = await self.mcp.get_quote(ticker, "CRYPTO")
+                if ticker_info and ticker_info.get("price"):
+                    current_price = float(ticker_info["price"])
                     if current_price > 0:
                         deviation = abs(entry_price - current_price) / current_price
                         if deviation > 0.30:
@@ -572,8 +572,10 @@ class CryptoRiskManager:
             else:
                 import redis.asyncio as redis_mod
                 r = redis_mod.from_url(settings.REDIS_URL, decode_responses=True)
-                cooldown = await r.get("karsa:crypto_cooldown")
-                await r.close()
+                try:
+                    cooldown = await r.get("karsa:crypto_cooldown")
+                finally:
+                    await r.close()
             if cooldown:
                 return self._reject("Cooldown active (sellall was triggered)")
 

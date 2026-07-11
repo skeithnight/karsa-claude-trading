@@ -30,6 +30,12 @@ class SmartMoneyIntelligence:
         if not self._oc:
             self._oc = OnchainClient(cache=self._cache)
 
+    async def close(self):
+        """Close all underlying HTTP clients to prevent connection leaks."""
+        for client in (self._oc,):
+            if client and hasattr(client, 'close'):
+                await client.close()
+
     async def get_known_wallets(self) -> list[dict]:
         """Get tracked wallets (seed + DB-stored)."""
         wallets = list(SEED_WALLETS)

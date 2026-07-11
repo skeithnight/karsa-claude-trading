@@ -58,9 +58,13 @@ async def _alert_regime_transition(old_state: str, new_state: str, regime: dict)
         token = settings.CRYPTO_TELEGRAM_TOKEN or settings.TELEGRAM_TOKEN
         chat_id_str = None
         try:
-            import redis as sync_redis
-            r = sync_redis.from_url(settings.REDIS_URL, decode_responses=True)
-            chat_id_str = r.get("karsa:telegram_chat_id")
+            # Finding 11: use asyncio.to_thread to avoid blocking the event loop
+            import redis.asyncio as async_redis
+            r = async_redis.from_url(settings.REDIS_URL, decode_responses=True)
+            try:
+                chat_id_str = await r.get("karsa:telegram_chat_id")
+            finally:
+                await r.close()
         except Exception:
             pass
 

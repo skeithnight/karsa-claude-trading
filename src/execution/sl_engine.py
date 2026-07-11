@@ -65,6 +65,7 @@ class StopLossEngine:
         finally:
             watchdog_task.cancel()
             await pubsub.unsubscribe()
+            await pubsub.close()  # Finding 3: release the dedicated Redis connection
             logger.info("sl_engine_stopped")
 
     async def stop(self) -> None:

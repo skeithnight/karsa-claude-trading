@@ -21,6 +21,12 @@ class CommunityIntelligence:
         if not self._cg:
             self._cg = CoinGeckoClient(cache=self._cache)
 
+    async def close(self):
+        """Close all underlying HTTP clients to prevent connection leaks."""
+        for client in (self._cg,):
+            if client and hasattr(client, 'close'):
+                await client.close()
+
     async def get_social_metrics(self, coingecko_id: str) -> dict:
         """Get social metrics from CoinGecko."""
         await self._ensure_clients()

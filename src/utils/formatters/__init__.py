@@ -111,3 +111,6 @@ def format_sl_alert(symbol: str, side: str, exit_price: float, pnl: float, pnl_p
         bold("PnL: "), f"🔴 ${pnl:+,.2f} ({pnl_pct:+.2f}%)", "\n\n",
         "Position closed to protect capital.",
     )
+
+# Paginated trade history formatter
+from src.utils.formatters.trade_history_formatter import TradeHistoryFormatter
