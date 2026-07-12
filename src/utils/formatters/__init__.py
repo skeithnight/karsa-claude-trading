@@ -8,6 +8,23 @@ from html import escape
 from src.utils.format import HTML, bold, italic, code, fmt
 
 
+def format_price(p: float) -> str:
+    """Format crypto prices dynamically based on size to prevent rounding small values to 0."""
+    if p == 0:
+        return "0.00"
+    abs_p = abs(p)
+    if abs_p >= 10:
+        return f"{p:,.2f}"
+    elif abs_p >= 1:
+        return f"{p:,.4f}"
+    elif abs_p >= 0.01:
+        return f"{p:,.5f}"
+    elif abs_p >= 0.0001:
+        return f"{p:,.6f}"
+    else:
+        return f"{p:,.8f}"
+
+
 def format_position_card(position: dict, index: int = 0, pos_pct: float = 0.0) -> str:
     """Format a single open position as a detailed multi-line card.
 
@@ -46,8 +63,8 @@ def format_position_card(position: dict, index: int = 0, pos_pct: float = 0.0) -
 
     card = fmt(
         bold(f"{index}. {symbol} ({side_label})"), f" {pnl_icon}", "\n",
-        f"┣ Entry: ${entry:,.2f} | Now: ${mark:,.2f}", "\n",
-        f"┣ Size: {size} | Liq: ${liq:,.2f}", "\n",
+        f"┣ Entry: ${format_price(entry)} | Now: ${format_price(mark)}", "\n",
+        f"┣ Size: {size} | Liq: ${format_price(liq)}", "\n",
         f"┗ PnL: {pnl_icon} ${pnl:+,.2f} ({pnl_pct:+.2f}%)",
     )
 
@@ -55,9 +72,9 @@ def format_position_card(position: dict, index: int = 0, pos_pct: float = 0.0) -
         card = fmt(card, f"\n   📊 Alloc: {alloc_bar}", sep="")
 
     if sl > 0:
-        card = fmt(card, f"\n   SL: ${sl:,.2f}", sep="")
+        card = fmt(card, f"\n   SL: ${format_price(sl)}", sep="")
     if tp > 0:
-        card = fmt(card, f" | TP: ${tp:,.2f}", sep="")
+        card = fmt(card, f" | TP: ${format_price(tp)}", sep="")
 
     return card
 
@@ -95,7 +112,7 @@ def format_tp_alert(symbol: str, side: str, exit_price: float, pnl: float, pnl_p
         bold("🎯 TAKE PROFIT HIT 🎯"), "\n",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "\n",
         bold("Symbol: "), f"{symbol} ({side})", "\n",
-        bold("Exit Price: "), f"${exit_price:,.2f}", "\n",
+        bold("Exit Price: "), f"${format_price(exit_price)}", "\n",
         bold("PnL: "), f"🟢 ${pnl:+,.2f} ({pnl_pct:+.2f}%)", "\n\n",
         "Position closed successfully.",
     )
@@ -107,7 +124,7 @@ def format_sl_alert(symbol: str, side: str, exit_price: float, pnl: float, pnl_p
         bold("🛑 STOP LOSS HIT 🛑"), "\n",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "\n",
         bold("Symbol: "), f"{symbol} ({side})", "\n",
-        bold("Exit Price: "), f"${exit_price:,.2f}", "\n",
+        bold("Exit Price: "), f"${format_price(exit_price)}", "\n",
         bold("PnL: "), f"🔴 ${pnl:+,.2f} ({pnl_pct:+.2f}%)", "\n\n",
         "Position closed to protect capital.",
     )

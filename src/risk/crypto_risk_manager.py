@@ -15,6 +15,7 @@ Gates:
 9. Kill switch with account-level P&L check
 """
 
+import math
 import time
 
 from src.config import settings
@@ -23,12 +24,34 @@ from src.utils.logging import get_logger
 
 logger = get_logger("crypto_risk_manager")
 
+
+def _adaptive_round(value: float, reference_price: float) -> float:
+    """Round to enough decimals so the offset from reference_price is preserved.
+
+    round(x, 4) destroys SL/TP for low-price tokens (e.g. 0.0003):
+    stop = 0.000291 -> round(., 4) = 0.0003 == entry.  This function
+    picks precision based on the reference price magnitude so the
+    stop/take offset survives rounding.
+
+    Examples:
+        _adaptive_round(0.000291, 0.0003) -> 0.000291  (6 decimals)
+        _adaptive_round(78.42, 78.3)      -> 78.42      (2 decimals)
+    """
+    if reference_price <= 0:
+        return round(value, 4)
+    # number of leading zeros after decimal point in reference price
+    magnitude = math.floor(math.log10(abs(reference_price)))
+    # more leading zeros -> need more decimals; baseline 4 for normal prices
+    decimals = max(4, -magnitude + 3)
+    return round(value, decimals)
+
+
 # Correlation tiers — relaxed limits for small capital
 CORRELATION_TIERS = {
-    "tier1": {"symbols": {"BTCUSDT", "ETHUSDT"}, "max_positions": 2, "max_combined_pct": 0.15},
-    "tier2": {"symbols": {"SOLUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT", "BNBUSDT", "NEARUSDT"}, "max_positions": 2, "max_combined_pct": 0.15},
-    "tier3": {"symbols": {"DOGEUSDT", "XRPUSDT", "ADAUSDT", "DOTUSDT", "MATICUSDT"}, "max_positions": 2, "max_combined_pct": 0.10},
-    "tier_meme": {"symbols": set(), "max_positions": 1, "max_combined_pct": 0.05},
+    "tier1": {"symbols": {"BTCUSDT", "ETHUSDT"}, "max_positions": 5, "max_combined_pct": 0.25},
+    "tier2": {"symbols": {"SOLUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT", "BNBUSDT", "NEARUSDT"}, "max_positions": 5, "max_combined_pct": 0.25},
+    "tier3": {"symbols": {"DOGEUSDT", "XRPUSDT", "ADAUSDT", "DOTUSDT", "MATICUSDT"}, "max_positions": 5, "max_combined_pct": 0.25},
+    "tier_meme": {"symbols": set(), "max_positions": 3, "max_combined_pct": 0.15},
 }
 
 MAX_LEVERAGE_BY_TIER = {"tier1": 10, "tier2": 5, "tier3": 3, "tier_meme": 1}
@@ -54,32 +77,32 @@ def _get_current_session(utc_hour: int) -> str:
 
 REGIME_RISK_MAPPING = {
     "FULL_TREND_ALIGNMENT": {
-        "min_confidence": 80.0,
+        "min_confidence": 70.0,
         "size_multiplier": 1.0,
         "stop_loss_atr_mult": 1.5
     },
     "MACRO_BULL_MICRO_PULLBACK": {
-        "min_confidence": 90.0,
+        "min_confidence": 75.0,
         "size_multiplier": 0.8,
         "stop_loss_atr_mult": 2.0
     },
     "MACRO_BEAR_MICRO_PULLBACK": {
-        "min_confidence": 90.0,
+        "min_confidence": 75.0,
         "size_multiplier": 0.8,
         "stop_loss_atr_mult": 2.0
     },
     "MICRO_BREAKOUT_NO_MACRO": {
-        "min_confidence": 90.0,
+        "min_confidence": 75.0,
         "size_multiplier": 0.5,
         "stop_loss_atr_mult": 1.0
     },
     "PURE_DEAD_CHOP": {
-        "min_confidence": 99.0,
-        "size_multiplier": 0.0,
+        "min_confidence": 80.0,
+        "size_multiplier": 0.5,
         "stop_loss_atr_mult": 1.0
     },
     "MEAN_REVERSION": {
-        "min_confidence": 90.0,
+        "min_confidence": 75.0,
         "size_multiplier": 0.8,
         "stop_loss_atr_mult": 1.5
     }
@@ -364,7 +387,7 @@ class CryptoRiskManager:
         entry_price = signal.get("entry_price", 0)
 
         # Profile-aware thresholds
-        min_confidence = 80
+        min_confidence = 70
         max_concurrent = self.max_concurrent
         max_risk_pct = self.max_risk_pct
         max_position_pct = self.max_position_pct
@@ -806,14 +829,14 @@ class CryptoRiskManager:
             "reason": f"Risk OK: {actual_risk_pct:.1f}% risk, {size_multiplier:.1f}x regime adj",
             "qty": round(qty, 6),
             "entry_price": entry_price,
-            "stop_loss": round(stop_loss, 4),
-            "take_profit": round(take_profit, 4),
+            "stop_loss": _adaptive_round(stop_loss, entry_price),
+            "take_profit": _adaptive_round(take_profit, entry_price),
             "risk_amount": round(risk_amount, 2),
             "risk_pct": round(actual_risk_pct, 2),
             "position_value": round(position_value, 2),
             "leverage": leverage,
             "rr_ratio": rr_ratio,
-            "atr": round(atr, 4) if atr else None,
+            "atr": _adaptive_round(atr, entry_price) if atr else None,
             "stop_pct": round(stop_pct * 100, 2),
         }
 

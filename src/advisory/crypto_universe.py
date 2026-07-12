@@ -50,6 +50,7 @@ CRYPTO_UNIVERSE = [
 UNIVERSE_BLACKLIST = {
     "XAUUSDT", "XAGUSDT", "XAUTUSDT",   # commodity perps (gold/silver)
     "SKHYNIXUSDT",                        # tokenized equity (SK Hynix)
+    "SPCUSDT", "PEPEUSDT",               # invalid symbols on Bybit linear
 }
 
 # Max total tokens per scan (core + dynamic)

@@ -166,6 +166,9 @@ async def pool_reset(reason: str = "manual") -> bool:
             except Exception as e:
                 logger.warning("pool_reset_dispose_error reason=%s error=%s", reason, str(e))
 
+        _engine = _make_engine()
+        logger.info("db_engine_recreated pool_size=%d max_overflow=%d", _POOL_SIZE, _MAX_OVERFLOW)
+
     return True
 
 def get_health_engine():

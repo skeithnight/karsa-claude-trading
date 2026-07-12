@@ -77,7 +77,7 @@ _signal_cache: dict[str, float] = {}
 _SIGNAL_DEDUP_SECONDS = 4 * 3600  # 4 hours
 
 # Required fields for a valid signal from an agent
-_REQUIRED_SIGNAL_FIELDS = {"ticker", "confidence_score", "direction"}
+_REQUIRED_SIGNAL_FIELDS = {"ticker", "direction"}  # confidence may be "confidence" or "confidence_score"
 _VALID_DIRECTIONS = {"LONG", "SHORT", "CLOSE"}
 
 
@@ -272,7 +272,16 @@ class Orchestrator:
                 return signals
 
             # Expect JSON array in result
-            results_list = batch_result if isinstance(batch_result, list) else batch_result.get("signals", [batch_result])
+            if isinstance(batch_result, list):
+                results_list = batch_result
+            elif isinstance(batch_result, dict):
+                results_list = batch_result.get("signals", batch_result.get("signal", [batch_result]))
+                if not isinstance(results_list, list):
+                    results_list = [results_list]
+            else:
+                results_list = [batch_result]
+            logger.info("batch_result_parsed", type=type(batch_result).__name__, count=len(results_list),
+                        sample=str(results_list[0])[:200] if results_list else "empty")
             min_conf = 50
             profile_name = "default"
             if self.profile_manager:
@@ -291,7 +300,7 @@ class Orchestrator:
                 if issues:
                     logger.warning("invalid_signal", market=market, ticker=ticker, issues=issues)
                     continue
-                confidence = result.get("confidence_score", 0)
+                confidence = result.get("confidence_score") or result.get("confidence", 0)
                 # Apply confidence calibration if available
                 if self.calibrator:
                     try:
@@ -338,8 +347,10 @@ class Orchestrator:
                     except Exception as e:
                         logger.warning("policy_engine_error", ticker=ticker, error=str(e))
                 try:
-                    from src.metrics.crypto_metrics import record_signal_received
+                    from src.metrics.crypto_metrics import record_signal_received, record_analyst_signal
                     record_signal_received(market)
+                    if market == "CRYPTO":
+                        record_analyst_signal(ticker, result.get("direction", ""), confidence)
                 except Exception:
                     pass
                 if confidence >= min_conf:
@@ -407,7 +418,7 @@ class Orchestrator:
                         profile_name = p.name
                     except Exception:
                         pass
-                confidence = result.get("confidence_score", 0)
+                confidence = result.get("confidence_score") or result.get("confidence", 0)
                 # Apply confidence calibration if available
                 if market == "CRYPTO" and self.calibrator:
                     try:
@@ -563,6 +574,7 @@ class Orchestrator:
 
         # Slice for LLM scanning to prevent token explosion
         max_llm_scan = 50
+        full_universe = universe[:]  # save for widen scan
         if len(universe) > max_llm_scan:
             logger.info("crypto_universe_sliced_for_llm", original=len(universe), sliced=max_llm_scan)
             universe = universe[:max_llm_scan]
@@ -621,9 +633,11 @@ class Orchestrator:
                 # Record for live Grafana dashboard
                 try:
                     from src.metrics.crypto_metrics import record_analyst_signal
-                    record_analyst_signal(ticker, direction, signal.get("confidence_score", 0))
-                except Exception:
-                    pass
+                    conf = signal.get("confidence_score") or signal.get("confidence", 0)
+                    record_analyst_signal(ticker, direction, conf)
+                    logger.info("analyst_metric_recorded", ticker=ticker, direction=direction, confidence=conf)
+                except Exception as e:
+                    logger.error("analyst_metric_record_failed", error=str(e), ticker=ticker)
 
         # Update cooldown streaks for all scanned tickers
         STREAK_KEY = "karsa:scanner:low_conf_streak"
@@ -642,7 +656,7 @@ class Orchestrator:
                     if ticker in _COOLDOWN_EXEMPT:
                         continue
                     # FIX: was signal.get("confidence", 0) — always 0, broke every ticker
-                    conf = signal.get("confidence_score", 0)
+                    conf = signal.get("confidence_score") or signal.get("confidence", 0)
                     if conf < 50:
                         streak = int(await self.cache.redis.hget(STREAK_KEY, ticker) or 0) + 1
                         await self.cache.redis.hset(STREAK_KEY, ticker, streak)
@@ -655,6 +669,80 @@ class Orchestrator:
                         await self.cache.redis.hdel(COOLDOWN_KEY, ticker)
         except Exception:
             pass
+
+        # --- WIDEN SCAN: if 0 high-confidence signals, fetch fresh tickers from Bybit ---
+        if not signals:
+            try:
+                bybit = self.mcp._get_bybit()
+                all_perps = await bybit.get_all_perps(min_volume_usd=500_000)
+                scanned_set = set(universe)
+                widen_candidates = [p["symbol"] for p in all_perps
+                                    if p["symbol"] not in scanned_set][:25]
+                # Evaluate regime for widen tickers
+                from src.advisory.coin_regime import CoinRegimeEngine
+                bybit_cache = self.universe_engine._bybit.cache if self.universe_engine else None
+                widen_engine = CoinRegimeEngine(self.mcp, bybit_cache)
+                widen_regime_tasks = [widen_engine.get_regime(s) for s in widen_candidates]
+                widen_regimes = await asyncio.gather(*widen_regime_tasks, return_exceptions=True)
+                widen_universe = []
+                for sym, reg in zip(widen_candidates, widen_regimes):
+                    if isinstance(reg, Exception) or (hasattr(reg, 'state') and reg.state == "DEAD_CHOP"):
+                        continue
+                    regime_map[sym] = reg.state if hasattr(reg, 'state') else "UNKNOWN"
+                    widen_universe.append(sym)
+            except Exception as e:
+                logger.warning("widen_scan_failed", error=str(e))
+                widen_universe = []
+            if widen_universe:
+                logger.info("scan_widen_triggered", unscanned=len(widen_universe),
+                            original=max_llm_scan, total=len(full_universe))
+                try:
+                    from src.metrics.crypto_metrics import SCAN_WIDEN_TRIGGERED
+                    SCAN_WIDEN_TRIGGERED.inc()
+                except Exception:
+                    pass
+
+                widen_grouped = {}
+                for sym in widen_universe:
+                    widen_grouped.setdefault(regime_map.get(sym, "UNKNOWN"), []).append(sym)
+
+                widen_tasks = []
+                for state, syms in widen_grouped.items():
+                    widen_agent = CryptoAnalyst(self.mcp, getattr(self, "rate_limiter", None))
+                    if self.profile_manager:
+                        try:
+                            pn = await self.profile_manager.get_active_profile_name()
+                            widen_agent.set_profile(pn)
+                        except Exception:
+                            pass
+                    widen_agent.update_strategy(state)
+                    batches = [syms[i:i+BATCH_SIZE] for i in range(0, len(syms), BATCH_SIZE)]
+                    for batch in batches:
+                        widen_tasks.append(
+                            self._scan_market("CRYPTO", widen_agent, batch,
+                                              composite=regime, position_context=position_context)
+                        )
+
+                widen_results = await asyncio.gather(*widen_tasks, return_exceptions=True)
+                for result in widen_results:
+                    if isinstance(result, Exception) or not result:
+                        continue
+                    for signal in result:
+                        ticker = signal.get("ticker", "")
+                        direction = signal.get("direction", "")
+                        dedup_key = f"{ticker}:{direction}"
+                        if dedup_key in _signal_cache:
+                            continue
+                        _signal_cache[dedup_key] = time.time()
+                        signals.append(signal)
+                        try:
+                            from src.metrics.crypto_metrics import record_analyst_signal
+                            conf = signal.get("confidence_score") or signal.get("confidence", 0)
+                            record_analyst_signal(ticker, direction, conf)
+                        except Exception:
+                            pass
+
+                logger.info("scan_widen_done", widen_signals=len(signals))
 
         return signals
 
@@ -690,7 +778,7 @@ class Orchestrator:
             from sqlalchemy import select, func
             from datetime import datetime, timezone, timedelta
             async with async_session() as session:
-                window_start = datetime.now(timezone.utc) - timedelta(hours=settings.CRYPTO_LOSS_LIMIT_WINDOW_HOURS)
+                window_start = (datetime.now(timezone.utc) - timedelta(hours=settings.CRYPTO_LOSS_LIMIT_WINDOW_HOURS)).replace(tzinfo=None)
                 result = await session.execute(
                     select(func.sum(ClosedPaperTrade.realized_pnl_pct))
                     .where(
@@ -1072,10 +1160,10 @@ class Orchestrator:
                 issues.append(f"missing field: {field}")
 
         if not issues:
-            # Confidence range
-            conf = signal.get("confidence_score")
+            # Confidence range (agent may use "confidence" or "confidence_score")
+            conf = signal.get("confidence_score") or signal.get("confidence")
             if not isinstance(conf, (int, float)) or conf < 0 or conf > 100:
-                issues.append(f"confidence_score must be 0-100, got {conf}")
+                issues.append(f"confidence must be 0-100, got {conf}")
 
             # Direction enum
             direction = signal.get("direction", "").upper()
