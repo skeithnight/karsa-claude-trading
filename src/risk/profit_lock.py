@@ -26,10 +26,9 @@ logger = get_logger("profit_lock")
 
 # Profit lock tiers: min_r → stop formula
 PROFIT_TIERS = [
-    {"min_r": 0.5, "atr_mult": None, "desc": "breakeven"},
-    {"min_r": 1.0, "atr_mult": Decimal("1.0"), "desc": "tight_trail_1.0"},
-    {"min_r": 2.0, "atr_mult": Decimal("0.75"), "desc": "medium_trail_0.75"},
-    {"min_r": 3.0, "atr_mult": Decimal("0.5"), "desc": "tight_trail_0.5"},
+    {"min_r": 0.8, "atr_mult": None, "desc": "breakeven"},              # Let it breathe to 0.8 R
+    {"min_r": 2.0, "atr_mult": Decimal("0.8"), "desc": "trail_0.8"},    # Trail the runners
+    {"min_r": 5.0, "atr_mult": Decimal("1.5"), "desc": "tight_1.5"},    # Lock in big pumps
 ]
 
 

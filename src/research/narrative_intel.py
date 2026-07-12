@@ -1,6 +1,6 @@
 """Narrative Intelligence — Detect and track crypto narratives.
 
-Deterministic scoring (0-100). Uses CoinGecko categories + market data.
+Deterministic scoring (0-100).
 Narratives: AI, DePIN, RWA, Memecoin, Gaming, DeFi, L2, ZK, etc.
 """
 
@@ -9,46 +9,23 @@ from src.utils.logging import get_logger
 
 logger = get_logger("narrative_intel")
 
-# Known narrative keywords mapped to CoinGecko category IDs
-NARRATIVE_MAP = {
-    "AI": ["artificial-intelligence", "ai-agents"],
-    "DePIN": ["depin"],
-    "RWA": ["real-world-assets", "tokenized-assets"],
-    "Memecoin": ["meme-token"],
-    "Gaming": ["gaming", "play-to-earn"],
-    "DeFi": ["decentralized-finance-defi"],
-    "L2": ["layer-2", "rollup"],
-    "ZK": ["zero-knowledge-proofs"],
-    "Infrastructure": ["infrastructure"],
-    "Bitcoin Ecosystem": ["bitcoin-ecosystem"],
-    "Solana Ecosystem": ["solana-ecosystem"],
-}
-
 
 class NarrativeIntelligence:
     """Narrative detection and tracking."""
 
-    def __init__(self, cache=None, coingecko=None):
+    def __init__(self, cache=None):
         self._cache = cache
-        self._cg = coingecko
 
     async def _ensure_clients(self):
-        from src.data.coingecko_client import CoinGeckoClient
-        if not self._cg:
-            self._cg = CoinGeckoClient(cache=self._cache)
+        pass
 
     async def close(self):
         """Close all underlying HTTP clients to prevent connection leaks."""
-        for client in (self._cg,):
-            if client and hasattr(client, 'close'):
-                await client.close()
+        pass
 
     async def detect_narratives(self) -> list[dict]:
-        """Detect trending narratives from CoinGecko category data."""
-        await self._ensure_clients()
-        categories = await self._cg.get_categories()
-        if not categories:
-            return []
+        """Detect trending narratives — CoinGecko removed, returns empty."""
+        return []
 
         narratives = []
         for cat in categories:
@@ -132,9 +109,8 @@ class NarrativeIntelligence:
         if not coingecko_id:
             return {"symbol": symbol, "score": 50, "narratives": [], "detected": narratives[:5]}
 
-        detail = await self._cg.get_coin_detail(coingecko_id)
-        categories = (detail or {}).get("categories", [])
-        matched = self.map_token_to_narratives(categories, narratives)
+        # CoinGecko removed — no category matching
+        matched = []
 
         if not matched:
             # Not in any trending narrative — neutral score
@@ -151,25 +127,3 @@ class NarrativeIntelligence:
             "narratives": [n["narrative"] for n in matched],
             "detected": narratives[:5],
         }
-
-    async def persist_narratives(self, narratives: list[dict]):
-        """Save detected narratives to crypto_narratives table."""
-        from src.models.database import async_session
-        from sqlalchemy import text
-        import json
-        async with async_session() as session:
-            for n in narratives:
-                await session.execute(
-                    text("""INSERT INTO crypto_narratives
-                        (narrative, strength, momentum, confidence, key_tokens, sources)
-                        VALUES (:narrative, :strength, :momentum, :confidence, :tokens, :sources)"""),
-                    {
-                        "narrative": n["narrative"],
-                        "strength": n.get("strength"),
-                        "momentum": n.get("momentum"),
-                        "confidence": self.score_narrative(n),
-                        "tokens": json.dumps(n.get("top_coins", [])),
-                        "sources": json.dumps({"coingecko_category": n.get("category_name")}),
-                    },
-                )
-            await session.commit()

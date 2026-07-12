@@ -271,6 +271,15 @@ class AutonomousSessionManager:
             return self._format_inactive_status()
 
         config = await self._get_config()
+
+        # Override max_pos with live settings value
+        try:
+            v = await self.redis.get("karsa:settings:max_positions")
+            if v:
+                config["max_pos"] = int(v)
+        except Exception:
+            pass
+
         start_time = float(await self.redis.get(REDIS_START_TIME) or time.time())
         start_equity = float(await self.redis.get(REDIS_START_EQUITY) or 0)
         running_sec = time.time() - start_time
@@ -368,7 +377,14 @@ class AutonomousSessionManager:
         """Main autonomous scanning loop. Runs until stopped or crashed."""
         config = await self._get_config()
         interval_sec = config.get("interval_min", DEFAULT_INTERVAL_MIN) * 60
-        max_pos = config.get("max_pos", DEFAULT_MAX_POS)
+
+        async def _live_max_pos() -> int:
+            """Re-read max positions from settings each iteration."""
+            try:
+                v = await self.redis.get("karsa:settings:max_positions")
+                return int(v) if v else config.get("max_pos", DEFAULT_MAX_POS)
+            except Exception:
+                return config.get("max_pos", DEFAULT_MAX_POS)
 
         logger.info("asm_loop_started", config=config)
 
@@ -510,7 +526,8 @@ class AutonomousSessionManager:
 
                 async with self._scan_lock:
 
-                    # 2. Capacity check
+                    # 2. Capacity check (re-read live from settings)
+                    max_pos = await _live_max_pos()
                     open_count = await self._get_open_position_count()
                     if open_count >= max_pos:
                         logger.info("asm_at_capacity", open=open_count, max=max_pos)

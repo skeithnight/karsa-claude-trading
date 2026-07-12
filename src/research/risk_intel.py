@@ -1,7 +1,7 @@
 """Contract Risk Intelligence — Smart contract security, rug detection, tokenomics.
 
 Deterministic scoring (0-100). Higher = riskier (inverted from other modules).
-Uses: OnchainClient, DefiLlamaClient, CoinGeckoClient.
+Uses: OnchainClient, DefiLlamaClient.
 """
 
 from src.utils.logging import get_logger
@@ -12,26 +12,22 @@ logger = get_logger("risk_intel")
 class RiskIntelligence:
     """Contract and tokenomics risk assessment."""
 
-    def __init__(self, cache=None, onchain=None, defillama=None, coingecko=None):
+    def __init__(self, cache=None, onchain=None, defillama=None):
         self._cache = cache
         self._oc = onchain
         self._dl = defillama
-        self._cg = coingecko
 
     async def _ensure_clients(self):
         from src.data.onchain_client import OnchainClient
         from src.data.defillama_client import DefiLlamaClient
-        from src.data.coingecko_client import CoinGeckoClient
         if not self._oc:
             self._oc = OnchainClient(cache=self._cache)
         if not self._dl:
             self._dl = DefiLlamaClient(cache=self._cache)
-        if not self._cg:
-            self._cg = CoinGeckoClient(cache=self._cache)
 
     async def close(self):
         """Close all underlying HTTP clients to prevent connection leaks."""
-        for client in (self._oc, self._dl, self._cg):
+        for client in (self._oc, self._dl):
             if client and hasattr(client, 'close'):
                 await client.close()
 
@@ -75,9 +71,8 @@ class RiskIntelligence:
         if not coingecko_id:
             return indicators
 
-        detail = await self._cg.get_coin_detail(coingecko_id)
-        if not detail:
-            return indicators
+        # CoinGecko removed — return default risk indicators
+        return indicators
 
         # Check project age from genesis date
         genesis = detail.get("genesis_date")
@@ -129,11 +124,8 @@ class RiskIntelligence:
         return indicators
 
     async def analyze_tokenomics(self, coingecko_id: str) -> dict:
-        """Analyze tokenomics: supply distribution, inflation, unlocks."""
-        await self._ensure_clients()
-        detail = await self._cg.get_coin_detail(coingecko_id)
-        if not detail:
-            return {"score": 50, "error": "no_data"}
+        """Analyze tokenomics — CoinGecko removed, returns neutral."""
+        return {"score": 50, "error": "coingecko_removed"}
 
         market_data = detail.get("market_data", {})
         circ = market_data.get("circulating_supply") or 0

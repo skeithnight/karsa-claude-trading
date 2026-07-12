@@ -146,16 +146,6 @@ class CryptoKarsaApp:
         self.decision_engine.add_source(PolicySource())
         logger.info("decision_engine_ready", sources=[s.name for s in self.decision_engine._sources])
 
-        # Replay Engine (Phase 6 — event store subscriber)
-        from src.architecture.replay import ReplayEngine
-        self.replay_engine = ReplayEngine()
-        _replay_subscriber = self.replay_engine.store_event
-        for evt_type in ["PositionOpened", "PositionReduced", "PositionClosed",
-                         "TrailingActivated", "BreakEvenActivated", "StopLossTriggered",
-                         "StopLossRecovered", "StopLossUpdated", "PositionSynced"]:
-            _event_bus.subscribe(evt_type, _replay_subscriber)
-        logger.info("replay_engine_ready")
-
         # Policy Engine (Phase 7 — single policy authority)
         from src.architecture.policy import PolicyEngine, TradingPolicy, RiskPolicy, EmergencyPolicy
         self.policy_engine = PolicyEngine()
@@ -175,19 +165,12 @@ class CryptoKarsaApp:
         self.agent_registry.register(AgentConfig("crypto_auditor", max_retries=2, timeout_seconds=60, combo_name="karsa-routine"))
         logger.info("agent_runtime_ready", agents=self.agent_registry.all_types())
 
-        # Workflow Engine (Phase 9 — durable business processes)
-        from src.architecture.workflow import WorkflowEngine, CheckpointManager
-        self.checkpoint_manager = CheckpointManager(redis_client=self.redis_client)
-        self.workflow_engine = WorkflowEngine(checkpoint_manager=self.checkpoint_manager)
-        logger.info("workflow_engine_ready")
-
         # Ponytail: move MCPClient + Orchestrator init before attribute attachment
         self.mcp = MCPClient(self.cache)
         self.orchestrator = Orchestrator(self.mcp, self.cache, self.rate_limiter)
         self.orchestrator.decision_engine = self.decision_engine
         self.orchestrator.policy_engine = self.policy_engine
         self.orchestrator.agent_runtime = self.agent_runtime
-        self.orchestrator.workflow_engine = self.workflow_engine
 
         # Risk profile + dynamic universe engine
         from src.risk.profile_manager import RiskProfileManager
@@ -365,6 +348,12 @@ class CryptoKarsaApp:
         s.add_job(self._job_process_dlq, "interval", seconds=30,
                   id="dlq_consumer", name="DLQ Consumer", replace_existing=True, misfire_grace_time=30, max_instances=1, coalesce=True)
 
+        # Meme sniper (experiment, gated)
+        if getattr(settings, "MEME_SNIPER_ENABLED", False):
+            s.add_job(self._job_scan_meme, "interval", minutes=getattr(settings, "MEME_SCAN_INTERVAL_MIN", 5),
+                      id="scan_meme", name="Meme Sniper Scan", replace_existing=True, misfire_grace_time=120, max_instances=1, coalesce=True)
+            logger.info("meme_sniper_enabled", interval_min=getattr(settings, "MEME_SCAN_INTERVAL_MIN", 5))
+
         # Daily digest — Telegram summary at 00:00 UTC
         s.add_job(self._job_daily_digest, "cron", hour=0, minute=0,
                   id="daily_digest", name="Daily Digest", replace_existing=True, misfire_grace_time=600, max_instances=1, coalesce=True)
@@ -411,6 +400,20 @@ class CryptoKarsaApp:
         finally:
             if hasattr(self, 'watchdog'):
                 await self.watchdog.register_heartbeat("scan_crypto")
+
+    async def _job_scan_meme(self):
+        start = time.time()
+        try:
+            executed = await self.orchestrator.scan_meme()
+            JOB_LAST_RUN.labels(job_id="scan_meme").set(time.time())
+            JOB_DURATION.labels(job_id="scan_meme").observe(time.time() - start)
+            logger.info("meme_scan_done", executed=len(executed))
+        except Exception as e:
+            JOB_ERRORS.labels(job_id="scan_meme").inc()
+            logger.error("meme_scan_failed", error=str(e))
+        finally:
+            if hasattr(self, 'watchdog'):
+                await self.watchdog.register_heartbeat("scan_meme")
 
     async def _job_metrics_sync(self):
         """Polls health checks and balances to update Grafana metrics."""
@@ -501,10 +504,10 @@ class CryptoKarsaApp:
             JOB_DURATION.labels(job_id="crypto_monitor").observe(time.time() - start)
         except Exception as e:
             JOB_ERRORS.labels(job_id="crypto_monitor").inc()
+            logger.error("crypto_monitor_failed", error=str(e))
         finally:
             if hasattr(self, 'watchdog'):
                 await self.watchdog.register_heartbeat("crypto_monitor")
-            logger.error("crypto_monitor_failed", error=str(e))
 
     async def _job_sync_crypto_funding(self):
         start = time.time()
@@ -757,6 +760,26 @@ class CryptoKarsaApp:
                     exit_pct=action["exit_pct"],
                     reason=action["reason"],
                 )
+
+            # Scale-in pyramiding: add to winning positions in strong trends
+            try:
+                current_regime = "UNKNOWN"
+                if self.redis_client:
+                    cached = await self.redis_client.get("karsa:crypto_regime_state")
+                    if cached:
+                        current_regime = cached.decode() if isinstance(cached, bytes) else cached
+                scale_actions = await pm.check_scale_in(crypto_positions, current_regime)
+                for sa in scale_actions:
+                    await pm.execute_scale_in(
+                        position_id=sa["position_id"],
+                        add_size=sa["add_size"],
+                        reason=sa["reason"],
+                    )
+                if scale_actions:
+                    logger.info("scale_ins_executed", count=len(scale_actions))
+            except Exception as e:
+                logger.warning("scale_in_check_failed", error=str(e))
+
             JOB_LAST_RUN.labels(job_id="crypto_partial_exits").set(time.time())
             JOB_DURATION.labels(job_id="crypto_partial_exits").observe(time.time() - start)
             if actions:
@@ -1028,6 +1051,25 @@ class CryptoKarsaApp:
                 db_session.add(closed_trade)
                 await db_session.commit()
 
+                # Trade memory write — LLM learns from gate-triggered closes
+                try:
+                    from src.agents.memory_retriever import store_trade_memory
+                    hold_hours = (datetime.utcnow() - db_pos.opened_at.replace(
+                        tzinfo=timezone.utc if db_pos.opened_at.tzinfo is None else db_pos.opened_at.tzinfo
+                    )).total_seconds() / 3600 if db_pos and db_pos.opened_at else 0
+                    await store_trade_memory(
+                        ticker=ticker,
+                        regime=getattr(db_pos, "regime_at_entry", "UNKNOWN") or "UNKNOWN" if db_pos else "UNKNOWN",
+                        strategy=getattr(db_pos, "signal_source", "unknown") or "unknown" if db_pos else "unknown",
+                        thesis=getattr(db_pos, "signal_reasoning", f"{side} {ticker}") or f"{side} {ticker}" if db_pos else f"{side} {ticker}",
+                        outcome="WIN" if realized_pnl > 0 else "LOSS" if realized_pnl < 0 else "BREAKEVEN",
+                        pnl_pct=pnl_pct,
+                        exit_reason=f"performance_gate: {reason}",
+                        hold_duration_hours=hold_hours,
+                    )
+                except Exception:
+                    pass  # memory write non-blocking, never crash trade close
+
                 from src.metrics.crypto_metrics import record_trade_close
                 record_trade_close(
                     realized_pnl,
@@ -1121,6 +1163,27 @@ class CryptoKarsaApp:
                                     ticker=signal["ticker"],
                                     direction=signal["direction"],
                                     rate=signal.get("_funding_annualized"))
+                        # Notify user of funding capture position
+                        try:
+                            import httpx
+                            token = settings.CRYPTO_TELEGRAM_TOKEN or settings.TELEGRAM_TOKEN
+                            chat_id = await self.redis_client.get("karsa:telegram_chat_id")
+                            if token and chat_id:
+                                funding_dir = signal.get("_funding_direction", "")
+                                crowd = "longs" if funding_dir == "positive" else "shorts"
+                                msg = (
+                                    f"💸 <b>Funding Capture</b>\n"
+                                    f"  Opened <b>{signal['direction']}</b> {signal['ticker']}\n"
+                                    f"  Funding: <b>{signal.get('_funding_annualized', 0):+.1f}%</b> annualized\n"
+                                    f"  Earning from crowded {crowd}"
+                                )
+                                async with httpx.AsyncClient(timeout=10) as client:
+                                    await client.post(
+                                        f"https://api.telegram.org/bot{token}/sendMessage",
+                                        json={"chat_id": int(chat_id), "text": msg, "parse_mode": "HTML"},
+                                    )
+                        except Exception:
+                            pass
                     else:
                         logger.warning("funding_execute_failed",
                                        ticker=signal["ticker"],

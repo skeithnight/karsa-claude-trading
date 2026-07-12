@@ -8,7 +8,6 @@ from src.utils.logging import get_logger
 
 logger = get_logger("onchain_intel")
 
-
 class OnchainIntelligence:
     """On-chain data collection and scoring."""
 
@@ -35,10 +34,6 @@ class OnchainIntelligence:
             if client and hasattr(client, 'close'):
                 await client.close()
 
-    async def get_tvl(self, slug: str) -> dict | None:
-        await self._ensure_clients()
-        return await self._dl.get_protocol_tvl(slug)
-
     async def get_dex_volume(self, symbol: str) -> float | None:
         await self._ensure_clients()
         pairs = await self._ds.search_pairs(symbol)
@@ -46,29 +41,6 @@ class OnchainIntelligence:
             return None
         total_vol = sum(p.get("volume_24h_usd") or 0 for p in pairs)
         return total_vol
-
-    async def get_holder_data(self, contract: str, chain: str = "ethereum") -> dict:
-        await self._ensure_clients()
-        if chain == "solana":
-            holders = await self._oc.get_solana_token_holders(contract)
-            return {
-                "holder_count": len(holders),
-                "top10_pct": None,  # needs total supply for calc
-                "holders": holders[:10],
-            }
-        contract_info = await self._oc.get_contract_info(contract, chain)
-        transfers = await self._oc.get_token_transfers(contract, chain, days=7)
-        unique_wallets = set()
-        for tx in transfers:
-            unique_wallets.add(tx.get("from", ""))
-            unique_wallets.add(tx.get("to", ""))
-        unique_wallets.discard("")
-        return {
-            "contract_verified": (contract_info or {}).get("verified", False),
-            "is_proxy": (contract_info or {}).get("proxy", False),
-            "unique_wallets_7d": len(unique_wallets),
-            "transfer_count_7d": len(transfers),
-        }
 
     async def get_liquidity(self, symbol: str) -> dict:
         await self._ensure_clients()

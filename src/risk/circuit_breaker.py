@@ -49,7 +49,6 @@ MAX_TRADES_GLOBAL_PER_HOUR = 15
 SYMBOL_COOLDOWN_KEY_PREFIX = "karsa:cooldown"
 SYMBOL_COOLDOWN_SEC = 1800  # 30 minutes
 
-
 class CircuitBreakerManager:
     """Automated circuit breakers for crypto trading."""
 
@@ -360,32 +359,6 @@ class CircuitBreakerManager:
         except Exception as e:
             logger.error("cb_check_failed_assuming_active", breaker_type=breaker_type, error=str(e))
             return True  # fail-closed
-
-    async def get_active_breakers(self) -> list[dict]:
-        """Get all currently active circuit breakers."""
-        if not self._redis:
-            return []
-        try:
-            pattern = f"{CB_KEY_PREFIX}:*"
-            keys = []
-            async for key in self._redis.scan_iter(match=pattern):
-                keys.append(key)
-
-            breakers = []
-            for key in keys:
-                val = await self._redis.get(key)
-                if val:
-                    breaker_type = key.replace(f"{CB_KEY_PREFIX}:", "")
-                    breakers.append({
-                        "type": breaker_type,
-                        "details": json.loads(val),
-                        "ttl": await self._redis.ttl(key),
-                    })
-            return breakers
-        except Exception:
-            return []
-
-    # --- Anti-Churn: Trade Frequency Limiter ---
 
     async def record_trade(self, symbol: str) -> None:
         """Record a completed trade for frequency tracking.

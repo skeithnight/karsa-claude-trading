@@ -11,7 +11,6 @@ from src.utils.logging import get_logger
 
 logger = get_logger("monitoring_engine")
 
-
 class MonitoringEngine:
     """Continuous monitoring of researched tokens."""
 
@@ -108,16 +107,3 @@ class MonitoringEngine:
 
         logger.info("monitoring_cycle_done", alerts=len(score_alerts), watched=len(watched))
         return result
-
-    async def persist_alert(self, alert: dict):
-        """Save alert to research_audit_log."""
-        from src.models.database import async_session
-        from sqlalchemy import text
-        import json
-        async with async_session() as session:
-            await session.execute(
-                text("""INSERT INTO research_audit_log (token_symbol, action, details, agent)
-                VALUES (:symbol, :action, :details, 'monitoring_engine')"""),
-                {"symbol": alert.get("symbol"), "action": alert.get("type"), "details": json.dumps(alert)},
-            )
-            await session.commit()

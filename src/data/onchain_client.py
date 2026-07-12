@@ -35,7 +35,6 @@ _EXPLORER_KEYS = {
     "bsc": settings.BSCSCAN_API_KEY,
 }
 
-
 class OnchainClient:
     """Multi-chain on-chain data client via block explorer APIs."""
 
@@ -167,21 +166,6 @@ class OnchainClient:
 
         await self._set_cache(cache_key, transfers, 120)
         return transfers
-
-    async def get_eth_balance(self, address: str, chain: str = "ethereum") -> float | None:
-        """Get ETH/BNB balance for an address."""
-        data = await self._explorer_request(chain, {
-            "module": "account",
-            "action": "balance",
-            "address": address,
-            "tag": "latest",
-        })
-        if not data:
-            return None
-        try:
-            return int(data.get("result", 0)) / 1e18
-        except (ValueError, TypeError):
-            return None
 
     async def get_contract_info(self, contract: str, chain: str = "ethereum") -> dict | None:
         """Get contract source code and ABI verification status."""

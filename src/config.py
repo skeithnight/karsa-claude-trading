@@ -40,17 +40,31 @@ class Settings(BaseSettings):
     CRYPTO_MAX_POSITION_PCT: float = 10.0
     CRYPTO_MAX_CONCURRENT_POSITIONS: int = 5
     CRYPTO_DAILY_LOSS_LIMIT_PCT: float = 3.0
+    CRYPTO_LOSS_LIMIT_WINDOW_HOURS: int =4
     CRYPTO_MAX_EQUITY_DD_PCT: float = 15.0  # cumulative equity drawdown from peak
     CRYPTO_MAX_LEVERAGE: int = 10
     CRYPTO_FUNDING_ALERT_THRESHOLD: float = 0.05
     CRYPTO_FUNDING_HARD_REJECT_PCT: float = 0.05  # Gate 7: hard reject if funding > 0.05% per 8h
     CRYPTO_FUNDING_DRAG_MAX_PCT: float = 30.0     # Gate 7: max funding cost as % of target move
-    CRYPTO_MAX_SL_PCT: float = 2.0  # max stop-loss distance from entry (2% default)
+    CRYPTO_MAX_SL_PCT: float = 1.5  # max stop-loss distance from entry (1.5% default)
     CRYPTO_SL_MODE: str = "fixed"  # "atr" (ATR-based) or "fixed" (fixed dollar distance)
-    CRYPTO_FIXED_SL_DISTANCE: float = 1.0  # dollar distance from entry when mode=fixed
+    CRYPTO_FIXED_SL_DISTANCE: float = 1.5  # dollar distance from entry when mode=fixed
+    ALLOW_SHORTS: bool = False  # Momentum strategies are long-biased
     CRYPTO_LIQUIDATION_WARN_PCT: float = 20.0
     CRYPTO_LIQUIDATION_ALERT_PCT: float = 10.0
     CRYPTO_LIQUIDATION_FORCE_CLOSE_PCT: float = 5.0
+
+    # Meme Sniper (experiment)
+    MEME_SNIPER_ENABLED: bool = False
+    MEME_MAX_RISK_PCT: float = 0.5           # risk per trade %
+    MEME_MIN_LIQUIDITY_USD: float = 250_000  # min order book depth
+    MEME_SCAN_INTERVAL_MIN: int = 5          # scan speed
+    MEME_MAX_HOLD_MIN: int = 240             # max hold 4h
+    MEME_TP1_PCT: float = 15.0               # first take profit %
+    MEME_TP1_CLOSE_PCT: float = 0.5          # close 50% at TP1
+    MEME_1H_MIN_CHANGE_PCT: float = 8.0      # 1h price change threshold
+    MEME_15M_MIN_CHANGE_PCT: float = 2.0     # 15m price change threshold
+    MEME_VOL_SPIKE_MULT: float = 3.0         # 15m vol > Nx 4h median
 
     # Trading Safety Gate
     TRADING_MODE: str = "paper"  # "paper" | "live"
@@ -75,7 +89,6 @@ class Settings(BaseSettings):
     AODE_RESEARCH_BATCH_SIZE: int = 10
     AODE_MIN_COMPOSITE_SCORE: float = 50.0
     AODE_MAX_SECURITY_RISK: float = 80.0
-    COINGECKO_API_KEY: str = ""
     GITHUB_TOKEN: str = ""
     ETHERSCAN_API_KEY: str = ""
     SOLSCAN_API_KEY: str = ""

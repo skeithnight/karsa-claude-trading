@@ -1,16 +1,13 @@
 {
   "title": "Karsa Crypto Universe",
   "uid": "karsa-crypto-universe",
+  "tags": ["karsa", "crypto", "universe"],
   "panels": [
     {
-      "title": "Universe Size Over Time",
+      "title": "📊 Universe Size",
+      "description": "Total number of coins in the scan universe",
       "type": "stat",
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 0,
-        "y": 0
-      },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
       "targets": [
         {
           "expr": "karsa_universe_size",
@@ -21,102 +18,341 @@
         "defaults": {
           "thresholds": {
             "steps": [
-              {
-                "color": "red",
-                "value": 0
-              },
-              {
-                "color": "yellow",
-                "value": 8
-              },
-              {
-                "color": "green",
-                "value": 12
-              }
+              { "color": "red", "value": 0 },
+              { "color": "yellow", "value": 10 },
+              { "color": "green", "value": 20 }
             ]
-          }
+          },
+          "color": { "mode": "thresholds" }
         }
       }
     },
     {
-      "title": "Universe Refresh Status",
+      "title": "🎯 Active Scanning",
+      "description": "Tickers currently being analyzed (not cooldowned)",
       "type": "stat",
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 6,
-        "y": 0
-      },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
       "targets": [
         {
-          "expr": "karsa_universe_refresh_total{status=\"success\"}",
+          "expr": "karsa_universe_size - count(karsa_analyst_latest_signal_confidence > 0) or karsa_universe_size",
+          "legendFormat": "Active"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              { "color": "red", "value": 0 },
+              { "color": "yellow", "value": 10 },
+              { "color": "green", "value": 15 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      }
+    },
+    {
+      "title": "❄️ Cooldown Tickers",
+      "description": "Tickers skipped due to consecutive low confidence",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+      "targets": [
+        {
+          "expr": "count(karsa_analyst_latest_signal_confidence > 0) or vector(0)",
+          "legendFormat": "Cooldowned"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 5 },
+              { "color": "red", "value": 10 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      }
+    },
+    {
+      "title": "🌍 Market Regime",
+      "description": "Current market regime (BULL/BEAR/CHOP)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "karsa_crypto_regime",
+          "legendFormat": "Regime"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": { "text": "🐻 BEAR", "color": "red" },
+                "1": { "text": "🐂 BULL", "color": "green" },
+                "2": { "text": "🔄 CHOP", "color": "yellow" },
+                "3": { "text": "📈 MEAN REV", "color": "blue" }
+              }
+            }
+          ],
+          "color": { "mode": "fixed", "fixedColor": "text" }
+        }
+      }
+    },
+    {
+      "title": "⏱️ Scan Duration",
+      "description": "Average time per scan cycle",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, rate(karsa_scan_duration_seconds_bucket[5m]))",
+          "legendFormat": "P50"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 30 },
+              { "color": "red", "value": 60 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      }
+    },
+    {
+      "title": "₿ BTC Dominance",
+      "description": "Bitcoin dominance percentage",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+      "targets": [
+        {
+          "expr": "karsa_btc_dominance_pct",
+          "legendFormat": "BTC Dom"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 50 },
+              { "color": "red", "value": 70 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      }
+    },
+    {
+      "title": "🎯 Live Analyst Signals",
+      "description": "Latest confidence score per ticker from current scan cycle. Green = tradeable (≥50), Red = filtered (<50)",
+      "type": "table",
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 4 },
+      "targets": [
+        {
+          "expr": "karsa_analyst_latest_signal_confidence",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "transformations": [
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [{ "field": "Value", "desc": true }]
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": false,
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "le": true
+            },
+            "renameByName": {
+              "ticker": "Ticker",
+              "direction": "Direction",
+              "Value": "Confidence",
+              "Time": "Last Scanned"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "color-background"
+            }
+          },
+          "thresholds": {
+            "steps": [
+              { "color": "red", "value": 0 },
+              { "color": "orange", "value": 30 },
+              { "color": "yellow", "value": 45 },
+              { "color": "green", "value": 50 }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "LONG": { "text": "🟢 LONG", "color": "green" },
+                "SHORT": { "text": "🔴 SHORT", "color": "red" },
+                "CLOSE": { "text": "⚪ CLOSE", "color": "text" }
+              }
+            }
+          ]
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Direction" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              { "id": "custom.align", "value": "center" }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Confidence" },
+            "properties": [
+              { "id": "custom.align", "value": "center" },
+              { "id": "unit", "value": "short" }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Ticker" },
+            "properties": [
+              { "id": "custom.align", "value": "left" },
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "title": "📈 Signal Confidence Distribution",
+      "description": "How many signals fall into each confidence bucket",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "expr": "count(karsa_analyst_latest_signal_confidence < 30)",
+          "legendFormat": "0-29 (Very Low)"
+        },
+        {
+          "expr": "count(karsa_analyst_latest_signal_confidence >= 30 and karsa_analyst_latest_signal_confidence < 50)",
+          "legendFormat": "30-49 (Low)"
+        },
+        {
+          "expr": "count(karsa_analyst_latest_signal_confidence >= 50 and karsa_analyst_latest_signal_confidence < 70)",
+          "legendFormat": "50-69 (Medium)"
+        },
+        {
+          "expr": "count(karsa_analyst_latest_signal_confidence >= 70)",
+          "legendFormat": "70+ (High)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "fillOpacity": 80,
+            "lineWidth": 0
+          }
+        }
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient"
+      }
+    },
+    {
+      "title": "🔄 Universe Refresh Rate",
+      "description": "Success/failure rate of universe refresh attempts",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        {
+          "expr": "rate(karsa_universe_refresh_total{status=\"success\"}[5m])",
           "legendFormat": "Success"
         },
         {
-          "expr": "karsa_universe_refresh_total{status=\"failure\"}",
+          "expr": "rate(karsa_universe_refresh_total{status=\"failure\"}[5m])",
           "legendFormat": "Failure"
         }
-      ]
-    },
-    {
-      "title": "Refresh Duration",
-      "type": "timeseries",
-      "gridPos": {
-        "h": 4,
-        "w": 12,
-        "x": 12,
-        "y": 0
-      },
-      "targets": [
-        {
-          "expr": "karsa_universe_refresh_duration_seconds",
-          "legendFormat": "Duration"
-        }
-      ]
-    },
-    {
-      "title": "Coin Scores",
-      "type": "barchart",
-      "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 4
-      },
-      "targets": [
-        {
-          "expr": "karsa_universe_coin_score",
-          "legendFormat": "{{ticker}}"
-        }
       ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "fillOpacity": 20,
+            "lineWidth": 2
+          }
+        }
+      },
       "options": {
-        "orientation": "horizontal"
+        "legend": { "displayMode": "list", "placement": "bottom" }
       }
     },
     {
-      "title": "Universe Refresh Rate",
+      "title": "⏱️ Per-Coin Scan Duration",
+      "description": "How long each coin takes to analyze",
       "type": "timeseries",
-      "gridPos": {
-        "h": 6,
-        "w": 24,
-        "x": 0,
-        "y": 12
-      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
       "targets": [
         {
-          "expr": "rate(karsa_universe_refresh_total{status=\"success\"}[1h])",
-          "legendFormat": "Success/hr"
+          "expr": "histogram_quantile(0.5, rate(karsa_coin_scan_duration_seconds_bucket[5m]))",
+          "legendFormat": "P50"
         },
         {
-          "expr": "rate(karsa_universe_refresh_total{status=\"failure\"}[1h])",
-          "legendFormat": "Failure/hr"
+          "expr": "histogram_quantile(0.95, rate(karsa_coin_scan_duration_seconds_bucket[5m]))",
+          "legendFormat": "P95"
         }
-      ]
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 2
+          }
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
     }
   ],
-  "refresh": "1m",
+  "refresh": "30s",
   "time": {
-    "from": "now-24h",
+    "from": "now-6h",
     "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
   }
 }

@@ -11,7 +11,6 @@ from src.utils.logging import get_logger
 
 logger = get_logger("research_orchestrator")
 
-
 class ResearchOrchestrator:
     """Coordinates discovery, research, and scoring pipeline."""
 
@@ -47,7 +46,7 @@ class ResearchOrchestrator:
         if not unscored:
             return {"scored": 0, "reason": "no_unscored_tokens"}
 
-        scorer = OpportunityScorer(cache=self._cache)
+        scorer = OpportunityScorer(cache=self._cache, bybit_client=self._bybit)
         scored = 0
         for token in unscored:
             try:
@@ -94,23 +93,6 @@ class ResearchOrchestrator:
             for r in rows
         ]
 
-    async def get_watchlist(self) -> list[dict]:
-        """Get tokens with WATCH recommendation."""
-        from src.models.database import async_session
-        from sqlalchemy import text
-
-        async with async_session() as session:
-            result = await session.execute(
-                text("""SELECT DISTINCT ON (symbol)
-                    symbol, opportunity_score, investment_bucket, recommendation
-                FROM research_reports
-                WHERE recommendation = 'WATCH'
-                ORDER BY symbol, created_at DESC"""),
-            )
-            rows = result.fetchall()
-
-        return [{"symbol": r[0], "score": float(r[1] or 0), "bucket": r[2], "rec": r[3]} for r in rows]
-
     async def _get_unscored_tokens(self, limit: int) -> list[dict]:
         """Get tokens that haven't been scored yet."""
         from src.models.database import async_session
@@ -120,9 +102,16 @@ class ResearchOrchestrator:
             result = await session.execute(
                 text("""SELECT dt.id, dt.symbol, dt.chain, dt.contract_address
                 FROM discovered_tokens dt
-                LEFT JOIN research_reports rr ON rr.symbol = dt.symbol
-                WHERE dt.status = 'NEW' AND rr.id IS NULL
-                ORDER BY dt.discovered_at DESC
+                LEFT JOIN (
+                    SELECT symbol, MAX(created_at) as last_scored_at
+                    FROM research_reports
+                    GROUP BY symbol
+                ) rr ON rr.symbol = dt.symbol
+                WHERE dt.status IN ('NEW', 'SCORED')
+                  AND (rr.last_scored_at IS NULL OR rr.last_scored_at < NOW() - INTERVAL '24 HOURS')
+                ORDER BY 
+                  CASE WHEN rr.last_scored_at IS NULL THEN 0 ELSE 1 END,
+                  dt.discovered_at DESC
                 LIMIT :limit"""),
                 {"limit": limit},
             )

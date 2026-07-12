@@ -239,6 +239,7 @@ class CryptoPosition(Base):
     signal_source: Mapped[str | None] = mapped_column(String(50))
     partial_exits_taken: Mapped[int] = mapped_column(Integer, default=0)
     last_management_check: Mapped[datetime | None] = mapped_column(DateTime)
+    scale_in_taken: Mapped[bool] = mapped_column(default=False)
 
     # --- Performance Gate fields ---
     bucket: Mapped[str] = mapped_column(String(20), default="standard")

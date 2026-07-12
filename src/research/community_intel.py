@@ -1,7 +1,6 @@
 """Community Intelligence — Social metrics and community health.
 
-Scoring (0-100). Uses CoinGecko community data (free).
-Social APIs are fragile — degrades gracefully.
+Scoring (0-100). Social APIs are fragile — degrades gracefully.
 """
 
 from src.utils.logging import get_logger
@@ -12,41 +11,19 @@ logger = get_logger("community_intel")
 class CommunityIntelligence:
     """Community/social metrics collection and scoring."""
 
-    def __init__(self, cache=None, coingecko=None):
+    def __init__(self, cache=None):
         self._cache = cache
-        self._cg = coingecko
 
     async def _ensure_clients(self):
-        from src.data.coingecko_client import CoinGeckoClient
-        if not self._cg:
-            self._cg = CoinGeckoClient(cache=self._cache)
+        pass
 
     async def close(self):
         """Close all underlying HTTP clients to prevent connection leaks."""
-        for client in (self._cg,):
-            if client and hasattr(client, 'close'):
-                await client.close()
+        pass
 
     async def get_social_metrics(self, coingecko_id: str) -> dict:
-        """Get social metrics from CoinGecko."""
-        await self._ensure_clients()
-        detail = await self._cg.get_coin_detail(coingecko_id)
-        if not detail:
-            return {}
-
-        community = detail.get("community", {})
-        developer = detail.get("developer", {})
-
-        return {
-            "twitter_followers": community.get("twitter_followers"),
-            "reddit_subscribers": community.get("reddit_subscribers"),
-            "reddit_avg_posts_48h": community.get("reddit_avg_posts_48h"),
-            "telegram_members": community.get("telegram_members"),
-            "github_stars": developer.get("github_stars"),
-            "sentiment_up_pct": detail.get("sentiment_up_pct"),
-            "sentiment_down_pct": detail.get("sentiment_down_pct"),
-            "categories": detail.get("categories", []),
-        }
+        """Get social metrics — CoinGecko removed, returns empty."""
+        return {}
 
     def compute_score(self, metrics: dict) -> float:
         """Score 0-100 based on community health."""

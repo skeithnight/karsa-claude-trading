@@ -82,7 +82,7 @@ class FundingTracker:
                 params["startTime"] = since_ts
 
             resp = await asyncio.to_thread(
-                self.client._http_client.get_funding_history,
+                self.client._http_client.get_funding_rate_history,
                 **params,
             )
 
@@ -121,61 +121,3 @@ class FundingTracker:
         """
         records = await self.sync_funding_from_exchange(symbol, since_ts=since_ts)
         return sum(r.get("funding_fee", 0) for r in records)
-
-    async def should_exit_for_funding(
-        self, symbol: str, since_ts: int, unrealized_pnl: float, threshold_pct: float = 0.3
-    ) -> dict:
-        """Check if cumulative funding exceeds threshold of unrealized PnL.
-
-        Args:
-            symbol: e.g. "BTCUSDT"
-            since_ts: Position open timestamp in milliseconds
-            unrealized_pnl: Current unrealized PnL in USDT
-            threshold_pct: Exit if funding > this % of unrealized PnL (default 30%)
-
-        Returns:
-            {"should_exit": bool, "cumulative_funding": float, "reason": str}
-        """
-        cumulative = await self.get_cumulative_funding(symbol, since_ts)
-
-        # Only trigger if funding is negative (we're paying) and PnL is positive
-        if cumulative < 0 and unrealized_pnl > 0:
-            funding_abs = abs(cumulative)
-            if funding_abs > unrealized_pnl * threshold_pct:
-                return {
-                    "should_exit": True,
-                    "cumulative_funding": cumulative,
-                    "reason": f"Funding cost ${funding_abs:.2f} exceeds {threshold_pct*100:.0f}% of unrealized PnL ${unrealized_pnl:.2f}",
-                }
-
-        return {"should_exit": False, "cumulative_funding": cumulative, "reason": ""}
-
-    async def get_alerts(self, positions: list[dict] | None = None) -> list[dict]:
-        """Check for funding rate alerts across universe."""
-        rates = await self.get_current_rates()
-        alerts = []
-
-        for rate_info in rates:
-            if rate_info.get("alert"):
-                symbol = rate_info["symbol"]
-                rate = rate_info["funding_rate"]
-
-                cost_info = None
-                if positions:
-                    pos = next((p for p in positions if p.get("symbol") == symbol), None)
-                    if pos:
-                        position_value = pos.get("entry_price", 0) * pos.get("size", 0)
-                        cost_info = self.calculate_position_funding_cost(
-                            position_value, rate, pos.get("leverage", 1)
-                        )
-
-                alerts.append({
-                    "symbol": symbol,
-                    "funding_rate": rate,
-                    "funding_cost_pct": rate_info["funding_cost_pct"],
-                    "annualized_pct": rate_info["annualized_pct"],
-                    "direction": "longs_pay_shorts" if rate > 0 else "shorts_pay_longs",
-                    "position_cost": cost_info,
-                })
-
-        return alerts

@@ -176,8 +176,11 @@ STRATEGY_CONFIGS: dict[str, dict[str, Any]] = {
             "REGIME: SQUEEZE ALERT (BBW Percentile < 10% + 4H ADX > 20)\n"
             "- Price is coiling tightly while the macro trend is strong.\n"
             "- DO NOT anticipate the breakout. Prepare exact trigger levels at upper/lower bands.\n"
-            "- Trade the breakout IMMEDIATELY when price crosses the band with high volume.\n"
-            "- High confidence (+15) for breakouts in the direction of the macro trend.\n"
+            "- CRITICAL: Trade the breakout ONLY in the direction of the 4H EMA trend.\n"
+            "  If 4H EMA is bullish → ONLY LONG breakouts above upper band.\n"
+            "  If 4H EMA is bearish → ONLY SHORT breakouts below lower band.\n"
+            "  If 4H trend is neutral → SKIP. Do not trade directionless squeezes.\n"
+            "- High confidence (+15) only for breakouts in the direction of the 4H macro trend.\n"
         ),
         "confidence_boost": 15,
         "max_positions": 3,
@@ -241,7 +244,6 @@ STRATEGY_CONFIGS: dict[str, dict[str, Any]] = {
     }
 }
 
-
 class StrategySelector:
     """Selects strategy configuration based on current market regime."""
 
@@ -288,10 +290,6 @@ class StrategySelector:
         )
 
         return config
-
-    def get_history(self) -> list[dict]:
-        """Get strategy selection history for this session."""
-        return self._history
 
     def get_regime_performance(self, regime: str) -> dict:
         """Get human-readable strategy description for a regime."""

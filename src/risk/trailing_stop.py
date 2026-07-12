@@ -25,9 +25,9 @@ logger = get_logger("trailing_stop")
 
 # Regime → ATR multiplier for trailing distance
 REGIME_TRAIL_MULTIPLIER = {
-    "TREND_BULL": 2.0,
-    "TREND_BEAR": 2.0,
-    "MEAN_REVERSION": 1.5,
+    "TREND_BULL": 1.5,
+    "TREND_BEAR": 1.5,
+    "MEAN_REVERSION": 1.0,
     "CHOP": 0,  # disabled in chop
 }
 

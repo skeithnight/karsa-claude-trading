@@ -25,16 +25,13 @@ from src.utils.rate_limit import RateLimiter
 
 logger = get_logger("main")
 
-
 from src.utils.position_snapshot import snapshot_from_db as _snapshot_position
-
 
 # FastAPI app for health endpoints
 app = FastAPI(title="Karsa Orchestrator", version="0.1.0")
 
 # Module-level reference for API routes
 karsa_app: "KarsaApp | None" = None
-
 
 class KarsaApp:
     """Main application container with APScheduler integration."""
@@ -97,16 +94,6 @@ class KarsaApp:
         self.exit_engine.register(BreakEvenStrategy())
         logger.info("exit_engine_ready", strategies=[s.name for s in self.exit_engine._strategies])
 
-        # Replay Engine (Phase 6 — event store subscriber, no orchestrator dependency)
-        from src.architecture.replay import ReplayEngine
-        self.replay_engine = ReplayEngine()
-        _replay_subscriber = self.replay_engine.store_event
-        for evt_type in ["PositionOpened", "PositionReduced", "PositionClosed",
-                         "TrailingActivated", "BreakEvenActivated", "StopLossTriggered",
-                         "StopLossRecovered", "StopLossUpdated", "PositionSynced"]:
-            _event_bus.subscribe(evt_type, _replay_subscriber)
-        logger.info("replay_engine_ready")
-
         self.mcp = MCPClient(self.cache)
 
         # Agents & orchestrator
@@ -150,13 +137,6 @@ class KarsaApp:
         self.agent_registry.register(AgentConfig("crypto_auditor", max_retries=2, timeout_seconds=60, combo_name="karsa-routine"))
         self.orchestrator.agent_runtime = self.agent_runtime
         logger.info("agent_runtime_ready", agents=self.agent_registry.all_types())
-
-        # Workflow Engine (Phase 9)
-        from src.architecture.workflow import WorkflowEngine, CheckpointManager
-        self.checkpoint_manager = CheckpointManager(redis_client=self.redis_client)
-        self.workflow_engine = WorkflowEngine(checkpoint_manager=self.checkpoint_manager)
-        self.orchestrator.workflow_engine = self.workflow_engine
-        logger.info("workflow_engine_ready")
 
         # Execution engine modules
         from src.execution.websocket_manager import WebSocketManager
@@ -616,11 +596,6 @@ class KarsaApp:
             logger.info("price_update_done", paper=len(positions), portfolio=len(portfolio))
         except Exception as e:
             logger.error("paper_update_failed", error=str(e))
-
-    async def _job_expire_approvals(self):
-        """Expire stale approvals and mark signals as EXPIRED."""
-        pass
-
     async def _job_premarket_battleplan(self):
         """Generate and push pre-market battle plan to Telegram."""
         logger.info("premarket_battleplan_started")
@@ -1176,12 +1151,10 @@ class KarsaApp:
         # uvicorn is daemon thread — will die with the process
         await self.shutdown()
 
-
 def main():
     setup_logging()
     karsa = KarsaApp()
     asyncio.run(karsa.run())
-
 
 if __name__ == "__main__":
     main()

@@ -18,7 +18,6 @@ from .commands import (
 
 logger = structlog.get_logger(__name__)
 
-
 class PositionManager:
     """Single source of truth for position lifecycle.
 
@@ -30,31 +29,6 @@ class PositionManager:
         self._event_bus = event_bus
 
     # --- Core mutations ---
-
-    async def open_position(self, cmd: OpenPosition) -> Position:
-        pos = Position(
-            symbol=cmd.symbol,
-            side=cmd.side,
-            entry_price=cmd.entry_price,
-            quantity=cmd.quantity,
-            leverage=cmd.leverage,
-            stop_loss=cmd.stop_loss,
-            market=cmd.market,
-        )
-        pos.transition(PositionState.OPENING)
-        pos.transition(PositionState.OPEN)
-        pos.opened_at = datetime.now(timezone.utc)
-        self._positions[pos.id] = pos
-        await self._emit("PositionOpened", pos)
-        logger.info("position_opened", position_id=pos.id, symbol=cmd.symbol, side=cmd.side)
-        return pos
-
-    async def update_stop_loss(self, cmd: UpdateStopLoss) -> Position:
-        pos = self._get(cmd.position_id)
-        pos.stop_loss = cmd.new_stop_loss
-        pos.bump_version()
-        await self._emit("StopLossUpdated", pos)
-        return pos
 
     async def close_position(self, cmd: ClosePosition) -> Position:
         pos = self._get(cmd.position_id)
@@ -98,21 +72,6 @@ class PositionManager:
         await self._persist("TrailingActivated", pos, db_id=db_id)
         return pos
 
-    async def update_current_price(self, cmd: UpdateCurrentPrice) -> Position:
-        pos = self._get(cmd.position_id)
-        pos.update_unrealized_pnl(cmd.current_price)
-        pos.bump_version()
-        # no event for price ticks — too noisy
-        return pos
-
-    async def recover_stop_loss(self, cmd: RecoverStopLoss) -> Position:
-        pos = self._get(cmd.position_id)
-        pos.stop_loss = cmd.sl_price
-        pos.bump_version()
-        await self._emit("StopLossRecovered", pos)
-        logger.info("sl_recovered", position_id=pos.id, sl=cmd.sl_price, atr=cmd.atr)
-        return pos
-
     async def sync_from_exchange(self, cmd: SyncFromExchange) -> Position:
         pos = self._get(cmd.position_id)
         pos.quantity = cmd.exchange_size
@@ -125,12 +84,6 @@ class PositionManager:
         return pos
 
     # --- Queries ---
-
-    def get_position(self, position_id: str) -> Optional[Position]:
-        return self._positions.get(position_id)
-
-    def all_positions(self) -> list[Position]:
-        return list(self._positions.values())
 
     def open_positions(self) -> list[Position]:
         return [p for p in self._positions.values() if p.state != PositionState.CLOSED]

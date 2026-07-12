@@ -88,7 +88,6 @@ REDIS_DIAGNOSTIC = "karsa:watchdog:diagnostic"
 REDIS_HEALTH_SCORE = "karsa:watchdog:health_score"
 REDIS_SENTINEL = "karsa:watchdog:sentinel"
 
-
 @dataclass
 class HealthSignal:
     """A single health signal from a subsystem check."""
@@ -97,7 +96,6 @@ class HealthSignal:
     score: float  # 0-100
     detail: str = ""
     timestamp: float = field(default_factory=time.time)
-
 
 @dataclass
 class DiagnosticSnapshot:
@@ -129,7 +127,6 @@ class DiagnosticSnapshot:
             "failure_count": self.failure_count,
             "level": self.level,
         })
-
 
 class ServiceWatchdog:
     """Advanced in-process watchdog with predictive health and prevention."""
@@ -177,12 +174,6 @@ class ServiceWatchdog:
 
     def set_telegram_bot(self, bot):
         self._telegram_bot = bot
-
-    def register_level1_handler(self, handler: Callable[[], Awaitable[None]]):
-        self._level1_handlers.append(handler)
-
-    def register_level2_handler(self, handler: Callable[[], Awaitable[None]]):
-        self._level2_handlers.append(handler)
 
     async def start(self):
         """Start watchdog and sentinel tasks."""

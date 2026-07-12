@@ -28,7 +28,6 @@ _CACHE_TTL_COMMITS = 900
 _CACHE_TTL_CONTRIBUTORS = 3600
 _CACHE_TTL_RELEASES = 3600
 
-
 class GitHubClient:
     """GitHub REST API client for developer intelligence."""
 
@@ -226,11 +225,6 @@ class GitHubClient:
 
         await self._set_cache(cache_key, releases, _CACHE_TTL_RELEASES)
         return releases
-
-    async def get_commit_count(self, owner: str, repo: str, days: int = 30) -> int:
-        """Get commit count for last N days (lightweight)."""
-        commits = await self.get_recent_commits(owner, repo, days)
-        return len(commits)
 
     async def get_activity_score(self, owner: str, repo: str) -> dict:
         """Compute developer activity metrics for scoring."""

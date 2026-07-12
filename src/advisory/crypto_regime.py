@@ -210,68 +210,15 @@ def _size_multiplier(regime: str) -> float:
     }.get(regime, 0.5)
 
 _BTC_DOM_REDIS_KEY = "karsa:regime:btc_dominance"
-_BTC_DOM_TTL = 3600  # 1 hour — CoinGecko free tier safe; dominance doesn't shift fast
+_BTC_DOM_TTL = 3600  # 1 hour
 
 
 async def _get_btc_dominance(redis_client=None) -> dict:
-    """Get BTC dominance, Redis-cached for 1 hour.
+    """Get BTC dominance — hardcoded defaults (CoinGecko removed).
 
-    Accepts an optional redis_client to use for caching. Falls back to
-    direct HTTP fetch with a 5s timeout (was 10s in the original).
     Returns: {"btc_dominance": float, "season": str, "eth_dominance": float}
     """
-    import json
-
-    # Try Redis cache first — avoids HTTP call on every 5-min regime refresh
-    if redis_client:
-        try:
-            cached = await redis_client.get(_BTC_DOM_REDIS_KEY)
-            if cached:
-                return json.loads(cached)
-        except Exception:
-            pass
-
-    # Fetch from CoinGecko
-    try:
-        import urllib.request
-
-        url = "https://api.coingecko.com/api/v3/global"
-        req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "karsa/1.0"})
-
-        def _fetch():
-            with urllib.request.urlopen(req, timeout=5) as resp:  # 5s, was 10s
-                return json.loads(resp.read())
-
-        data = await asyncio.to_thread(_fetch)
-        market_data = data.get("data", {})
-        btc_dom = market_data.get("market_cap_percentage", {}).get("btc", 0)
-        eth_dom = market_data.get("market_cap_percentage", {}).get("eth", 0)
-
-        if btc_dom > 55:
-            season = "BTC_SEASON"
-        elif btc_dom < 45:
-            season = "ALT_SEASON"
-        else:
-            season = "NEUTRAL"
-
-        result = {
-            "btc_dominance": round(btc_dom, 2),
-            "eth_dominance": round(eth_dom, 2),
-            "season": season,
-        }
-
-        # Cache in Redis so the next 11 calls (within 1h) are free
-        if redis_client:
-            try:
-                await redis_client.set(_BTC_DOM_REDIS_KEY, json.dumps(result), ex=_BTC_DOM_TTL)
-            except Exception:
-                pass
-
-        return result
-
-    except Exception as e:
-        logger.warning("btc_dominance_fetch_failed", error=str(e))
-        return {"btc_dominance": None, "eth_dominance": None, "season": "UNKNOWN"}
+    return {"btc_dominance": 58.0, "eth_dominance": 12.0, "season": "NEUTRAL"}
 
 
 class CryptoRegimeFilter:

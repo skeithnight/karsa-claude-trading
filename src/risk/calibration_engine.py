@@ -19,7 +19,6 @@ MIN_SAMPLE_SIZE = 20
 MULTIPLIER_FLOOR = 0.5
 MULTIPLIER_CEIL = 1.5
 
-
 class ConfidenceCalibrator:
     """Deterministic confidence adjustment based on historical accuracy."""
 
@@ -91,6 +90,3 @@ class ConfidenceCalibrator:
         if self._cached_multiplier is None:
             self._cached_multiplier = await self.calculate_multiplier()
         return self._cached_multiplier
-
-    async def invalidate_cache(self) -> None:
-        self._cached_multiplier = None

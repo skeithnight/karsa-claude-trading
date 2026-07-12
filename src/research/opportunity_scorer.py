@@ -12,25 +12,26 @@ from src.utils.logging import get_logger
 
 logger = get_logger("opportunity_scorer")
 
-# Default weights (can be recalibrated by Learning Engine)
+# Sniper / Conservative weights optimized for real edge
 DEFAULT_WEIGHTS = {
-    "fundamental": 0.25,
-    "narrative": 0.15,
-    "smart_money": 0.15,
-    "onchain": 0.15,
-    "developer": 0.10,
-    "community": 0.08,
-    "market": 0.07,
-    "technical": 0.05,
+    "technical":    0.30,  # Is there a real breakout happening NOW?
+    "smart_money":  0.25,  # Are institutions quietly accumulating?
+    "fundamental":  0.20,  # Is the project real and solid?
+    "onchain":      0.10,  # TVL/DEX activity proving real usage?
+    "narrative":    0.10,  # Is this sector hot right now?
+    "developer":    0.03,  # Are devs still building?
+    "community":    0.01,  # Community momentum
+    "market":       0.01,  # Overall market regime
 }
 
 
 class OpportunityScorer:
     """Multi-dimensional opportunity scoring engine."""
 
-    def __init__(self, cache=None, weights: dict | None = None):
+    def __init__(self, cache=None, weights: dict | None = None, bybit_client=None):
         self._cache = cache
         self.weights = weights or dict(DEFAULT_WEIGHTS)
+        self._bybit = bybit_client
 
     async def score_opportunity(self, symbol: str, coingecko_id: str | None = None,
                                  contract: str | None = None, chain: str = "ethereum") -> dict:
@@ -92,12 +93,61 @@ class OpportunityScorer:
             except Exception:
                 pass
 
-            # Technical score placeholder (would need BybitClient OHLCV data)
+            # Technical score via actual OHLCV indicators
             technical_score = 50
+            if self._bybit:
+                try:
+                    ohlcv = await self._bybit.get_ohlcv(symbol, interval="1h", limit=100)
+                    if ohlcv and len(ohlcv) >= 50:
+                        tech_data = full_analysis(ohlcv)
+                        score = 50
+                        
+                        rsi = tech_data.get("rsi_14", 50)
+                        if 40 <= rsi <= 70:
+                            score += 10
+                        elif rsi > 70:
+                            score -= 10
+                            
+                        trend = tech_data.get("trend_ema", "neutral")
+                        if trend == "bullish":
+                            score += 20
+                        elif trend == "bearish":
+                            score -= 20
+                            
+                        macd = tech_data.get("macd_hist", 0)
+                        if macd > 0:
+                            score += 10
+                        
+                        bb = tech_data.get("bb_position", 0.5)
+                        if bb < 0.2:
+                            score += 10  # near lower band support
+                        elif bb > 0.8:
+                            score -= 10  # near upper band resistance
+                            
+                        technical_score = max(0, min(100, score))
+                except Exception as e:
+                    logger.warning("technical_score_failed", symbol=symbol, error=str(e))
+
+            # Fundamental score via LLM intelligence
+            fundamental_score = 50
+            try:
+                from src.research.fundamental_intel import FundamentalIntelligence
+                fundamental = FundamentalIntelligence(cache=self._cache)
+                ctx = {}
+                if isinstance(results[0], dict):
+                    ctx["onchain"] = results[0]
+                if isinstance(results[1], dict):
+                    ctx["dev_activity"] = results[1]
+                
+                fund_result = await fundamental.analyze(symbol, context=ctx)
+                if isinstance(fund_result, dict):
+                    fundamental_score = fund_result.get("composite_score", 50)
+            except Exception as e:
+                logger.warning("fundamental_score_failed", symbol=symbol, error=str(e))
 
             # Weighted composite
             scores = {
-                "fundamental": 50,  # needs LLM analysis — use default
+                "fundamental": fundamental_score,
                 "narrative": narrative_score,
                 "smart_money": smart_money_score,
                 "onchain": onchain_score,

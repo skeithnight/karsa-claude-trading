@@ -1,51 +1,34 @@
 """Developer Intelligence — GitHub activity analysis.
 
 Deterministic scoring (0-100). No LLM calls.
-Uses: GitHubClient, CoinGeckoClient (for repo URLs).
+Uses: GitHubClient.
 """
 
 from src.utils.logging import get_logger
 
 logger = get_logger("developer_intel")
 
-
 class DeveloperIntelligence:
     """Developer activity collection and scoring."""
 
-    def __init__(self, cache=None, github=None, coingecko=None):
+    def __init__(self, cache=None, github=None):
         self._cache = cache
         self._gh = github
-        self._cg = coingecko
 
     async def _ensure_clients(self):
         from src.data.github_client import GitHubClient
-        from src.data.coingecko_client import CoinGeckoClient
         if not self._gh:
             self._gh = GitHubClient(cache=self._cache)
-        if not self._cg:
-            self._cg = CoinGeckoClient(cache=self._cache)
 
     async def close(self):
         """Close all underlying HTTP clients to prevent connection leaks."""
-        for client in (self._gh, self._cg):
+        for client in (self._gh,):
             if client and hasattr(client, 'close'):
                 await client.close()
 
     async def get_repo_stats(self, owner: str, repo: str) -> dict | None:
         await self._ensure_clients()
         return await self._gh.get_repo_stats(owner, repo)
-
-    async def get_commit_activity(self, owner: str, repo: str, days: int = 30) -> dict:
-        await self._ensure_clients()
-        commits = await self._gh.get_recent_commits(owner, repo, days)
-        contributors = await self._gh.get_contributors(owner, repo, 20)
-        releases = await self._gh.get_releases(owner, repo, 5)
-        return {
-            "commits": len(commits),
-            "contributors": len(contributors),
-            "releases": len(releases),
-            "last_commit_date": commits[0].get("date") if commits else None,
-        }
 
     async def get_doc_quality(self, owner: str, repo: str) -> float:
         """Score documentation quality 0-100 based on repo metadata."""
@@ -129,16 +112,8 @@ class DeveloperIntelligence:
         """Full developer analysis for a token."""
         await self._ensure_clients()
 
-        # Find GitHub repos from CoinGecko
+        # CoinGecko removed — no repo discovery path
         repos = []
-        if coingecko_id:
-            detail = await self._cg.get_coin_detail(coingecko_id)
-            if detail:
-                github_urls = detail.get("links", {}).get("github") or []
-                for url in github_urls[:3]:
-                    parts = url.rstrip("/").split("/")
-                    if len(parts) >= 2:
-                        repos.append((parts[-2], parts[-1]))
 
         if not repos:
             return {"symbol": symbol, "score": 0, "error": "no_github_found"}

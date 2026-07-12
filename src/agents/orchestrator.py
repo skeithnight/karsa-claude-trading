@@ -126,6 +126,16 @@ class Orchestrator:
             self._crypto_sor = SmartOrderRouter(bybit)
         return self._crypto_sor
 
+    async def scan_meme(self) -> list[dict]:
+        """Run meme sniper scan and auto-execute signals."""
+        from src.agents.meme_sniper import scan
+        from src.config import settings
+        signals = await scan(self.mcp._get_bybit(), settings)
+        if not signals:
+            return []
+        executed = await self._auto_execute_meme(signals)
+        return executed
+
     async def scan_all_markets(self, market_filter: str | None = None) -> list[dict]:
         """Run market scans in parallel.
 
@@ -473,6 +483,23 @@ class Orchestrator:
             logger.warning("crypto_dynamic_universe_failed", error=str(e))
             universe = CRYPTO_UNIVERSE
 
+        # Cooldown: skip tickers with 4+ consecutive low-confidence results (1h cooldown)
+        COOLDOWN_KEY = "karsa:scanner:cooldown"
+        try:
+            cooldown_map = await self.cache.redis.hgetall(COOLDOWN_KEY)
+            active_universe = [t for t in universe if float(cooldown_map.get(t, 0)) < now]
+            # Auto-clean expired entries so the hash doesn't accumulate stale keys
+            expired_keys = [t for t, ts in cooldown_map.items() if float(ts) < now]
+            if expired_keys:
+                await self.cache.redis.hdel(COOLDOWN_KEY, *expired_keys)
+            skipped = len(universe) - len(active_universe)
+            if skipped:
+                logger.info("cooldown_skip", count=skipped, active=len(active_universe),
+                            cooldowned=[t for t in universe if t not in active_universe])
+            universe = active_universe
+        except Exception:
+            pass  # proceed without cooldown if Redis fails
+
         # Evaluate CoinRegime for each coin
         filtered_universe = []
         regime_map = {}
@@ -591,6 +618,44 @@ class Orchestrator:
                 _signal_cache[dedup_key] = now
                 signals.append(signal)
 
+                # Record for live Grafana dashboard
+                try:
+                    from src.metrics.crypto_metrics import record_analyst_signal
+                    record_analyst_signal(ticker, direction, signal.get("confidence_score", 0))
+                except Exception:
+                    pass
+
+        # Update cooldown streaks for all scanned tickers
+        STREAK_KEY = "karsa:scanner:low_conf_streak"
+        # Core coins must NEVER be cooled down — they're always worth scanning
+        _COOLDOWN_EXEMPT = {"BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"}
+        try:
+            all_scanned = set()
+            for result in results:
+                if isinstance(result, Exception) or not result:
+                    continue
+                for signal in result:
+                    ticker = signal.get("ticker", "")
+                    if not ticker or ticker in all_scanned:
+                        continue
+                    all_scanned.add(ticker)
+                    if ticker in _COOLDOWN_EXEMPT:
+                        continue
+                    # FIX: was signal.get("confidence", 0) — always 0, broke every ticker
+                    conf = signal.get("confidence_score", 0)
+                    if conf < 50:
+                        streak = int(await self.cache.redis.hget(STREAK_KEY, ticker) or 0) + 1
+                        await self.cache.redis.hset(STREAK_KEY, ticker, streak)
+                        # Raised threshold 2→4: avoid blocking coins after just 2 scans
+                        if streak >= 4:
+                            await self.cache.redis.hset(COOLDOWN_KEY, ticker, str(now + 1 * 3600))
+                            logger.info("ticker_cooldown_set", ticker=ticker, streak=streak, hours=1)
+                    else:
+                        await self.cache.redis.hdel(STREAK_KEY, ticker)
+                        await self.cache.redis.hdel(COOLDOWN_KEY, ticker)
+        except Exception:
+            pass
+
         return signals
 
     async def _auto_execute_crypto(self, signals: list[dict], regime: dict | None = None) -> list[dict]:
@@ -617,20 +682,20 @@ class Orchestrator:
             except Exception as e:
                 logger.warning("failed_to_fetch_profile_for_risk", error=str(e))
 
-        # Fix #3: Compute today's realized P&L for daily loss limit
+        # Rolling window P&L for loss limit (default4h, configurable)
         daily_pnl_pct = 0.0
         try:
             from src.models.database import async_session
             from src.models.tables import ClosedPaperTrade
-            from sqlalchemy import select, func, cast, Date
-            from datetime import datetime, timezone
+            from sqlalchemy import select, func
+            from datetime import datetime, timezone, timedelta
             async with async_session() as session:
-                today = datetime.now(timezone.utc).date()
+                window_start = datetime.now(timezone.utc) - timedelta(hours=settings.CRYPTO_LOSS_LIMIT_WINDOW_HOURS)
                 result = await session.execute(
                     select(func.sum(ClosedPaperTrade.realized_pnl_pct))
                     .where(
                         ClosedPaperTrade.market == "CRYPTO",
-                        cast(ClosedPaperTrade.exit_date, Date) == today,
+                        ClosedPaperTrade.exit_date >= window_start,
                     )
                 )
                 daily_pnl_pct = result.scalar() or 0.0
@@ -648,8 +713,42 @@ class Orchestrator:
                 executed.append(signal)
                 break
 
-            # Counter-trade: if opposing position exists, close it first
+            # CLOSE signal: skip risk gate, go straight to position close
             direction = signal.get("direction", "")
+            if direction == "CLOSE":
+                close_pos = next(
+                    (p for p in open_positions
+                     if p.get("symbol") == ticker and p.get("size", 0) > 0),
+                    None
+                )
+                if close_pos:
+                    try:
+                        close_result = await sor.close_position(ticker, close_pos)
+                        if close_result.get("success"):
+                            signal["status"] = "EXECUTED"
+                            signal["fill_price"] = close_pos.get("avg_price")
+                            signal["qty"] = close_pos.get("size")
+                            open_positions = [p for p in open_positions if p.get("symbol") != ticker]
+                            logger.info("crypto_close_executed", ticker=ticker,
+                                        size=close_pos.get("size"), avg_price=close_pos.get("avg_price"))
+                            await self._notify_crypto_trade(signal, {"qty": close_pos.get("size")})
+                        else:
+                            signal["status"] = "FAILED"
+                            signal["rejection_reason"] = close_result.get("error")
+                            logger.warning("crypto_close_failed", ticker=ticker,
+                                           error=close_result.get("error"))
+                    except Exception as e:
+                        signal["status"] = "FAILED"
+                        signal["rejection_reason"] = str(e)
+                        logger.error("crypto_close_error", ticker=ticker, error=str(e))
+                else:
+                    signal["status"] = "REJECTED"
+                    signal["rejection_reason"] = "No open position to close"
+                    logger.info("crypto_close_no_position", ticker=ticker)
+                executed.append(signal)
+                continue
+
+            # Counter-trade: if opposing position exists, close it first
             existing_pos = next(
                 (p for p in open_positions
                  if p.get("symbol") == ticker and p.get("size", 0) > 0),
@@ -745,6 +844,83 @@ class Orchestrator:
                 logger.warning("crypto_execution_failed", ticker=ticker, error=fill_result.get("error"))
 
             # Save signal to DB regardless
+            await self._save_signal(signal)
+            executed.append(signal)
+
+        return executed
+
+    async def _auto_execute_meme(self, signals: list[dict]) -> list[dict]:
+        """Execute meme sniper signals with tighter risk params."""
+        risk_mgr = self._get_crypto_risk_manager()
+        sor = self._get_crypto_sor()
+        executed = []
+
+        bybit = self.mcp._get_bybit()
+        open_positions = await bybit.get_positions()
+        wallet = await bybit.get_wallet_balance()
+        balance = wallet.get("balance", 0)
+
+        if balance <= 0:
+            return signals
+
+        for signal in signals:
+            ticker = signal.get("ticker", "?")
+            direction = signal.get("direction", "LONG")
+
+            from src.risk import emergency
+            if await emergency.is_active():
+                signal["status"] = "HALTED"
+                executed.append(signal)
+                break
+
+            # Liquidity check
+            from src.risk.liquidity import LiquidityMonitor
+            liq_monitor = LiquidityMonitor(sor.bybit)
+            liq_result = await liq_monitor.check_liquidity(ticker, direction)
+            if not liq_result.get("can_trade", False):
+                signal["status"] = "REJECTED"
+                signal["rejection_reason"] = "Failed liquidity check"
+                executed.append(signal)
+                continue
+
+            # Risk eval (tier_meme limits applied automatically)
+            risk_result = await risk_mgr.evaluate(
+                signal=signal,
+                open_positions=open_positions,
+                wallet_balance=balance,
+                regime=None,
+                daily_pnl_pct=0.0,
+                profile_config=None,
+            )
+
+            if not risk_result.get("approved"):
+                signal["status"] = "REJECTED"
+                signal["rejection_reason"] = risk_result.get("reason")
+                executed.append(signal)
+                continue
+
+            # Apply meme size multiplier from funding booster
+            size_mult = signal.get("_size_multiplier", 1.0)
+            if size_mult > 1.0:
+                risk_result["qty"] = risk_result.get("qty", 0) * size_mult
+
+            fill_result = await sor.execute_order(signal, risk_result)
+
+            if fill_result.get("success"):
+                signal["status"] = "EXECUTED"
+                signal["fill_price"] = fill_result.get("fill_price")
+                signal["qty"] = risk_result.get("qty")
+                signal["stop_loss"] = risk_result.get("stop_loss")
+                signal["take_profit"] = risk_result.get("take_profit")
+                await self._save_crypto_position(signal, risk_result, fill_result)
+                await self._notify_crypto_trade(signal, risk_result)
+                open_positions.append({"symbol": ticker, "ticker": ticker})
+                logger.info("meme_executed", ticker=ticker, fill=fill_result.get("fill_price"),
+                            mult=size_mult)
+            else:
+                signal["status"] = "EXECUTION_FAILED"
+                signal["execution_error"] = fill_result.get("error")
+
             await self._save_signal(signal)
             executed.append(signal)
 
