@@ -39,6 +39,8 @@ def score_candidate(candidate: dict) -> float:
     funding_rate = candidate.get("funding_rate", 0)
 
     # Base Volume Filter (Hard floor to ensure liquidity)
+    # 250K floor: small-cap movers (PYTHUSDT, TUTUSDT etc.) still score.
+    # filter_liquid() upstream is the real liquidity gate.
     if vol_24h < 250_000:
         return 0.0
 
@@ -54,8 +56,10 @@ def score_candidate(candidate: dict) -> float:
     elif vol_24h >= 10_000_000:
         score += 20
     elif vol_24h >= 2_000_000:
+        score += 15
+    elif vol_24h >= 500_000:
         score += 10
-    else:
+    else:  # 250K–500K
         score += 5
 
     # ==========================================
@@ -102,7 +106,7 @@ def score_candidate(candidate: dict) -> float:
 def rank_candidates(
     candidates: list[dict],
     top_n: int = 12,
-    min_score: float = 20.0,
+    min_score: float = 45.0,
     always_include: set[str] | None = None,
     sector_mapping: dict[str, str] | None = None,
     max_per_sector: int = 2,

@@ -28,7 +28,6 @@ MAX_RETRIES = 10
 BASE_DELAY = 2
 STALE_THRESHOLD_SEC = 30
 
-
 class WebSocketManager:
     """Real-time price streaming from Bybit for open positions only."""
 
@@ -219,14 +218,3 @@ class WebSocketManager:
 
         except Exception as e:
             logger.warning("ws_tick_handle_failed", ticker=ticker, error=str(e))
-
-    async def get_realtime_price(self, ticker: str) -> float | None:
-        """Read cached realtime price from Redis. Returns None if stale."""
-        try:
-            raw = await self._redis.get(f"{REDIS_PRICE_PREFIX}:{ticker}")
-            if raw:
-                data = json.loads(raw)
-                return data.get("price")
-        except Exception:
-            pass
-        return None

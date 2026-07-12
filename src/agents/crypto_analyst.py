@@ -13,7 +13,6 @@ from src.advisory.strategy_selector import StrategySelector
 from src.data.mcp_client import MCPClient
 from src.utils.rate_limit import RateLimiter
 
-
 # Base prompt template — regime-specific rules are injected dynamically
 _BASE_SYSTEM_PROMPT = """You are the Crypto Analyst Agent for the Karsa Trading System.
 Analyze cryptocurrency perpetual contracts using regime-adaptive strategies.
@@ -27,6 +26,7 @@ CORE RULES (always apply):
 6. Position: Volatility-targeted sizing. Risk 1% of total equity per trade.
 7. Time-in-Force: Signals valid for 4 hours (crypto is 24/7).
 8. Leverage: Max 3x. Conservative.
+9. Multi-Timeframe Confirmation: Use 1H candles for entry trigger precision. The 4H confirmation_4h block shows the macro trend — entry direction MUST agree with 4H EMA trend. If 4H trend disagrees, reduce confidence by 20 or skip.
 
 IMPORTANT:
 - Only generate a signal when confidence >= 50.
@@ -48,7 +48,6 @@ RESPOND WITH ONLY a valid JSON object:
   "reasoning": "A concise, conviction-filled narrative referencing the current regime, technical setup, funding dynamics, and market participant sentiment."
 }}
 If criteria not met, return confidence_score < 50 with null prices."""
-
 
 _PROFILE_GUIDANCE = {
     "conservative": (
@@ -73,13 +72,19 @@ _PROFILE_GUIDANCE = {
     ),
 }
 
-
 def _build_system_prompt(strategy_config: dict, profile_name: str = "semi_aggressive") -> str:
     """Build dynamic system prompt from strategy config + risk profile."""
     regime_rules = strategy_config.get("prompt_modifier", "")
     strategy_name = strategy_config.get("primary_strategy", "Trend Sentiment Convergence")
     size_mult = strategy_config.get("size_multiplier", 1.0)
     profile_guidance = _PROFILE_GUIDANCE.get(profile_name, _PROFILE_GUIDANCE["semi_aggressive"])
+
+    # Sync base prompt confidence floor with active profile
+    min_conf = {"conservative": 70, "semi_aggressive": 50, "aggressive": 35}.get(profile_name, 50)
+    base = _BASE_SYSTEM_PROMPT.replace(
+        "confidence >= 50",
+        f"confidence >= {min_conf}"
+    )
 
     dynamic_section = (
         f"\n\nACTIVE STRATEGY: {strategy_name}\n"
@@ -90,8 +95,7 @@ def _build_system_prompt(strategy_config: dict, profile_name: str = "semi_aggres
         "The regime rules take precedence when there is a conflict."
     )
 
-    return _BASE_SYSTEM_PROMPT + dynamic_section
-
+    return base + dynamic_section
 
 class CryptoAnalyst(BaseAgent):
     """Regime-adaptive Crypto Trend + Sentiment agent.
@@ -277,16 +281,24 @@ class CryptoAnalyst(BaseAgent):
         if tool_name == "get_crypto_quote":
             return await self.mcp.get_quote(ticker, "CRYPTO")
         elif tool_name == "get_crypto_ohlcv":
-            return await self.mcp.get_ohlcv(ticker, "CRYPTO", timeframe="1D", limit=tool_input.get("limit", 200))
+            candles = await self.mcp.get_ohlcv(ticker, "CRYPTO", timeframe="1D", limit=tool_input.get("limit", 50))
+            if not candles:
+                return []
+            # Dense CSV: header + rows — saves ~40% tokens vs repeated JSON keys
+            header = "ts,o,h,l,c,v"
+            rows = [f"{c.get('timestamp','')},{c.get('open',0)},{c.get('high',0)},{c.get('low',0)},{c.get('close',0)},{c.get('volume',0)}" for c in candles]
+            return "\n".join([header] + rows)
         elif tool_name == "get_funding_rate":
             return await self.mcp.get_funding_rate(ticker)
         elif tool_name == "get_open_interest":
             return await self.mcp.get_open_interest(ticker)
 
-        # Deterministic TA tools — compute from OHLCV, no LLM math
+        # Deterministic TA tools — multi-timeframe: 1H for entry precision, 4H for trend confirmation
         elif tool_name in ("get_crypto_rsi", "get_crypto_bollinger", "get_crypto_macd",
                            "get_crypto_atr", "get_crypto_full_analysis"):
-            ohlcv = await self.mcp.get_ohlcv(ticker, "CRYPTO", timeframe="4h", limit=200)
+            ohlcv_1h = await self.mcp.get_ohlcv(ticker, "CRYPTO", timeframe="1h", limit=100)
+            ohlcv_4h = await self.mcp.get_ohlcv(ticker, "CRYPTO", timeframe="4h", limit=100)
+            ohlcv = ohlcv_1h or ohlcv_4h  # fall back to 4H if 1H unavailable
             if not ohlcv:
                 return {"error": f"No OHLCV data for {ticker}"}
 
@@ -306,12 +318,15 @@ class CryptoAnalyst(BaseAgent):
                     ob_imbalance = await bybit.get_orderbook_imbalance(ticker)
                 except Exception:
                     pass
-                return full_analysis(ohlcv, ob_imbalance)
+                result = full_analysis(ohlcv, ob_imbalance)
+                # Add 4H trend confirmation data when both timeframes available
+                if ohlcv_1h and ohlcv_4h:
+                    full_4h = full_analysis(ohlcv_4h)
+                    result["confirmation_4h"] = {
+                        "trend_ema": full_4h.get("ema_20", {}).get("ema_20"),
+                        "ema_50": full_4h.get("ema_50", {}).get("ema_50"),
+                        "adx": full_4h.get("rsi", {}).get("rsi"),  # proxy for trend strength
+                    }
+                return result
 
         return {"error": f"Unknown tool: {tool_name}"}
-
-    def wipe_memory(self):
-        """Clear conversation history — used by /sellall to prevent zombie trades."""
-        self._conversation = []
-        from src.utils.logging import get_logger
-        get_logger("crypto_analyst").info("crypto_memory_wiped", agent=self.name)

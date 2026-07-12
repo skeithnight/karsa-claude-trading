@@ -15,7 +15,6 @@ from src.utils.logging import get_logger
 
 logger = get_logger("crypto_auditor")
 
-
 # --- Deterministic Pre-Filter ---
 
 _PREFILTER_RULES = [
@@ -30,60 +29,6 @@ _PREFILTER_RULES = [
         "check": lambda signal, rsi: signal.get("direction") == "SHORT" and rsi < 15,
     },
 ]
-
-
-async def prefilter_signal(signal: dict, mcp: MCPClient) -> dict:
-    """Run deterministic checks before LLM auditor. Reject obviously bad signals.
-
-    Returns: {"pass": bool, "reason": str, "checks": list}
-    """
-    ticker = signal.get("ticker", "")
-    direction = signal.get("direction", "")
-    checks = []
-
-    # Check RSI
-    try:
-        ohlcv = await mcp.get_ohlcv(ticker, "CRYPTO", timeframe="4h", limit=30)
-        if ohlcv and len(ohlcv) >= 15:
-            rsi_data = calculate_rsi(ohlcv, 14)
-            rsi = rsi_data.get("rsi", 50)
-            checks.append({"name": "rsi", "value": rsi, "signal": rsi_data.get("signal")})
-
-            for rule in _PREFILTER_RULES:
-                if rule["check"](signal, rsi):
-                    return {
-                        "pass": False,
-                        "reason": f"Pre-filter rejected: {rule['desc']} (RSI={rsi})",
-                        "checks": checks,
-                    }
-    except Exception as e:
-        logger.warning("prefilter_rsi_failed", error=str(e))
-        checks.append({"name": "rsi", "error": str(e)})
-
-    # Check funding rate (reject LONG if funding > 0.1% — crowded long)
-    try:
-        funding = await mcp.get_funding_rate(ticker)
-        rate = funding.get("funding_rate", 0)
-        checks.append({"name": "funding_rate", "value": rate})
-
-        if direction == "LONG" and rate > 0.001:
-            return {
-                "pass": False,
-                "reason": f"Pre-filter rejected: funding rate {rate*100:.3f}% too high for LONG (crowded long)",
-                "checks": checks,
-            }
-        elif direction == "SHORT" and rate < -0.001:
-            return {
-                "pass": False,
-                "reason": f"Pre-filter rejected: funding rate {rate*100:.3f}% too negative for SHORT (crowded short)",
-                "checks": checks,
-            }
-    except Exception as e:
-        logger.warning("prefilter_funding_failed", error=str(e))
-        checks.append({"name": "funding_rate", "error": str(e)})
-
-    return {"pass": True, "reason": "All pre-filter checks passed", "checks": checks}
-
 
 class CryptoAuditorAgent(BaseAgent):
     """LLM agent that reviews crypto trading performance and recommends improvements.
@@ -178,45 +123,3 @@ RESPOND WITH a valid JSON object:
             }
 
         return result
-
-    async def save_recommendations(self, analysis: dict, metrics_snapshot: dict | None = None):
-        """Persist audit recommendations to strategy_recommendations table.
-
-        Args:
-            analysis: Output from run_audit()
-            metrics_snapshot: Raw metrics for reference (optional)
-        """
-        try:
-            from src.models.database import async_session
-            from src.models.tables import StrategyRecommendation
-
-            recommendations = analysis.get("recommendations", [])
-            if not recommendations:
-                return
-
-            async with async_session() as session:
-                for rec in recommendations:
-                    # Handle both string and structured recommendations
-                    if isinstance(rec, str):
-                        session.add(StrategyRecommendation(
-                            recommendation_type="GENERAL",
-                            priority="MEDIUM",
-                            title=rec[:200],
-                            description=rec,
-                            expected_impact=None,
-                            metrics_snapshot=metrics_snapshot,
-                        ))
-                    elif isinstance(rec, dict):
-                        session.add(StrategyRecommendation(
-                            recommendation_type=rec.get("type", "GENERAL"),
-                            priority=rec.get("priority", "MEDIUM"),
-                            title=rec.get("title", "")[:200],
-                            description=rec.get("description", ""),
-                            expected_impact=rec.get("expected_impact"),
-                            metrics_snapshot=metrics_snapshot,
-                        ))
-
-                await session.commit()
-                logger.info("recommendations_saved", count=len(recommendations))
-        except Exception as e:
-            logger.error("save_recommendations_failed", error=str(e))

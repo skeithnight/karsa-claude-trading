@@ -20,7 +20,6 @@ logger = get_logger("anomaly_detector")
 ZSCORE_THRESHOLD = 2.5
 MIN_SAMPLES = 10
 
-
 @dataclass
 class AnomalyMetric:
     """Rolling window for a single metric."""
@@ -51,7 +50,6 @@ class AnomalyMetric:
         if time.time() - self.last_alert_ts < self.alert_cooldown:
             return False
         return True
-
 
 class AnomalyDetector:
     """Detects anomalies in trading metrics using rolling z-scores."""
@@ -93,19 +91,7 @@ class AnomalyDetector:
             }
         return None
 
-    def get_all_zscores(self, current_values: dict[str, float]) -> dict[str, float | None]:
-        """Get z-scores for all metrics."""
-        result = {}
-        for name, value in current_values.items():
-            metric = self.metrics.get(name)
-            if metric:
-                result[name] = metric.zscore(value)
-            else:
-                result[name] = None
-        return result
 
-
-# Global singleton
 _detector: AnomalyDetector | None = None
 
 

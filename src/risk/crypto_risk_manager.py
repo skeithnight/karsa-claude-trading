@@ -28,9 +28,10 @@ CORRELATION_TIERS = {
     "tier1": {"symbols": {"BTCUSDT", "ETHUSDT"}, "max_positions": 2, "max_combined_pct": 0.15},
     "tier2": {"symbols": {"SOLUSDT", "AVAXUSDT", "LINKUSDT", "SUIUSDT", "BNBUSDT", "NEARUSDT"}, "max_positions": 2, "max_combined_pct": 0.15},
     "tier3": {"symbols": {"DOGEUSDT", "XRPUSDT", "ADAUSDT", "DOTUSDT", "MATICUSDT"}, "max_positions": 2, "max_combined_pct": 0.10},
+    "tier_meme": {"symbols": set(), "max_positions": 1, "max_combined_pct": 0.05},
 }
 
-MAX_LEVERAGE_BY_TIER = {"tier1": 10, "tier2": 5, "tier3": 3}
+MAX_LEVERAGE_BY_TIER = {"tier1": 10, "tier2": 5, "tier3": 3, "tier_meme": 1}
 
 # Session-aware position sizing (Phase 5)
 SESSION_SIZING = {
@@ -39,7 +40,6 @@ SESSION_SIZING = {
     "new_york": 1.2,   # Peak liquidity
     "off_hours": 0.8,  # Weekend/transition periods
 }
-
 
 def _get_current_session(utc_hour: int) -> str:
     """Determine current trading session from UTC hour."""
@@ -54,44 +54,45 @@ def _get_current_session(utc_hour: int) -> str:
 
 REGIME_RISK_MAPPING = {
     "FULL_TREND_ALIGNMENT": {
-        "min_confidence": 50.0,
+        "min_confidence": 80.0,
         "size_multiplier": 1.0,
         "stop_loss_atr_mult": 1.5
     },
     "MACRO_BULL_MICRO_PULLBACK": {
-        "min_confidence": 60.0,
+        "min_confidence": 90.0,
         "size_multiplier": 0.8,
         "stop_loss_atr_mult": 2.0
     },
     "MACRO_BEAR_MICRO_PULLBACK": {
-        "min_confidence": 60.0,
+        "min_confidence": 90.0,
         "size_multiplier": 0.8,
         "stop_loss_atr_mult": 2.0
     },
     "MICRO_BREAKOUT_NO_MACRO": {
-        "min_confidence": 75.0,
+        "min_confidence": 90.0,
         "size_multiplier": 0.5,
         "stop_loss_atr_mult": 1.0
     },
     "PURE_DEAD_CHOP": {
-        "min_confidence": 90.0,
+        "min_confidence": 99.0,
         "size_multiplier": 0.0,
         "stop_loss_atr_mult": 1.0
     },
     "MEAN_REVERSION": {
-        "min_confidence": 65.0,
+        "min_confidence": 90.0,
         "size_multiplier": 0.8,
         "stop_loss_atr_mult": 1.5
     }
 }
 
-
-def _get_tier(symbol: str) -> str:
+def _get_tier(symbol: str, signal: dict | None = None) -> str:
+    # Meme sniper signals get their own tier
+    if signal and signal.get("_signal_source") == "meme_sniper":
+        return "tier_meme"
     for tier_name, tier in CORRELATION_TIERS.items():
         if symbol in tier["symbols"]:
             return tier_name
     return "tier3"
-
 
 class CryptoRiskManager:
     """Evaluates crypto signals and calculates risk-managed position parameters."""
@@ -118,9 +119,6 @@ class CryptoRiskManager:
 
     # --- Kill Switch ---
 
-    def is_kill_switch_active(self) -> bool:
-        return self._kill_switch_active
-
     def activate_kill_switch(self, reason: str) -> None:
         self._kill_switch_active = True
         self._kill_switch_reason = reason
@@ -139,74 +137,6 @@ class CryptoRiskManager:
         self._kill_switch_active = False
         self._kill_switch_reason = ""
         logger.info("crypto_kill_switch_deactivated")
-
-    async def deactivate_kill_switch_redis(self, operator: str = "risk-manager") -> None:
-        """Deactivate kill switch and clear Redis keys."""
-        self.deactivate_kill_switch()
-        try:
-            from src.risk import emergency
-            await emergency.deactivate(operator=operator)
-        except Exception as e:
-            logger.error("kill_switch_redis_deactivate_failed", error=str(e))
-
-    async def check_kill_switch(self, bybit_client) -> dict:
-        """Check if kill switch should trigger based on account-level P&L.
-
-        Checks both in-memory state and Redis-backed emergency stop.
-        P&L = unrealized (from positions) — funding costs are included in
-        Bybit's unrealisedPnl field for unified positions.
-        """
-        now = time.time()
-        if now - self._last_kill_check < self._kill_check_interval:
-            return {"triggered": self._kill_switch_active, "reason": self._kill_switch_reason}
-        self._last_kill_check = now
-
-        if self._kill_switch_active:
-            return {"triggered": True, "reason": self._kill_switch_reason}
-
-        # Check Redis-backed emergency stop (survives container restarts)
-        try:
-            from src.risk import emergency
-            if await emergency.is_active():
-                self._kill_switch_active = True
-                self._kill_switch_reason = "Redis emergency stop is active"
-                return {"triggered": True, "reason": self._kill_switch_reason}
-        except Exception:
-            pass  # Redis unavailable — fall through to in-memory check
-
-        try:
-            wallet = await bybit_client.get_wallet_balance()
-            positions = await bybit_client.get_positions()
-
-            account_value = wallet.get("balance", 0)
-            if account_value <= 0:
-                return {"triggered": False}
-
-            total_unrealized = sum(p.get("unrealized_pnl", 0) for p in positions)
-            loss_pct = abs(total_unrealized) / account_value * 100 if total_unrealized < 0 else 0
-
-            result = {
-                "triggered": False,
-                "account_value": account_value,
-                "unrealized_pnl": total_unrealized,
-                "loss_pct": loss_pct,
-            }
-
-            if loss_pct >= self.daily_loss_limit * 100:
-                await self.activate_kill_switch_redis(
-                    f"Daily loss {loss_pct:.2f}% exceeds {self.daily_loss_limit*100:.1f}% limit",
-                    operator="crypto-kill-switch",
-                )
-                result["triggered"] = True
-                result["reason"] = self._kill_switch_reason
-
-            return result
-
-        except Exception as e:
-            logger.error("kill_switch_check_failed", error=str(e))
-            return {"triggered": False, "error": str(e)}
-
-    # --- Kelly-Capped Sizing (Phase 3.2) ---
 
     async def get_kelly_fraction(self, lookback_days: int = 30) -> float:
         """Compute quarter-Kelly fraction from recent trade history.
@@ -365,53 +295,9 @@ class CryptoRiskManager:
             logger.warning("atr_1h_fetch_failed", ticker=ticker, error=str(e))
         return None
 
-    async def check_all_positions_health(self, bybit_client) -> list[dict]:
-        """Scan all positions for liquidation proximity and excessive loss.
-
-        Uses dynamic ATR-based buffer for each position.
-        """
-        try:
-            positions = await bybit_client.get_positions()
-            OPEN_POSITIONS.set(len(positions) if positions else 0)
-            alerts = []
-
-            for pos in positions:
-                symbol = pos.get("symbol", "")
-                side = pos.get("side", "Buy")
-
-                # Fetch 1h ATR for dynamic buffer
-                atr_1h_pct = await self.get_1h_atr_pct(symbol)
-                liq_check = self.check_liquidation_proximity(pos, atr_1h_pct)
-
-                # Update Prometheus gauges per position
-                LIQ_DISTANCE_PCT.labels(ticker=symbol, side=side).set(liq_check["distance_pct"])
-
-                entry_price = pos.get("entry_price", 0)
-                size = pos.get("size", 0)
-                unrealized = pos.get("unrealized_pnl", 0)
-                position_value = entry_price * size if entry_price and size else 1
-                loss_pct = abs(unrealized) / position_value * 100 if unrealized < 0 and position_value > 0 else 0
-
-                if liq_check["level"] != "safe" or loss_pct > 10 or not liq_check.get("asset_tradeable", True):
-                    alerts.append({
-                        "symbol": symbol,
-                        "side": side,
-                        "unrealized_pnl": unrealized,
-                        "loss_pct": round(loss_pct, 2),
-                        "liquidation": liq_check,
-                    })
-
-            return alerts
-
-        except Exception as e:
-            logger.error("position_health_check_failed", error=str(e))
-            return []
-
-    # --- Correlation-Aware Risk ---
-
-    def check_correlation_limits(self, symbol: str, open_positions: list[dict], wallet_balance: float) -> dict:
+    def check_correlation_limits(self, symbol: str, open_positions: list[dict], wallet_balance: float, signal: dict | None = None) -> dict:
         """Check if adding symbol violates correlation tier limits."""
-        tier = _get_tier(symbol)
+        tier = _get_tier(symbol, signal)
         tier_config = CORRELATION_TIERS[tier]
         tier_symbols = tier_config["symbols"]
 
@@ -478,7 +364,7 @@ class CryptoRiskManager:
         entry_price = signal.get("entry_price", 0)
 
         # Profile-aware thresholds
-        min_confidence = 60
+        min_confidence = 80
         max_concurrent = self.max_concurrent
         max_risk_pct = self.max_risk_pct
         max_position_pct = self.max_position_pct
@@ -525,6 +411,10 @@ class CryptoRiskManager:
         if direction not in ("LONG", "SHORT"):
             return self._reject(f"Invalid direction: {direction}")
 
+        # Kill shorts for momentum strategies
+        if direction == "SHORT" and not getattr(settings, "ALLOW_SHORTS", False):
+            return self._reject(f"Shorts are disabled (ALLOW_SHORTS=False)")
+
         # --- Gate 1: Daily loss limit ---
         if daily_pnl_pct <= -self.daily_loss_limit * 100:
             return self._reject(f"Daily loss limit breached: {daily_pnl_pct:+.2f}%")
@@ -539,7 +429,7 @@ class CryptoRiskManager:
             return self._reject(f"Already have open position in {ticker}")
 
         # --- Gate 3b: Correlation limits (static tiers + downside correlation) ---
-        corr = self.check_correlation_limits(ticker, open_positions, wallet_balance)
+        corr = self.check_correlation_limits(ticker, open_positions, wallet_balance, signal)
         if not corr.get("allowed"):
             return self._reject(corr["reason"])
 
@@ -717,7 +607,9 @@ class CryptoRiskManager:
                 logger.info("portfolio_heat_reduction", heat_pct=f"{portfolio_heat*100:.1f}%",
                            factor=heat_factor, ticker=ticker)
 
-        risk_amount = wallet_balance * effective_risk_pct * size_multiplier
+        CRYPTO_MAX_DOLLAR_RISK = 1.0
+        calculated_risk = wallet_balance * effective_risk_pct * size_multiplier
+        risk_amount = min(calculated_risk, CRYPTO_MAX_DOLLAR_RISK)
         qty = risk_amount / stop_distance if stop_distance > 0 else 0
 
         # --- Gate 5: Max position cap ---
@@ -733,7 +625,15 @@ class CryptoRiskManager:
         # --- Gate 6: Minimum order size ---
         min_order_value = 5.0  # $5 minimum
         if position_value < min_order_value and not signal.get("_override_max_position_pct"):
-            return self._reject(f"Position value ${position_value:.2f} below minimum ${min_order_value}")
+            # Auto-leverage to meet Bybit $5 minimum without exceeding $1 risk
+            required_qty = min_order_value / entry_price
+            required_risk = required_qty * stop_distance
+            if required_risk > CRYPTO_MAX_DOLLAR_RISK:
+                return self._reject(f"Stop loss too wide ({stop_pct*100:.1f}%). Requires ${required_risk:.2f} risk to meet Bybit $5 minimum (Max $1).")
+            qty = required_qty
+            position_value = min_order_value
+            risk_amount = required_risk
+            
         elif position_value < min_order_value and signal.get("_override_max_position_pct"):
             # ASM override: size up to $5 minimum using leverage
             target_notional = min_order_value
@@ -885,7 +785,7 @@ class CryptoRiskManager:
         if signal.get("_override_leverage"):
             leverage = min(signal["_override_leverage"], settings.CRYPTO_MAX_LEVERAGE)
         else:
-            tier = _get_tier(ticker)
+            tier = _get_tier(ticker, signal)
             max_lev = min(MAX_LEVERAGE_BY_TIER.get(tier, 3), settings.CRYPTO_MAX_LEVERAGE)
             leverage = 1
             for candidate in range(1, max_lev + 1):

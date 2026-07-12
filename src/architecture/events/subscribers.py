@@ -19,11 +19,9 @@ _counters: Dict[str, int] = {}
 _telegram_bot = None
 _telegram_chat_id: Optional[int] = None
 
-
 async def metrics_subscriber(event: EventEnvelope) -> None:
     """Count every event type. For Prometheus scrape."""
     _counters[event.event_type] = _counters.get(event.event_type, 0) + 1
-
 
 async def journal_subscriber(event: EventEnvelope) -> None:
     """Log every event for replay / debugging."""
@@ -36,14 +34,12 @@ async def journal_subscriber(event: EventEnvelope) -> None:
         payload=event.payload,
     )
 
-
 # Event types worth notifying about on Telegram
 _TELEGRAM_EVENTS = {
     "PositionOpened", "PositionReduced", "PositionClosed",
     "TrailingActivated", "BreakEvenActivated", "StopLossTriggered",
     "StopLossRecovered",
 }
-
 
 def _format_event_message(event: EventEnvelope) -> str:
     """Format a business event as a human-readable Telegram message.
@@ -104,7 +100,6 @@ def _format_event_message(event: EventEnvelope) -> str:
         msg += f"\n  R: {p['r_multiple']:.1f}"
     return msg
 
-
 async def telegram_subscriber(event: EventEnvelope) -> None:
     """Send key business events to Telegram.
 
@@ -132,7 +127,6 @@ async def telegram_subscriber(event: EventEnvelope) -> None:
     except Exception as e:
         logger.warning("telegram_subscriber_failed", error=str(e))
 
-
 def configure_telegram_subscriber(bot, chat_id: int) -> None:
     """Wire the Telegram bot for event notifications."""
     global _telegram_bot, _telegram_chat_id
@@ -140,7 +134,3 @@ def configure_telegram_subscriber(bot, chat_id: int) -> None:
     _telegram_chat_id = chat_id
     logger.info("telegram_subscriber_configured", chat_id=chat_id)
 
-
-def get_event_counts() -> Dict[str, int]:
-    """Return current event counts (for health / metrics endpoint)."""
-    return dict(_counters)

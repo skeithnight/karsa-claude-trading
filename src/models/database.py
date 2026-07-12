@@ -31,7 +31,6 @@ from src.config import settings
 
 logger = logging.getLogger("database")
 
-
 def _patch_asyncpg_terminate():
     """Monkey-patch asyncpg connection close/terminate to avoid event loop thread check.
 
@@ -102,14 +101,12 @@ _health_engine = None          # NullPool engine — never competes with main po
 _engine_lock = None            # Created lazily on the running event loop
 _last_dispose_time: float = 0.0   # Cooldown guard: minimum 45s between disposes
 
-
 def _get_lock():
     """Get or create the engine lock on the current event loop."""
     global _engine_lock
     if _engine_lock is None:
         _engine_lock = asyncio.Lock()
     return _engine_lock
-
 
 def _make_engine():
     """Create a new async engine with standard config."""
@@ -125,7 +122,6 @@ def _make_engine():
         # connection slot longer than _STATEMENT_TIMEOUT_MS.
         connect_args={"server_settings": {"statement_timeout": str(_STATEMENT_TIMEOUT_MS)}},
     )
-
 
 async def pool_reset(reason: str = "manual") -> bool:
     """Dispose the current engine and reset globals — the ONLY authorised
@@ -172,7 +168,6 @@ async def pool_reset(reason: str = "manual") -> bool:
 
     return True
 
-
 def get_health_engine():
     """Return a dedicated NullPool engine for health/monitoring queries.
 
@@ -184,7 +179,6 @@ def get_health_engine():
     if _health_engine is None:
         _health_engine = create_async_engine(DATABASE_URL, poolclass=NullPool)
     return _health_engine
-
 
 async def _pool_recycle_loop():
     """Periodically check pool health and force recycle if connections leak.
@@ -270,7 +264,6 @@ async def _pool_recycle_loop():
         except Exception as e:
             logger.debug("pool_recycle_error error=%s", str(e))
 
-
 async def _get_or_create_engine():
     """Return the shared async engine, creating it safely under a lock.
 
@@ -286,7 +279,6 @@ async def _get_or_create_engine():
                 _POOL_SIZE, _MAX_OVERFLOW, _POOL_TIMEOUT,
             )
     return _engine
-
 
 def get_engine():
     """Return the shared async engine (sync accessor — engine must exist).
@@ -306,7 +298,6 @@ def get_engine():
         )
     return _engine
 
-
 def get_session():
     """Return a new async session (context-manager ready).
 
@@ -323,23 +314,6 @@ def get_session():
         )
     return _session_factory()
 
-
-def get_pool_status() -> dict:
-    """Return connection pool stats for health checks / Prometheus."""
-    try:
-        engine = get_engine()
-        pool = engine.pool
-        return {
-            "size": pool.size(),
-            "checked_in": pool.checkedin(),
-            "checked_out": pool.checkedout(),
-            "overflow": pool.overflow(),
-        }
-    except RuntimeError:
-        return {"size": 0, "checked_in": 0, "checked_out": 0, "overflow": 0}
-
-
-# --- Backward-compatible alias ----------------------------------------------
 class _SessionAlias:
     """Callable alias so ``async_session()`` still works after the refactor."""
 
@@ -348,11 +322,9 @@ class _SessionAlias:
 
 async_session = _SessionAlias()
 
-
 class Base(DeclarativeBase):
     """Base class for all ORM models."""
     pass
-
 
 async def init_db():
     """Initialize database tables and eagerly warm the connection pool."""
@@ -366,7 +338,6 @@ async def init_db():
     if _pool_cleaner_task is None:
         _pool_cleaner_task = asyncio.create_task(_pool_recycle_loop())
         logger.info("db_pool_recycler_started")
-
 
 async def close_db():
     """Close database connections."""

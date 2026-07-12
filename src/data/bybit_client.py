@@ -41,7 +41,6 @@ _INTERVAL_MAP = {
     "1D": "D", "1W": "W", "1M": "M",
 }
 
-
 def _safe_float(val, default=0.0) -> float:
     """Convert Bybit response value to float, handling empty strings and None."""
     if val is None or val == "":
@@ -50,7 +49,6 @@ def _safe_float(val, default=0.0) -> float:
         return float(val)
     except (ValueError, TypeError):
         return default
-
 
 class BybitClient:
     """Bybit API client for crypto market data and order execution.
@@ -131,63 +129,6 @@ class BybitClient:
         with self._api_lock:
             kwargs.setdefault("timeout", 5)
             return func(*args, **kwargs)
-
-    async def _retry_call(self, func, *args, **kwargs):
-        """Retry wrapper with exponential backoff for transient Bybit errors.
-
-        Args:
-            func: Synchronous pybit method to call.
-
-        Returns: API response dict.
-
-        Raises: Exception on fatal errors or after max retries.
-        """
-        last_error = None
-        _t0 = time.time()
-        for attempt in range(_MAX_RETRIES):
-            try:
-                async with self._semaphore:
-                    await self._throttle()
-                    resp = await asyncio.wait_for(asyncio.to_thread(self._safe_pybit_call, func, *args, **kwargs), timeout=10.0)
-
-                ret_code = resp.get("retCode", 0)
-
-                if ret_code == 0:
-                    self._record_success("bybit")
-                    record_bybit_call(func.__name__, time.time() - _t0)
-                    return resp
-
-                if ret_code in _FATAL_CODES:
-                    raise Exception(f"Bybit fatal error ({ret_code}): {resp.get('retMsg')}")
-
-                if ret_code in _RETRYABLE_CODES:
-                    last_error = f"Bybit retryable ({ret_code}): {resp.get('retMsg')}"
-                    if attempt < _MAX_RETRIES - 1:
-                        delay = _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)]
-                        jitter = random.uniform(0, _JITTER_MAX)
-                        logger.warning("bybit_retry", attempt=attempt + 1, delay=delay + jitter, error=last_error)
-                        await asyncio.sleep(delay + jitter)
-                        continue
-
-                # Unknown error code — don't retry
-                raise Exception(f"Bybit API error ({ret_code}): {resp.get('retMsg')}")
-
-            except Exception as e:
-                if "Bybit" in str(e) and ("fatal" in str(e).lower() or "API error" in str(e)):
-                    record_bybit_call(func.__name__, time.time() - _t0, error="fatal")
-                    raise
-                last_error = str(e)
-                if attempt < _MAX_RETRIES - 1:
-                    delay = _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)]
-                    jitter = random.uniform(0, _JITTER_MAX)
-                    logger.warning("bybit_retry", attempt=attempt + 1, delay=delay + jitter, error=last_error)
-                    await asyncio.sleep(delay + jitter)
-
-        self._record_failure("bybit")
-        record_bybit_call(func.__name__, time.time() - _t0, error="retry_exhausted")
-        raise Exception(f"Bybit max retries exceeded: {last_error}")
-
-    # --- WebSocket Methods ---
 
     def _init_ws(self):
         """Initialize WebSocket client if not exists."""
@@ -522,7 +463,7 @@ class BybitClient:
             async with self._semaphore:
                 await self._throttle()
                 resp = await asyncio.wait_for(
-                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_funding_history, **params),
+                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_funding_rate_history, **params),
                     timeout=10.0,
                 )
 
@@ -919,31 +860,6 @@ class BybitClient:
         except Exception as e:
             logger.error("bybit_wallet_failed", error=str(e))
             return {"balance": 0, "available": 0, "coins": [], "error": str(e)}
-
-    async def validate_api_key(self) -> dict:
-        """Validate API key by querying user info."""
-        try:
-            async with self._semaphore:
-                await self._throttle()
-                resp = await asyncio.wait_for(
-                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_api_key_information),
-                    timeout=10.0,
-                )
-
-            if resp.get("retCode") != 0:
-                return {"valid": False, "error": resp.get("retMsg", "Unknown error")}
-
-            result = resp.get("result", {})
-            return {
-                "valid": True,
-                "uid": result.get("uid", "?"),
-                "permissions": result.get("permissions", {}),
-                "type": result.get("type", 0),
-            }
-
-        except Exception as e:
-            logger.error("api_key_validation_failed", error=str(e))
-            return {"valid": False, "error": str(e)[:100]}
 
     async def close(self):
         """Cleanly shut down the underlying requests session and connection pool."""

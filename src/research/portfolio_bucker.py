@@ -22,7 +22,6 @@ BUCKET_MAX_POSITION_PCT = {
     "MOONSHOT": 0.5,
 }
 
-
 class PortfolioBucker:
     """Portfolio allocation across investment tiers."""
 
@@ -39,38 +38,6 @@ class PortfolioBucker:
             return "SPECULATIVE"
         else:
             return "MOONSHOT"
-
-    def get_position_size(self, bucket: str, total_capital: float) -> float:
-        """Max position size for a bucket."""
-        max_pct = BUCKET_MAX_POSITION_PCT.get(bucket, 1.0)
-        return total_capital * (max_pct / 100)
-
-    async def allocate(self, reports: list[dict]) -> dict:
-        """Allocate tokens to buckets based on scores.
-
-        Args:
-            reports: list of {symbol, composite_score, ...}
-
-        Returns: {bucket: [{symbol, score, weight}], ...}
-        """
-        allocation = {b: [] for b in BUCKET_TARGETS}
-
-        for r in reports:
-            bucket = self.classify(r.get("composite_score", 0))
-            allocation[bucket].append({
-                "symbol": r["symbol"],
-                "score": r["composite_score"],
-                "weight": 1.0 / max(len(allocation[bucket]) + 1, 1),
-            })
-
-        # Normalize weights within each bucket
-        for bucket, tokens in allocation.items():
-            if tokens:
-                total_weight = sum(t["weight"] for t in tokens)
-                for t in tokens:
-                    t["weight"] = round(t["weight"] / total_weight, 4) if total_weight > 0 else 0
-
-        return allocation
 
     async def get_current_allocation(self) -> dict:
         """Get current bucket allocation from DB."""
@@ -101,24 +68,3 @@ class PortfolioBucker:
             if abs(current_pct - target) > 5:
                 return True
         return False
-
-    async def persist_allocation(self, allocation: dict):
-        """Save allocation to portfolio_allocations table."""
-        from src.models.database import async_session
-        from sqlalchemy import text
-        import json
-
-        async with async_session() as session:
-            for bucket, tokens in allocation.items():
-                await session.execute(
-                    text("""INSERT INTO portfolio_allocations (bucket, target_pct, positions)
-                    VALUES (:bucket, :target, :positions)
-                    ON CONFLICT (bucket) DO UPDATE SET
-                        positions = EXCLUDED.positions, updated_at = NOW()"""),
-                    {
-                        "bucket": bucket,
-                        "target": BUCKET_TARGETS.get(bucket, 0),
-                        "positions": json.dumps(tokens),
-                    },
-                )
-            await session.commit()

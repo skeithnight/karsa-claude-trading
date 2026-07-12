@@ -22,16 +22,18 @@ from src.utils.logging import get_logger
 logger = get_logger("position_manager")
 
 # Partial exit targets (in R-multiples)
-# Multi-tier: 30% at +1R, 30% at +2R, remaining 40% with trailing stop
+# Multi-tier: 15% at +1R, 35% at +2R, remaining 50% with trailing stop
 PARTIAL_EXIT_TARGETS = [
-    {"r_multiple": 1.0, "exit_pct": 30, "reason": "partial_1r"},
-    {"r_multiple": 2.0, "exit_pct": 30, "reason": "partial_2r"},
-    # Remaining 40% with trailing stop
+    {"r_multiple": 1.0, "exit_pct": 15, "reason": "partial_1r"},   # lock a tiny slice, not a third
+    {"r_multiple": 2.0, "exit_pct": 35, "reason": "partial_2r"},   # meaningful exit at confirmed +2R
+    # Remaining 50% with trailing stop
 ]
 
-# Time-based exit: close positions open > 48h with < 1% gain
-TIME_EXIT_MAX_HOURS = 48
+# Time-based exit: close stale positions fast
+TIME_EXIT_MAX_HOURS = 3          # hard exit after 3h with < 1% gain
 TIME_EXIT_MIN_GAIN_PCT = Decimal("1.0")
+STAGNATION_EXIT_HOURS = 2        # exit stagnant positions after 2h
+STAGNATION_MAX_ABS_PNL = Decimal("0.5")  # abs(gain) < 0.5% = stagnant
 
 # Anti-churn: minimum hold time before exit evaluation
 MIN_HOLD_SECONDS = 300  # 5 minutes
@@ -39,7 +41,6 @@ MIN_HOLD_SECONDS = 300  # 5 minutes
 # Break-even stop configuration
 BREAKEVEN_ATR_MULT = 1.5      # Move SL to break-even after +1.5x ATR profit
 BREAKEVEN_BUFFER_PCT = 0.1    # 0.1% buffer above entry to cover fees
-
 
 class PositionManager:
     """Post-entry position lifecycle management."""
@@ -232,6 +233,27 @@ class PositionManager:
 
                         if pos.size <= Decimal("0.00000001"):
                             pos.status = "CLOSED"
+                            # Trade memory write — LLM learns from completed trades
+                            try:
+                                from src.agents.memory_retriever import store_trade_memory
+                                hold_hours = (datetime.now(timezone.utc) - pos.opened_at.replace(
+                                    tzinfo=timezone.utc if pos.opened_at.tzinfo is None else pos.opened_at.tzinfo
+                                )).total_seconds() / 3600
+                                pnl_pct = float((exit_price - pos.entry_price) / pos.entry_price * 100) if pos.entry_price else 0
+                                if pos.side == "Sell":
+                                    pnl_pct = -pnl_pct
+                                await store_trade_memory(
+                                    ticker=pos.ticker,
+                                    regime=getattr(pos, "regime_at_entry", "UNKNOWN") or "UNKNOWN",
+                                    strategy=getattr(pos, "signal_source", "unknown") or "unknown",
+                                    thesis=getattr(pos, "signal_reasoning", f"{pos.side} {pos.ticker}") or f"{pos.side} {pos.ticker}",
+                                    outcome="WIN" if pnl_usdt > 0 else "LOSS" if pnl_usdt < 0 else "BREAKEVEN",
+                                    pnl_pct=pnl_pct,
+                                    exit_reason=reason,
+                                    hold_duration_hours=hold_hours,
+                                )
+                            except Exception:
+                                pass  # memory write non-blocking, never crash trade close
 
                     await session.commit()
 
@@ -281,7 +303,9 @@ class PositionManager:
     async def check_time_exits(self, positions: list[CryptoPosition]) -> list[dict]:
         """Check for stale positions that should be closed.
 
-        Closes positions open > 72h with < 1% gain (capital efficiency).
+        Two exit conditions:
+        1. Stagnation: open > 2h and abs(gain) < 0.5% → exit (no momentum)
+        2. Hard time: open > 3h and gain < 1% → exit (capital efficiency)
         Returns list of close actions.
         """
         actions = []
@@ -299,8 +323,6 @@ class PositionManager:
                     opened_at = opened_at.replace(tzinfo=tz.utc)
 
                 hours_open = (now - opened_at).total_seconds() / 3600
-                if hours_open < TIME_EXIT_MAX_HOURS:
-                    continue
 
                 # Check gain
                 entry_price = Decimal(str(pos.entry_price))
@@ -312,6 +334,26 @@ class PositionManager:
                     gain_pct = ((current_price - entry_price) / entry_price) * 100
                 else:
                     gain_pct = ((entry_price - current_price) / entry_price) * 100
+
+                # 1. Stagnation exit: 2h+ with no movement
+                if hours_open >= STAGNATION_EXIT_HOURS and abs(gain_pct) < STAGNATION_MAX_ABS_PNL:
+                    actions.append({
+                        "position_id": pos.id,
+                        "ticker": pos.ticker,
+                        "action": "time_exit",
+                        "hours_open": round(hours_open, 1),
+                        "gain_pct": float(gain_pct),
+                        "reason": f"stagnation_{int(hours_open)}h_{float(gain_pct):.1f}pct",
+                    })
+                    logger.info("stagnation_exit_triggered",
+                                ticker=pos.ticker,
+                                hours_open=round(hours_open, 1),
+                                gain_pct=float(gain_pct))
+                    continue
+
+                # 2. Hard time exit: 3h+ with < 1% gain
+                if hours_open < TIME_EXIT_MAX_HOURS:
+                    continue
 
                 if gain_pct >= TIME_EXIT_MIN_GAIN_PCT:
                     continue  # profitable enough, let it run
@@ -336,96 +378,6 @@ class PositionManager:
         return actions
 
     # --- Break-Even Stop Logic (Phase 2B) ---
-
-    async def check_break_even_stops(self, positions: list[CryptoPosition]) -> list[dict]:
-        """Check if any position should have its stop moved to break-even.
-
-        Moves SL to entry + 0.1% buffer when price has moved >= 1.5x ATR in profit.
-        Only moves if current SL is still at original level (not already moved).
-        Returns list of actions taken.
-        """
-        actions = []
-        for pos in positions:
-            if pos.status != "OPEN":
-                continue
-            try:
-                entry_price = Decimal(str(pos.entry_price))
-                current_price = Decimal(str(pos.current_price or 0))
-                stop_loss = Decimal(str(pos.stop_loss or 0))
-                trailing_stop = Decimal(str(pos.trailing_stop_price or 0))
-
-                if entry_price == 0 or current_price == 0:
-                    continue
-
-                # Get ATR for break-even threshold
-                atr = await self._get_current_atr(pos.ticker)
-                if not atr:
-                    continue
-
-                # Calculate current profit in price terms
-                if pos.side == "Buy":
-                    profit_distance = current_price - entry_price
-                else:
-                    profit_distance = entry_price - current_price
-
-                if profit_distance <= 0:
-                    continue  # not in profit
-
-                # Check if profit >= BREAKEVEN_ATR_MULT * ATR
-                breakeven_threshold = Decimal(str(atr)) * Decimal(str(BREAKEVEN_ATR_MULT))
-                if profit_distance < breakeven_threshold:
-                    continue  # not enough profit yet
-
-                # Check if SL is still at original level (not already moved to break-even)
-                # Original SL should be further from entry than break-even level
-                if pos.side == "Buy":
-                    # Break-even SL = entry + buffer
-                    breakeven_sl = entry_price * (1 + Decimal(str(BREAKEVEN_BUFFER_PCT)) / 100)
-                    # If current SL is already at or above break-even, skip
-                    if stop_loss >= breakeven_sl or trailing_stop >= breakeven_sl:
-                        continue
-                else:
-                    # Break-even SL = entry - buffer
-                    breakeven_sl = entry_price * (1 - Decimal(str(BREAKEVEN_BUFFER_PCT)) / 100)
-                    # If current SL is already at or below break-even, skip
-                    if (stop_loss > 0 and stop_loss <= breakeven_sl) or \
-                       (trailing_stop > 0 and trailing_stop <= breakeven_sl):
-                        continue
-
-                # Move stop to break-even
-                new_sl = float(breakeven_sl)
-                result = await self.bybit.set_stop_loss(pos.ticker, new_sl, pos.side)
-                if result.get("error"):
-                    logger.error("breakeven_sl_failed", ticker=pos.ticker, error=result["error"])
-                    continue
-
-                # Update DB
-                async with async_session() as session:
-                    db_pos = await session.get(CryptoPosition, pos.id)
-                    if db_pos:
-                        db_pos.trailing_stop_price = new_sl
-                        db_pos.last_management_check = datetime.now(timezone.utc)
-                        await session.commit()
-
-                actions.append({
-                    "ticker": pos.ticker,
-                    "action": "breakeven_stop",
-                    "new_sl": new_sl,
-                    "atr": atr,
-                    "profit_distance": float(profit_distance),
-                })
-                logger.info("breakeven_stop_set",
-                            ticker=pos.ticker,
-                            new_sl=new_sl,
-                            atr=atr,
-                            profit=float(profit_distance))
-
-            except Exception as e:
-                logger.error("breakeven_check_failed", ticker=pos.ticker, error=str(e))
-
-        return actions
-
-    # --- SL Verification & Recovery (Phase 1) ---
 
     async def verify_and_recover_sl(self, positions: list[CryptoPosition]) -> list[dict]:
         """Verify all open positions have active SL orders on Bybit.
@@ -508,3 +460,92 @@ class PositionManager:
         if pos.side == "Buy":
             return entry - distance
         return entry + distance
+
+    # --- Scale-In Pyramiding ---
+    SCALE_IN_CONFIG = {
+        "r_multiple": 1.0,
+        "add_pct": 25,
+        "reason": "pyramid_1r",
+        "allowed_regimes": {"FULL_TREND_ALIGNMENT", "FULL_ALIGNMENT", "TREND_BULL"},
+    }
+
+    async def check_scale_in(
+        self, positions: list[CryptoPosition], current_regime: str = "UNKNOWN"
+    ) -> list[dict]:
+        """Check if winning positions qualify for a pyramid add-on.
+
+        Only triggers in strong trend regimes when position is at +1R.
+        Add-on stop is set at original entry (breakeven on the add).
+        """
+        if current_regime not in self.SCALE_IN_CONFIG["allowed_regimes"]:
+            return []
+
+        actions = []
+        for pos in positions:
+            if pos.status != "OPEN":
+                continue
+            if pos.scale_in_taken:
+                continue
+
+            entry = Decimal(str(pos.entry_price))
+            current = Decimal(str(pos.current_price or 0))
+            stop = Decimal(str(pos.stop_loss or pos.trailing_stop_price or 0))
+
+            if stop == 0 or entry == 0 or current == 0:
+                continue
+
+            risk = (entry - stop) if pos.side == "Buy" else (stop - entry)
+            reward = (current - entry) if pos.side == "Buy" else (entry - current)
+
+            if risk <= 0 or reward / risk < Decimal(str(self.SCALE_IN_CONFIG["r_multiple"])):
+                continue
+
+            add_size = Decimal(str(pos.size)) * self.SCALE_IN_CONFIG["add_pct"] / 100
+            actions.append({
+                "position_id": pos.id,
+                "ticker": pos.ticker,
+                "side": pos.side,
+                "action": "scale_in",
+                "add_pct": self.SCALE_IN_CONFIG["add_pct"],
+                "add_size": float(add_size),
+                "new_stop": float(entry),
+                "reason": self.SCALE_IN_CONFIG["reason"],
+                "r_multiple": float(reward / risk),
+            })
+
+        return actions
+
+    async def execute_scale_in(self, position_id: int, add_size: float, reason: str) -> dict:
+        """Execute a scale-in: buy more at current price, move stop to entry."""
+        try:
+            async with async_session() as session:
+                pos = await session.get(CryptoPosition, position_id)
+                if not pos or pos.status != "OPEN":
+                    return {"success": False, "error": "Position not found or not open"}
+                if pos.scale_in_taken:
+                    return {"success": False, "error": "Scale-in already taken"}
+
+                from src.risk.sor import SmartOrderRouter
+                sor = SmartOrderRouter(self.bybit)
+
+                result = await sor.execute_order(
+                    signal={"ticker": pos.ticker, "direction": pos.side.upper(), "confidence": 100},
+                    risk_params={"qty": add_size, "leverage": pos.leverage},
+                )
+
+                if result.get("success"):
+                    new_size = Decimal(str(pos.size)) + Decimal(str(add_size))
+                    pos.size = new_size
+                    pos.scale_in_taken = True
+                    pos.last_management_check = datetime.now(timezone.utc)
+                    await session.commit()
+
+                    logger.info("scale_in_executed",
+                                ticker=pos.ticker, add_size=add_size, new_size=str(new_size))
+                    return {"success": True, "ticker": pos.ticker, "new_size": str(new_size)}
+                else:
+                    return {"success": False, "error": result.get("error", "SOR failed")}
+
+        except Exception as e:
+            logger.error("scale_in_execute_failed", position_id=position_id, error=str(e))
+            return {"success": False, "error": str(e)}

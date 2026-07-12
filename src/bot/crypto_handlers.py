@@ -706,6 +706,12 @@ async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         regime_on = True
 
+    try:
+        profile_raw = await r.get("karsa:state:risk_profile")
+        profile_name = profile_raw.decode() if isinstance(profile_raw, bytes) else (profile_raw or "conservative")
+    except Exception:
+        profile_name = "conservative"
+
     text = fmt(
         bold("⚙️ Bot Settings & Preferences"), "\n",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "\n\n",
@@ -713,6 +719,7 @@ async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📂 Max Open Positions: {max_pos}\n",
         f"📊 Regime Filter: {'ENABLED' if regime_on else 'DISABLED'} (Only trade in BULL/NEUTRAL)\n",
         f"🔔 Trade Alerts: {'ENABLED' if alerts_on else 'MUTED'} (SL/TP notifications)\n",
+        f"🛡️ Risk Profile: {profile_name.upper()}\n",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "\n",
         "Select a parameter below to modify it.",
     )
@@ -720,7 +727,8 @@ async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton(f"📂 Max Pos: {max_pos}", callback_data="toggle_max_pos"),
          InlineKeyboardButton(f"📊 Regime: {'ON' if regime_on else 'OFF'}", callback_data="toggle_regime")],
-        [InlineKeyboardButton(f"🔔 Alerts: {'ON' if alerts_on else 'OFF'}", callback_data="toggle_alerts")],
+        [InlineKeyboardButton(f"🔔 Alerts: {'ON' if alerts_on else 'OFF'}", callback_data="toggle_alerts"),
+         InlineKeyboardButton(f"🛡️ Profile: {profile_name.upper()}", callback_data="toggle_risk_profile")],
         [InlineKeyboardButton("🔙 Back to Dashboard", callback_data="cmd_dashboard")],
     ]
 
@@ -752,6 +760,33 @@ async def _toggle_regime(update: Update, context: ContextTypes.DEFAULT_TYPE):
         is_on = True
 
     await r.set("karsa:settings:regime_filter", "0" if is_on else "1")
+    await settings_cmd(update, context)
+
+
+async def _toggle_risk_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cycle risk profile: conservative → semi_aggressive → aggressive → conservative."""
+    orch = context.bot_data.get("orchestrator")
+    if not orch or not orch.profile_manager:
+        await _reply(update, "⚠️ Profile manager not initialized.")
+        return
+
+    cycle = ["conservative", "semi_aggressive", "aggressive"]
+    r = _get_redis(context)
+    try:
+        current_raw = await r.get("karsa:state:risk_profile")
+        current = current_raw.decode() if isinstance(current_raw, bytes) else (current_raw or "conservative")
+    except Exception:
+        current = "conservative"
+
+    next_idx = (cycle.index(current) + 1) % len(cycle) if current in cycle else 0
+    new_profile = cycle[next_idx]
+
+    from src.risk.profile_manager import RiskProfile
+    ok = await orch.profile_manager.set_profile(RiskProfile(new_profile), f"tg_{update.effective_user.id}", "Settings menu toggle")
+    if not ok:
+        await _reply(update, "⏳ Cooldown active — wait 5 minutes between profile changes.")
+        return
+
     await settings_cmd(update, context)
 
 
@@ -1554,8 +1589,9 @@ async def trade_history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_or_edit_message(update, text, reply_markup=keyboard, parse_mode=None)
 
     except Exception as e:
-        logger.error("trade_history_failed", error=str(e))
-        await _reply(update, "❌ Trade history load failed.", reply_markup=InlineKeyboardMarkup(
+        logger.error("trade_history_failed", error=str(e), exc_info=True)
+        error_detail = str(e)[:120] if str(e) else type(e).__name__
+        await _reply(update, f"❌ Trade history load failed: {error_detail}", reply_markup=InlineKeyboardMarkup(
                          [[InlineKeyboardButton("🏠 Back to Dashboard", callback_data="cmd_dashboard")]]))
 
 
@@ -1577,6 +1613,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "cmd_settings": await settings_cmd(update, context)
     elif data == "toggle_max_pos": await _toggle_max_pos(update, context)
     elif data == "toggle_regime": await _toggle_regime(update, context)
+    elif data == "toggle_risk_profile": await _toggle_risk_profile(update, context)
 
     # ASM Dashboard views
     elif data == "cmd_history": await session_history_cmd(update, context)

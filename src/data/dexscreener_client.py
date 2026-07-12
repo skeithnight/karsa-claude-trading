@@ -22,7 +22,6 @@ _MAX_FAILURES = 5
 _MAX_RETRIES = 3
 _RETRY_DELAYS = [1, 2, 4]
 
-
 class DexScreenerClient:
     """DexScreener API client — DEX pairs, trending, new listings."""
 
@@ -159,13 +158,6 @@ class DexScreenerClient:
             return []
         pairs = data.get("pairs", []) if isinstance(data, dict) else data
         return [self._normalize_pair(p) for p in (pairs or [])[:30]]
-
-    async def get_token_pairs(self, token_address: str, chain: str = "ethereum") -> list[dict]:
-        """All pairs for a specific token address."""
-        data = await self._request(f"/tokens/v1/{chain}/{token_address}")
-        if not data or not isinstance(data, list):
-            return []
-        return [self._normalize_pair(p) for p in data[:20]]
 
     async def get_trending(self) -> list[dict]:
         """Trending pairs (proxy via token profiles)."""

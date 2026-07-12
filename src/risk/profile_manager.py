@@ -22,12 +22,10 @@ PROFILE_CHANGE_COOLDOWN_SECONDS = 300  # 5 minutes
 HARD_MAX_POSITION_SIZE_PCT = 0.10  # 10% absolute maximum
 HARD_MAX_DAILY_LOSS_PCT = 0.05    # 5% daily loss limit
 
-
 class RiskProfile(Enum):
     CONSERVATIVE = "conservative"
     SEMI_AGGRESSIVE = "semi_aggressive"
     AGGRESSIVE = "aggressive"
-
 
 @dataclass
 class RiskProfileConfig:
@@ -44,7 +42,6 @@ class RiskProfileConfig:
     regime_veto_strictness: str  # "strict", "moderate", "loose"
     size_multiplier: float       # applied on top of base position sizing
 
-
 PROFILES: dict[RiskProfile, RiskProfileConfig] = {
     RiskProfile.CONSERVATIVE: RiskProfileConfig(
         name="conservative",
@@ -56,7 +53,7 @@ PROFILES: dict[RiskProfile, RiskProfileConfig] = {
         max_open_positions=2,
         max_daily_trades=3,
         max_correlation=0.7,
-        min_volume_24h_usd=100_000_000,
+        min_volume_24h_usd=5_000_000,   # was 100M — only caught BTC/ETH; now catches top ~40 coins
         regime_veto_strictness="strict",
         size_multiplier=0.8,
     ),
@@ -70,7 +67,7 @@ PROFILES: dict[RiskProfile, RiskProfileConfig] = {
         max_open_positions=4,
         max_daily_trades=8,
         max_correlation=0.85,
-        min_volume_24h_usd=50_000_000,
+        min_volume_24h_usd=2_000_000,   # was 50M — now catches mid-cap coins like LINK, AVAX
         regime_veto_strictness="moderate",
         size_multiplier=1.0,
     ),
@@ -84,12 +81,11 @@ PROFILES: dict[RiskProfile, RiskProfileConfig] = {
         max_open_positions=6,
         max_daily_trades=15,
         max_correlation=0.95,
-        min_volume_24h_usd=20_000_000,
+        min_volume_24h_usd=500_000,     # was 20M — small-cap/meme coins eligible
         regime_veto_strictness="loose",
         size_multiplier=1.3,
     ),
 }
-
 
 class RiskProfileManager:
     """Manages risk profile state and validation. Redis-backed, thread-safe."""
@@ -187,71 +183,3 @@ class RiskProfileManager:
         except Exception:
             return []
 
-    async def validate_signal(
-        self,
-        confidence: int,
-        volume_24h_usd: float = 0,
-        open_position_count: int = 0,
-        daily_trade_count: int = 0,
-    ) -> tuple[bool, str]:
-        """Validate signal parameters against active profile.
-
-        Returns (allowed, reason).
-        """
-        p = await self.get_active_profile()
-
-        if confidence < p.min_confidence:
-            return False, f"Confidence {confidence} < {p.min_confidence} ({p.name})"
-
-        if volume_24h_usd > 0 and volume_24h_usd < p.min_volume_24h_usd:
-            return False, f"Volume ${volume_24h_usd:,.0f} < ${p.min_volume_24h_usd:,.0f}"
-
-        if open_position_count >= p.max_open_positions:
-            return False, f"Max {p.max_open_positions} positions reached ({p.name})"
-
-        if daily_trade_count >= p.max_daily_trades:
-            return False, f"Max {p.max_daily_trades} daily trades reached ({p.name})"
-
-        return True, "OK"
-
-    async def calculate_position_size(
-        self,
-        equity: float,
-        atr: float,
-        entry_price: float,
-        direction: str = "LONG",
-    ) -> dict:
-        """Profile-aware position sizing with ATR-based stops.
-
-        Returns dict with quantity, stop_loss, take_profit, risk_amount, rr_ratio.
-        Enforces hard limits regardless of profile.
-        """
-        p = await self.get_active_profile()
-
-        # Clamp position size to hard limit
-        effective_pct = min(p.max_position_size_pct, HARD_MAX_POSITION_SIZE_PCT)
-        risk_amount = equity * effective_pct
-
-        stop_distance = atr * p.stop_loss_atr_mult
-        tp_distance = atr * p.take_profit_atr_mult
-
-        if direction == "LONG":
-            stop_loss = entry_price - stop_distance
-            take_profit = entry_price + tp_distance
-        else:
-            stop_loss = entry_price + stop_distance
-            take_profit = entry_price - tp_distance
-
-        quantity = risk_amount / stop_distance if stop_distance > 0 else 0
-        rr_ratio = tp_distance / stop_distance if stop_distance > 0 else 0
-
-        return {
-            "quantity": round(quantity, 8),
-            "notional_value": round(quantity * entry_price, 2),
-            "stop_loss": round(stop_loss, 4),
-            "take_profit": round(take_profit, 4),
-            "risk_amount": round(risk_amount, 2),
-            "rr_ratio": round(rr_ratio, 2),
-            "profile": p.name,
-            "size_multiplier": p.size_multiplier,
-        }

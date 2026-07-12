@@ -26,7 +26,6 @@ DLQ_KEY_PREFIX = "karsa:dlq"
 DLQ_MAX_RETRIES = 5
 DLQ_RETRY_DELAYS = [5, 15, 60, 300, 900]  # seconds: 5s, 15s, 1m, 5m, 15m
 
-
 class DeadLetterQueue:
     """Redis-backed dead letter queue for failed operations."""
 
@@ -116,25 +115,5 @@ class DeadLetterQueue:
         key = f"{DLQ_KEY_PREFIX}:{queue_name}"
         try:
             return await self._redis.llen(key)
-        except Exception:
-            return 0
-
-    async def get_exhausted(self, queue_name: str) -> list[dict]:
-        """Get items that exhausted all retries."""
-        key = f"{DLQ_KEY_PREFIX}:{queue_name}:exhausted"
-        try:
-            items = await self._redis.lrange(key, 0, -1)
-            return [json.loads(i) for i in items]
-        except Exception:
-            return []
-
-    async def clear_queue(self, queue_name: str) -> int:
-        """Clear a queue. Returns number of items removed."""
-        key = f"{DLQ_KEY_PREFIX}:{queue_name}"
-        try:
-            items = await self._redis.lrange(key, 0, -1)
-            if items:
-                await self._redis.delete(key)
-            return len(items)
         except Exception:
             return 0

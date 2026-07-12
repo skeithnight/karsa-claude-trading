@@ -25,7 +25,6 @@ _DEFAULT_FLAGS = {
     "aode_monitoring_enabled": False,
 }
 
-
 class FeatureFlags:
     """Redis-backed feature flag store with in-memory fallback.
 
@@ -54,21 +53,12 @@ class FeatureFlags:
                 pass  # fall through to local
         return self._local.get(flag, False)
 
-    def enable(self, flag: str):
-        self._local[flag] = True
-        if self._redis:
-            self._redis.set(f"{self._prefix}:feature_flags:{flag}", "1")
-        logger.info("feature_flag_enabled", flag=flag)
-
     def disable(self, flag: str):
         self._local[flag] = False
         if self._redis:
             self._redis.set(f"{self._prefix}:feature_flags:{flag}", "0")
         logger.info("feature_flag_disabled", flag=flag)
 
-    def all_flags(self) -> dict:
-        return {f: self.is_enabled(f) for f in _DEFAULT_FLAGS}
 
-
-# Singleton — import and use directly
+# Module-level singleton
 flags = FeatureFlags()

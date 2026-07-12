@@ -394,6 +394,19 @@ def record_signal_confidence(profile: str, confidence: int, executed: bool):
     SIGNAL_CONFIDENCE.labels(profile=profile, outcome=outcome).observe(confidence)
 
 
+# Live analyst ticker gauge — updated every scan cycle
+ANALYST_LATEST_SIGNAL = Gauge(
+    "karsa_analyst_latest_signal_confidence",
+    "Latest analyst confidence per ticker",
+    ["ticker", "direction"],
+)
+
+
+def record_analyst_signal(ticker: str, direction: str, confidence: int):
+    """Record latest analyst signal for live Grafana dashboard."""
+    ANALYST_LATEST_SIGNAL.labels(ticker=ticker, direction=direction).set(confidence)
+
+
 def update_universe_size(count: int):
     UNIVERSE_SIZE.set(count)
 

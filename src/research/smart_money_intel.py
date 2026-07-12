@@ -12,9 +12,16 @@ logger = get_logger("smart_money_intel")
 # Seed VC/whale wallets (publicly known)
 SEED_WALLETS = [
     {"address": "0x28C6c06298d514Db089934071355E5743bf21d60", "chain": "ethereum", "label": "Binance Hot Wallet", "type": "exchange"},
-    {"address": "0x21a31Ee1afC51d94C2eFcCAa2092aD1028285549", "chain": "ethereum", "label": "Binance Cold Wallet", "type": "exchange"},
     {"address": "0xDFd5293D8e347dFe59E90eFd55b2956a1343963d", "chain": "ethereum", "label": "Galaxy Digital", "type": "vc"},
     {"address": "0x8103683202aa8DA10536036EDef04CDd865A9025", "chain": "ethereum", "label": "Jump Trading", "type": "vc"},
+    {"address": "0x0548F59fEE79f8832C299e01dCA5c76F034F558e", "chain": "ethereum", "label": "a16z", "type": "vc"},
+    {"address": "0x4F41dE237C501b87D7f9ECA5193B7F13cBB67909", "chain": "ethereum", "label": "Wintermute", "type": "vc"},
+    {"address": "0x011d19410cb7e956d0557eb1923c114382834b6b", "chain": "ethereum", "label": "Amber Group", "type": "vc"},
+    {"address": "0x56a64ccf25a97491cfdb716f9f091010c2c1a842", "chain": "ethereum", "label": "Paradigm", "type": "vc"},
+    {"address": "0x8c7bbce4a8efda6c498807d9b4b0ed23e01290bb", "chain": "ethereum", "label": "Spartan Group", "type": "vc"},
+    {"address": "0x1111111254fb6c44bac0bed2854e76f90643097d", "chain": "ethereum", "label": "1inch Team", "type": "vc"},
+    {"address": "0xfc43f5f9dd45258b3aff31bdbe6561d97e8b71de", "chain": "ethereum", "label": "Multicoin Capital", "type": "vc"},
+    {"address": "0xc1c42f36d4ff159f8ed3deff20cbdaffbe3b9eb2", "chain": "ethereum", "label": "Dragonfly Capital", "type": "vc"},
 ]
 
 

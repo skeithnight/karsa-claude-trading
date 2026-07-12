@@ -36,24 +36,21 @@ class DiscoveryEngine:
 
     async def discover(self) -> list[dict]:
         """Run full discovery cycle across all sources. Returns deduplicated tokens."""
-        from src.data.coingecko_client import CoinGeckoClient
         from src.data.defillama_client import DefiLlamaClient
         from src.data.dexscreener_client import DexScreenerClient
 
-        cg = CoinGeckoClient(cache=self._cache)
         dl = DefiLlamaClient(cache=self._cache)
         ds = DexScreenerClient(cache=self._cache)
 
         try:
             results = await asyncio.gather(
-                self._scan_coingecko(cg),
                 self._scan_defillama(dl),
                 self._scan_dexscreener(ds),
                 self._scan_bybit_new_listings(),
                 return_exceptions=True,
             )
         finally:
-            await asyncio.gather(cg.close(), dl.close(), ds.close(), return_exceptions=True)
+            await asyncio.gather(dl.close(), ds.close(), return_exceptions=True)
 
         all_tokens = []
         for i, result in enumerate(results):
@@ -71,40 +68,6 @@ class DiscoveryEngine:
                      after_filter=len(filtered))
 
         return filtered
-
-    async def _scan_coingecko(self, cg) -> list[dict]:
-        """CoinGecko: trending + top coins by volume."""
-        tokens = []
-
-        # Trending coins
-        trending = await cg.get_trending()
-        for t in trending:
-            tokens.append({
-                "symbol": (t.get("symbol") or "").upper(),
-                "name": t.get("name"),
-                "source": "coingecko_trending",
-                "chain": "multi",
-                "market_cap_rank": t.get("market_cap_rank"),
-            })
-
-        # Top gainers (high 24h change, moderate mcap)
-        top = await cg.get_top_coins(200)
-        for c in top:
-            change = c.get("price_change_24h_pct") or 0
-            if abs(change) > 10:  # >10% move in 24h
-                tokens.append({
-                    "symbol": c.get("symbol"),
-                    "name": c.get("name"),
-                    "source": "coingecko_mover",
-                    "chain": "multi",
-                    "market_cap_usd": c.get("market_cap"),
-                    "volume_24h_usd": c.get("volume_24h"),
-                    "price_usd": c.get("price"),
-                    "price_change_24h_pct": change,
-                    "coingecko_id": c.get("id"),
-                })
-
-        return tokens
 
     async def _scan_defillama(self, dl) -> list[dict]:
         """DeFiLlama: protocols with significant TVL changes."""

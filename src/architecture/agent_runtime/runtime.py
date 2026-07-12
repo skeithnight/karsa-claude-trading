@@ -17,7 +17,6 @@ from src.utils.error_classification import classify_error, ErrorSeverity
 
 logger = structlog.get_logger(__name__)
 
-
 class AgentState(str, Enum):
     CREATED = "CREATED"
     INITIALIZING = "INITIALIZING"
@@ -26,7 +25,6 @@ class AgentState(str, Enum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     RETRYING = "RETRYING"
-
 
 _TRANSITIONS = {
     AgentState.CREATED: {AgentState.INITIALIZING},
@@ -37,7 +35,6 @@ _TRANSITIONS = {
     AgentState.RETRYING: {AgentState.READY},
     AgentState.COMPLETED: set(),
 }
-
 
 @dataclass
 class AgentRun:
@@ -50,7 +47,6 @@ class AgentRun:
     max_retries: int = 3
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
-
 
 class AgentRuntime:
     """Manages agent lifecycle — create, run, retry, complete.
@@ -113,9 +109,3 @@ class AgentRuntime:
                         self._transition(run, AgentState.FAILED)
                         return run
         return run
-
-    def get_run(self, agent_id: str) -> Optional[AgentRun]:
-        return self._agents.get(agent_id)
-
-    def all_runs(self) -> list[AgentRun]:
-        return list(self._agents.values())

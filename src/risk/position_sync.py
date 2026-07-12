@@ -41,7 +41,6 @@ SIZE_DRIFT_TOLERANCE_PCT = Decimal("1.0")  # 1% tolerance for rounding
 # Balance drift tolerance (percentage)
 BALANCE_DRIFT_TOLERANCE_PCT = Decimal("0.01")  # 0.01% balance drift
 
-
 class PositionReconciler:
     """Bidirectional position reconciliation."""
 
@@ -451,49 +450,11 @@ class PositionReconciler:
             logger.error("size_drift_handle_failed", ticker=db_pos.ticker, error=str(e))
         return None
 
-
 class OrderReconciler:
     """Detects orphaned and unknown orders between DB and exchange."""
 
     def __init__(self, bybit):
         self.bybit = bybit
-
-    async def reconcile_orders(self) -> list[dict]:
-        """Reconcile DB orders with Bybit exchange orders.
-
-        Returns list of detected drifts (ORPHANED / UNKNOWN).
-        """
-        drifts = []
-        try:
-            # Fetch exchange open orders
-            exchange_orders = await self._get_exchange_orders()
-            # Fetch DB recent orders (open/pending status)
-            db_orders = await self._get_db_orders()
-
-            exchange_ids = {o["orderId"] for o in exchange_orders}
-            db_ids = {o.order_id for o in db_orders if o.order_id}
-
-            # ORPHANED: in DB but not on exchange
-            for db_order in db_orders:
-                if db_order.order_id and db_order.order_id not in exchange_ids:
-                    drift = await self._handle_orphaned(db_order)
-                    if drift:
-                        drifts.append(drift)
-
-            # UNKNOWN: on exchange but not in DB
-            for exch_order in exchange_orders:
-                if exch_order["orderId"] not in db_ids:
-                    drift = await self._handle_unknown(exch_order)
-                    if drift:
-                        drifts.append(drift)
-
-            if drifts:
-                logger.warning("order_reconciliation_drifts", count=len(drifts))
-
-        except Exception as e:
-            logger.error("order_reconciliation_failed", error=str(e))
-
-        return drifts
 
     async def _get_exchange_orders(self) -> list[dict]:
         """Fetch open orders from Bybit."""
@@ -593,63 +554,11 @@ class OrderReconciler:
             logger.error("unknown_order_handle_failed", error=str(e))
         return None
 
-
 class BalanceReconciler:
     """Detects balance drift between DB cached state and Bybit wallet."""
 
     def __init__(self, bybit):
         self.bybit = bybit
-
-    async def reconcile_balances(self) -> list[dict]:
-        """Reconcile DB balance with Bybit wallet balance.
-
-        Returns list of drifts detected.
-        """
-        drifts = []
-        try:
-            # Fetch exchange wallet balance
-            exchange_balance = await self._get_exchange_balance()
-            if not exchange_balance:
-                return []
-
-            # Fetch DB cached balance (from most recent CryptoPosition or manual cache)
-            db_balance = await self._get_db_balance()
-
-            for currency, exch_amt in exchange_balance.items():
-                db_amt = db_balance.get(currency, Decimal("0"))
-                if db_amt == 0 and exch_amt == 0:
-                    continue
-
-                max_amt = max(abs(db_amt), abs(exch_amt), Decimal("1"))
-                drift_pct = abs(db_amt - exch_amt) / max_amt * 100
-
-                if drift_pct > BALANCE_DRIFT_TOLERANCE_PCT:
-                    drift = {
-                        "drift_type": "BALANCE",
-                        "currency": currency,
-                        "db_balance": str(db_amt),
-                        "exchange_balance": str(exch_amt),
-                        "drift_pct": round(float(drift_pct), 4),
-                        "resolution": "exchange_trusted",
-                    }
-                    drifts.append(drift)
-
-                    # Log to reconciliation table
-                    await self._log_balance_drift(drift)
-
-                    logger.warning("balance_drift_detected",
-                                   currency=currency,
-                                   db=str(db_amt),
-                                   exchange=str(exch_amt),
-                                   drift_pct=round(float(drift_pct), 4))
-
-            if not drifts:
-                logger.debug("balance_reconciled_ok")
-
-        except Exception as e:
-            logger.error("balance_reconciliation_failed", error=str(e))
-
-        return drifts
 
     async def _get_exchange_balance(self) -> dict[str, Decimal]:
         """Fetch wallet balance from Bybit."""

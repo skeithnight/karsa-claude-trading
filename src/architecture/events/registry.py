@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-
 @dataclass
 class EventSchema:
     """Registered event type metadata."""
@@ -12,7 +11,6 @@ class EventSchema:
     subscribers: List[str]
     version: int = 1
     description: str = ""
-
 
 class EventRegistry:
     """Central catalog of all business events.
@@ -28,14 +26,3 @@ class EventRegistry:
 
     def get(self, event_type: str) -> Optional[EventSchema]:
         return self._events.get(event_type)
-
-    def all_events(self) -> Dict[str, EventSchema]:
-        return dict(self._events)
-
-    def publishers_of(self, event_type: str) -> Optional[str]:
-        schema = self.get(event_type)
-        return schema.publisher if schema else None
-
-    def subscribers_of(self, event_type: str) -> List[str]:
-        schema = self.get(event_type)
-        return schema.subscribers if schema else []
