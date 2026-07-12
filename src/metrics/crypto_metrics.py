@@ -75,6 +75,11 @@ UNIVERSE_REFRESH_DURATION = Histogram(
     buckets=[1, 2, 5, 10, 30, 60],
 )
 
+SCAN_WIDEN_TRIGGERED = Counter(
+    "karsa_scan_widen_triggered_total",
+    "Number of times widen scan was triggered (0 high-confidence signals)",
+)
+
 UNIVERSE_COIN_SCORE = Gauge(
     "karsa_universe_coin_score",
     "Individual coin score in universe",
