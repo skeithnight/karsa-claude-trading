@@ -106,7 +106,7 @@ def score_candidate(candidate: dict) -> float:
 def rank_candidates(
     candidates: list[dict],
     top_n: int = 12,
-    min_score: float = 45.0,
+    min_score: float = 55.0,
     always_include: set[str] | None = None,
     sector_mapping: dict[str, str] | None = None,
     max_per_sector: int = 2,

@@ -27,6 +27,7 @@ CORE RULES (always apply):
 7. Time-in-Force: Signals valid for 4 hours (crypto is 24/7).
 8. Leverage: Max 3x. Conservative.
 9. Multi-Timeframe Confirmation: Use 1H candles for entry trigger precision. The 4H confirmation_4h block shows the macro trend — entry direction MUST agree with 4H EMA trend. If 4H trend disagrees, reduce confidence by 20 or skip.
+10. Note: The 'rsi_4h' value in the 4H confirmation block is RSI, NOT ADX. Use it as a momentum strength indicator, not a trend strength indicator.
 
 IMPORTANT:
 - Only generate a signal when confidence >= 50.
@@ -281,7 +282,7 @@ class CryptoAnalyst(BaseAgent):
         if tool_name == "get_crypto_quote":
             return await self.mcp.get_quote(ticker, "CRYPTO")
         elif tool_name == "get_crypto_ohlcv":
-            candles = await self.mcp.get_ohlcv(ticker, "CRYPTO", timeframe="1D", limit=tool_input.get("limit", 50))
+            candles = await self.mcp.get_ohlcv(ticker, "CRYPTO", timeframe="1h", limit=tool_input.get("limit", 50))
             if not candles:
                 return []
             # Dense CSV: header + rows — saves ~40% tokens vs repeated JSON keys
@@ -325,7 +326,7 @@ class CryptoAnalyst(BaseAgent):
                     result["confirmation_4h"] = {
                         "trend_ema": full_4h.get("ema_20", {}).get("ema_20"),
                         "ema_50": full_4h.get("ema_50", {}).get("ema_50"),
-                        "adx": full_4h.get("rsi", {}).get("rsi"),  # proxy for trend strength
+                        "rsi_4h": full_4h.get("rsi", {}).get("rsi"),  # proxy for momentum
                     }
                 return result
 

@@ -104,12 +104,21 @@ class TestCorrelationLimits:
         positions = [
             {"symbol": "BTCUSDT", "entry_price": 65000, "size": 0.01},
             {"symbol": "ETHUSDT", "entry_price": 3500, "size": 0.1},
+            {"symbol": "BTCUSDT", "entry_price": 65000, "size": 0.01},
+            {"symbol": "ETHUSDT", "entry_price": 3500, "size": 0.1},
+            {"symbol": "BTCUSDT", "entry_price": 65000, "size": 0.01},
         ]
         result = risk_mgr.check_correlation_limits("BTCUSDT", positions, 10000)
         assert result["allowed"] is False
 
     def test_tier3_single(self, risk_mgr):
-        positions = [{"symbol": "DOGEUSDT", "entry_price": 0.15, "size": 1000}]
+        positions = [
+            {"symbol": "DOGEUSDT", "entry_price": 0.15, "size": 1000},
+            {"symbol": "XRPUSDT", "entry_price": 0.15, "size": 1000},
+            {"symbol": "ADAUSDT", "entry_price": 0.15, "size": 1000},
+            {"symbol": "DOTUSDT", "entry_price": 0.15, "size": 1000},
+            {"symbol": "MATICUSDT", "entry_price": 0.15, "size": 1000},
+        ]
         result = risk_mgr.check_correlation_limits("XRPUSDT", positions, 10000)
         assert result["allowed"] is False
 
@@ -380,7 +389,7 @@ class TestPositionSizingWithATR:
         # uncapped value = 0.03333 * 65000 = 2166.67 > 1000 -> capped
         # capped qty = 1000 / 65000 = 0.01538
         expected_qty = round(1000.0 / 65000.0, 6)
-        expected_tp = 65000.0 + (expected_stop_distance * 3.0)  # 74000
+        expected_tp = 65000.0 + (expected_atr * 3.0)  # 71000
 
         assert result["qty"] == pytest.approx(expected_qty, abs=1e-4)
         assert result["stop_loss"] == pytest.approx(expected_stop_loss, abs=1.0)
@@ -392,7 +401,7 @@ class TestCheckCorrelationLimitsAllTiers:
     tier3 max positions, unknown symbol defaults to tier3."""
 
     def test_tier1_single_allowed(self, risk_mgr):
-        """Tier1 has max_positions=2, so one existing position still allows another."""
+        """Tier1 has max_positions=5, so one existing position still allows another."""
         positions = [{"symbol": "BTCUSDT", "entry_price": 65000, "size": 0.01}]
         result = risk_mgr.check_correlation_limits("ETHUSDT", positions, 100000)
         assert result["allowed"] is True
@@ -400,31 +409,43 @@ class TestCheckCorrelationLimitsAllTiers:
         assert result["max_leverage"] == 10
 
     def test_tier2_combined_exposure_at_limit(self, risk_mgr):
-        """Tier2 max_combined_pct=0.10 (10%). One position at 10% exposure
-        should block a new tier2 entry (hits exposure limit before max_positions)."""
+        """Tier2 max_combined_pct=0.25 (25%). One position at 27% exposure
+        should block a new tier2 entry."""
         positions = [
-            {"symbol": "SOLUSDT", "entry_price": 150, "size": 670},   # 100500, 100500/1000000 = 10.05%
+            {"symbol": "SOLUSDT", "entry_price": 150, "size": 1800},   # 270000, 270000/1000000 = 27%
         ]
-        # total_exposure = 100500, 100500/1000000 = 10.05% >= 10%
+        # total_exposure = 270000, 270000/1000000 = 27% >= 25%
         result = risk_mgr.check_correlation_limits("AVAXUSDT", positions, 1000000)
         assert result["allowed"] is False
         assert result["tier"] == "tier2"
         assert "exposure" in result["reason"].lower()
 
     def test_tier3_max_positions(self, risk_mgr):
-        """Tier3 max_positions=1. One existing tier3 position blocks another tier3 entry."""
-        positions = [{"symbol": "DOGEUSDT", "entry_price": 0.15, "size": 1000}]
+        """Tier3 max_positions=5. Five existing tier3 positions block another tier3 entry."""
+        positions = [
+            {"symbol": "DOGEUSDT", "entry_price": 0.15, "size": 1000},
+            {"symbol": "XRPUSDT", "entry_price": 0.15, "size": 1000},
+            {"symbol": "ADAUSDT", "entry_price": 0.15, "size": 1000},
+            {"symbol": "DOTUSDT", "entry_price": 0.15, "size": 1000},
+            {"symbol": "MATICUSDT", "entry_price": 0.15, "size": 1000},
+        ]
         result = risk_mgr.check_correlation_limits("XRPUSDT", positions, 10000)
         assert result["allowed"] is False
         assert result["tier"] == "tier3"
-        assert "max 1 positions" in result["reason"]
+        assert "max 5 positions" in result["reason"]
 
     def test_unknown_symbol_defaults_to_tier3(self, risk_mgr):
         """A symbol not in any tier defaults to tier3 and uses tier3 limits."""
-        positions = [{"symbol": "DOGEUSDT", "entry_price": 0.15, "size": 1000}]
+        positions = [
+            {"symbol": "DOGEUSDT", "entry_price": 0.15, "size": 1000},
+            {"symbol": "XRPUSDT", "entry_price": 0.15, "size": 1000},
+            {"symbol": "ADAUSDT", "entry_price": 0.15, "size": 1000},
+            {"symbol": "DOTUSDT", "entry_price": 0.15, "size": 1000},
+            {"symbol": "MATICUSDT", "entry_price": 0.15, "size": 1000},
+        ]
         # UNKNOWNUSDT is not in any tier -> defaults to tier3
         result = risk_mgr.check_correlation_limits("UNKNOWNUSDT", positions, 10000)
-        # tier3 already has 1 position (max_positions=1), so blocked
+        # tier3 already has 5 positions (max_positions=5), so blocked
         assert result["allowed"] is False
         assert result["tier"] == "tier3"
 

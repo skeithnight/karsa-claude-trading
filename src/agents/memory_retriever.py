@@ -98,7 +98,7 @@ async def store_trade_memory(
                     )
                     VALUES (
                         :ticker, :regime, :strategy, :thesis, :outcome, :pnl,
-                        :reasoning, :embedding::vector, :mfe_pct, :exit_reason,
+                        :reasoning, CAST(:embedding AS vector), :mfe_pct, :exit_reason,
                         :fees_usdt, :hold_duration_hours, :regime_at_entry
                     )
                 """),

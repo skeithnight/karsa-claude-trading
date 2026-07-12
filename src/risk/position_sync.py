@@ -61,36 +61,38 @@ class PositionReconciler:
             db_positions = await self._get_db_positions()
 
             # Index by ticker for comparison
+            # FIX: Index OPEN and CLOSED separately to avoid dict collision when
+            # a ticker has both OPEN and CLOSED rows — only the last would survive.
             exchange_by_ticker = {p["symbol"]: p for p in exchange_positions}
-            db_by_ticker = {p.ticker: p for p in db_positions}
+            open_by_ticker = {p.ticker: p for p in db_positions if p.status == "OPEN"}
+            closed_by_ticker = {p.ticker: p for p in db_positions if p.status == "CLOSED"}
 
-            # 1. Detect PHANTOM: in DB but not on exchange
-            for ticker, db_pos in db_by_ticker.items():
-                if ticker not in exchange_by_ticker and db_pos.status == "OPEN":
+            # 1. Detect PHANTOM: OPEN in DB but not on exchange
+            for ticker, db_pos in open_by_ticker.items():
+                if ticker not in exchange_by_ticker:
                     drift = await self._handle_phantom(db_pos, exchange_positions)
                     if drift:
                         drifts.append(drift)
 
             # 2. Detect MISSING: on exchange but not in DB
             for ticker, exch_pos in exchange_by_ticker.items():
-                if ticker not in db_by_ticker:
+                if ticker not in open_by_ticker and ticker not in closed_by_ticker:
                     drift = await self._handle_missing(exch_pos)
                     if drift:
                         drifts.append(drift)
 
             # 3. Detect SIZE_DRIFT: size mismatch
-            for ticker in set(exchange_by_ticker.keys()) & set(db_by_ticker.keys()):
+            for ticker in set(exchange_by_ticker.keys()) & set(open_by_ticker.keys()):
                 exch_pos = exchange_by_ticker[ticker]
-                db_pos = db_by_ticker[ticker]
-                if db_pos.status == "OPEN":
-                    drift = await self._handle_size_drift(db_pos, exch_pos)
-                    if drift:
-                        drifts.append(drift)
+                db_pos = open_by_ticker[ticker]
+                drift = await self._handle_size_drift(db_pos, exch_pos)
+                if drift:
+                    drifts.append(drift)
 
             # 4. Detect STALE_CLOSED: CLOSED in DB but still active on exchange
             for ticker, exch_pos in exchange_by_ticker.items():
-                if ticker in db_by_ticker and db_by_ticker[ticker].status == "CLOSED":
-                    drift = await self._handle_stale_closed(exch_pos, db_by_ticker[ticker])
+                if ticker in closed_by_ticker:
+                    drift = await self._handle_stale_closed(exch_pos, closed_by_ticker[ticker])
                     if drift:
                         drifts.append(drift)
 
@@ -211,6 +213,16 @@ class PositionReconciler:
                                 exit_price=float(exit_price),
                                 closed_time=datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
                             )
+                            
+                            # Apply cooldown / loss tracking
+                            from src.risk.circuit_breaker import CircuitBreakerManager
+                            redis_client = getattr(self.bybit.cache, 'client', None) or self.bybit.cache
+                            cb = CircuitBreakerManager(redis_client, self.bybit)
+                            if pnl < 0:
+                                await cb.record_symbol_loss(pos.ticker)
+                            else:
+                                await cb.record_symbol_cooldown(pos.ticker)
+                                
                         except Exception as e:
                             logger.error("closed_paper_trade_insert_failed", error=str(e))
 

@@ -32,6 +32,7 @@ STRATEGY_CONFIGS: dict[str, dict[str, Any]] = {
             "- The micro timeframe is chopping/pulling back, but macro trend is fiercely UP.\n"
             "- BUY THE DIP. Look for oversold RSI or lower Bollinger Band touches.\n"
             "- DO NOT short. This is an accumulation zone.\n"
+            "- CRITICAL: 4H EMA(20) must be above EMA(50). Never buy a dip in a coin below 4H EMA(50).\n"
         ),
         "confidence_boost": 10,
         "max_positions": 5,
@@ -98,57 +99,12 @@ STRATEGY_CONFIGS: dict[str, dict[str, Any]] = {
         "preferred_pairs": [],
         "data_focus": ["adx", "volume"],
     },
-    "FULL_ALIGNMENT": {
-        "primary_strategy": "Aggressive Trend (Coin)",
-        "prompt_modifier": "COIN REGIME: FULL ALIGNMENT — all timeframes aligned. Max conviction.",
-        "confidence_boost": 15,
-        "max_positions": 5,
-        "size_multiplier": 1.0,
-        "preferred_pairs": [],
-        "data_focus": ["adx", "volume"],
-    },
-    "SQUEEZE_ALERT": {
-        "primary_strategy": "Breakout Squeeze Play",
-        "prompt_modifier": "COIN REGIME: SQUEEZE ALERT — BBW at extreme low. Big move incoming. Wait for direction.",
-        "confidence_boost": 5,
-        "max_positions": 3,
-        "size_multiplier": 0.8,
-        "preferred_pairs": [],
-        "data_focus": ["bollinger", "volume"],
-    },
-    "MICRO_CHOP_IN_MACRO_TREND": {
-        "primary_strategy": "Range Trade in Trend",
-        "prompt_modifier": "COIN REGIME: MICRO CHOP IN MACRO TREND — macro trending, micro ranging. Trade the range edges.",
-        "confidence_boost": 0,
-        "max_positions": 3,
-        "size_multiplier": 0.6,
-        "preferred_pairs": [],
-        "data_focus": ["rsi", "bollinger"],
-    },
-    "MICRO_BREAKOUT": {
-        "primary_strategy": "Micro Breakout",
-        "prompt_modifier": "COIN REGIME: MICRO BREAKOUT — 15m breaking out. Quick scalp with tight stops.",
-        "confidence_boost": -5,
-        "max_positions": 2,
-        "size_multiplier": 0.5,
-        "preferred_pairs": [],
-        "data_focus": ["volume", "rsi"],
-    },
-    "DEAD_CHOP": {
-        "primary_strategy": "Halt (Coin)",
-        "prompt_modifier": "COIN REGIME: DEAD CHOP — no trend, no volatility. Do not trade.",
+    "CHOP": {
+        "primary_strategy": "Halt (Chop)",
+        "prompt_modifier": "COIN REGIME: CHOP — choppy market, no edge. DO NOT TRADE. Return confidence 0.",
         "confidence_boost": -100,
         "max_positions": 0,
         "size_multiplier": 0.0,
-        "preferred_pairs": [],
-        "data_focus": [],
-    },
-    "CHOP": {
-        "primary_strategy": "Halt (Chop)",
-        "prompt_modifier": "COIN REGIME: CHOP — choppy market, low edge. Skip or very small size.",
-        "confidence_boost": -50,
-        "max_positions": 1,
-        "size_multiplier": 0.3,
         "preferred_pairs": [],
         "data_focus": [],
     },
@@ -182,9 +138,9 @@ STRATEGY_CONFIGS: dict[str, dict[str, Any]] = {
             "  If 4H trend is neutral → SKIP. Do not trade directionless squeezes.\n"
             "- High confidence (+15) only for breakouts in the direction of the 4H macro trend.\n"
         ),
-        "confidence_boost": 15,
+        "confidence_boost": 5,
         "max_positions": 3,
-        "size_multiplier": 1.0,
+        "size_multiplier": 0.8,
         "preferred_pairs": [],
         "data_focus": ["bollinger", "volume", "adx"],
     },
@@ -210,9 +166,9 @@ STRATEGY_CONFIGS: dict[str, dict[str, Any]] = {
             "- Ride the momentum. Use slightly wider trailing stops.\n"
             "- Highest confidence (+20). Maximize sizing.\n"
         ),
-        "confidence_boost": 20,
-        "max_positions": 8,
-        "size_multiplier": 1.5,
+        "confidence_boost": 15,
+        "max_positions": 5,
+        "size_multiplier": 1.0,
         "preferred_pairs": [],
         "data_focus": ["adx", "volume"],
     },

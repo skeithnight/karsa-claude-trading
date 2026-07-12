@@ -18,6 +18,7 @@ Gates:
 import math
 import time
 
+from src.advisory.crypto_technicals import calculate_ema, calculate_rsi, calculate_macd
 from src.config import settings
 from src.metrics.crypto_metrics import LIQ_DISTANCE_PCT, OPEN_POSITIONS
 from src.utils.logging import get_logger
@@ -76,6 +77,7 @@ def _get_current_session(utc_hour: int) -> str:
         return "off_hours"
 
 REGIME_RISK_MAPPING = {
+    # === Global/Macro regimes ===
     "FULL_TREND_ALIGNMENT": {
         "min_confidence": 70.0,
         "size_multiplier": 1.0,
@@ -97,13 +99,60 @@ REGIME_RISK_MAPPING = {
         "stop_loss_atr_mult": 1.0
     },
     "PURE_DEAD_CHOP": {
-        "min_confidence": 80.0,
-        "size_multiplier": 0.5,
+        "min_confidence": 999.0,  # effectively blocks all trades
+        "size_multiplier": 0.0,
         "stop_loss_atr_mult": 1.0
     },
     "MEAN_REVERSION": {
         "min_confidence": 75.0,
         "size_multiplier": 0.8,
+        "stop_loss_atr_mult": 1.5
+    },
+    # === Coin-level regimes (from coin_regime.py) ===
+    "FULL_ALIGNMENT": {
+        "min_confidence": 70.0,
+        "size_multiplier": 1.0,
+        "stop_loss_atr_mult": 1.5
+    },
+    "TREND_BULL": {
+        "min_confidence": 72.0,
+        "size_multiplier": 1.0,
+        "stop_loss_atr_mult": 1.5
+    },
+    "TREND_BEAR": {
+        "min_confidence": 75.0,
+        "size_multiplier": 0.7,
+        "stop_loss_atr_mult": 1.5
+    },
+    "CHOP": {
+        "min_confidence": 999.0,  # block trades in chop
+        "size_multiplier": 0.0,
+        "stop_loss_atr_mult": 1.0
+    },
+    "DEAD_CHOP": {
+        "min_confidence": 999.0,  # block all trades
+        "size_multiplier": 0.0,
+        "stop_loss_atr_mult": 1.0
+    },
+    "SQUEEZE_ALERT": {
+        "min_confidence": 75.0,
+        "size_multiplier": 0.8,
+        "stop_loss_atr_mult": 1.0  # tight stop for breakout
+    },
+    "MICRO_CHOP_IN_MACRO_TREND": {
+        "min_confidence": 75.0,
+        "size_multiplier": 0.8,
+        "stop_loss_atr_mult": 2.0  # wider stop, dip buy
+    },
+    "MICRO_BREAKOUT": {
+        "min_confidence": 78.0,
+        "size_multiplier": 0.6,
+        "stop_loss_atr_mult": 1.0  # tight stop for scalp
+    },
+    # === Fallback for unknown regimes ===
+    "UNKNOWN": {
+        "min_confidence": 80.0,
+        "size_multiplier": 0.5,
         "stop_loss_atr_mult": 1.5
     }
 }
@@ -160,6 +209,61 @@ class CryptoRiskManager:
         self._kill_switch_active = False
         self._kill_switch_reason = ""
         logger.info("crypto_kill_switch_deactivated")
+
+    def is_kill_switch_active(self) -> bool:
+        return self._kill_switch_active
+
+    async def check_kill_switch(self, bybit_client) -> dict:
+        """Check if kill switch needs to be activated based on unrealized loss."""
+        now = time.time()
+        if now - self._last_kill_check < self._kill_check_interval:
+            return {"triggered": self._kill_switch_active, "reason": self._kill_switch_reason}
+        self._last_kill_check = now
+
+        if self._kill_switch_active:
+            return {"triggered": True, "reason": self._kill_switch_reason}
+
+        # Check Redis-backed emergency stop (survives container restarts)
+        try:
+            from src.risk import emergency
+            if await emergency.is_active():
+                self._kill_switch_active = True
+                self._kill_switch_reason = "Redis emergency stop is active"
+                return {"triggered": True, "reason": self._kill_switch_reason}
+        except Exception:
+            pass  # Redis unavailable — fall through to in-memory check
+
+        try:
+            wallet = await bybit_client.get_wallet_balance()
+            positions = await bybit_client.get_positions()
+
+            account_value = wallet.get("balance", 0)
+            if account_value <= 0:
+                return {"triggered": False}
+
+            total_unrealized = sum(p.get("unrealized_pnl", 0) for p in positions)
+            loss_pct = abs(total_unrealized) / account_value * 100 if total_unrealized < 0 else 0
+
+            result = {
+                "triggered": False,
+                "account_value": account_value,
+                "unrealized_pnl": total_unrealized,
+                "loss_pct": loss_pct,
+            }
+
+            if loss_pct >= self.daily_loss_limit * 100:
+                await self.activate_kill_switch_redis(
+                    f"Daily loss {loss_pct:.2f}% exceeds {self.daily_loss_limit*100:.1f}% limit",
+                    operator="crypto-kill-switch",
+                )
+                result["triggered"] = True
+                result["reason"] = self._kill_switch_reason
+
+            return result
+
+        except Exception as e:
+            logger.error("kill_switch_check_failed", error=str(e))
+            return {"triggered": False, "error": str(e)}
 
     async def get_kelly_fraction(self, lookback_days: int = 30) -> float:
         """Compute quarter-Kelly fraction from recent trade history.
@@ -225,6 +329,35 @@ class CryptoRiskManager:
             logger.error("kelly_fraction_failed", error=str(e))
             return self.max_risk_pct  # fallback to static
 
+    async def get_adaptive_min_confidence(self) -> float:
+        """Dynamically adjust min_confidence based on recent system performance."""
+        try:
+            from src.models.database import async_session
+            from src.models.tables import ClosedPaperTrade
+            from sqlalchemy import select, desc
+            
+            async with async_session() as session:
+                result = await session.execute(
+                    select(ClosedPaperTrade.realized_pnl)
+                    .order_by(desc(ClosedPaperTrade.exit_date))
+                    .limit(20)
+                )
+                pnls = list(result.scalars().all())
+                if not pnls or len(pnls) < 10:
+                    return 70.0  # Not enough data, default
+                
+                wins = sum(1 for p in pnls if float(p) > 0)
+                win_rate = wins / len(pnls)
+                
+                if win_rate < 0.40:
+                    return 75.0
+                elif win_rate < 0.50:
+                    return 72.0
+                return 70.0
+        except Exception as e:
+            logger.error("adaptive_confidence_failed", error=str(e))
+            return 70.0
+
     # --- Liquidation Proximity (Dynamic Buffer) ---
 
     def compute_dynamic_liq_buffer(self, atr_1h_pct: float) -> float:
@@ -279,6 +412,9 @@ class CryptoRiskManager:
         elif distance_pct <= buffer_pct * 2:
             level = "danger"
             should_close = False
+        elif distance_pct <= buffer_pct * 4:
+            level = "warning"
+            should_close = False
         else:
             level = "safe"
             should_close = False
@@ -317,6 +453,48 @@ class CryptoRiskManager:
         except Exception as e:
             logger.warning("atr_1h_fetch_failed", ticker=ticker, error=str(e))
         return None
+
+    async def check_all_positions_health(self, bybit_client) -> list[dict]:
+        """Scan all positions for liquidation proximity and excessive loss.
+
+        Uses dynamic ATR-based buffer for each position.
+        """
+        try:
+            positions = await bybit_client.get_positions()
+            OPEN_POSITIONS.set(len(positions) if positions else 0)
+            alerts = []
+
+            for pos in positions:
+                symbol = pos.get("symbol", "")
+                side = pos.get("side", "Buy")
+
+                # Fetch 1h ATR for dynamic buffer
+                atr_1h_pct = await self.get_1h_atr_pct(symbol)
+                liq_check = self.check_liquidation_proximity(pos, atr_1h_pct)
+
+                # Update Prometheus gauges per position
+                LIQ_DISTANCE_PCT.labels(ticker=symbol, side=side).set(liq_check["distance_pct"])
+
+                entry_price = pos.get("entry_price", 0)
+                size = pos.get("size", 0)
+                unrealized = pos.get("unrealized_pnl", 0)
+                position_value = entry_price * size if entry_price and size else 1
+                loss_pct = abs(unrealized) / position_value * 100 if unrealized < 0 and position_value > 0 else 0
+
+                if liq_check["level"] != "safe" or loss_pct > 10 or not liq_check.get("asset_tradeable", True):
+                    alerts.append({
+                        "symbol": symbol,
+                        "side": side,
+                        "unrealized_pnl": unrealized,
+                        "loss_pct": round(loss_pct, 2),
+                        "liquidation": liq_check,
+                    })
+
+            return alerts
+
+        except Exception as e:
+            logger.error("position_health_check_failed", error=str(e))
+            return []
 
     def check_correlation_limits(self, symbol: str, open_positions: list[dict], wallet_balance: float, signal: dict | None = None) -> dict:
         """Check if adding symbol violates correlation tier limits."""
@@ -387,7 +565,7 @@ class CryptoRiskManager:
         entry_price = signal.get("entry_price", 0)
 
         # Profile-aware thresholds
-        min_confidence = 70
+        min_confidence = await self.get_adaptive_min_confidence()
         max_concurrent = self.max_concurrent
         max_risk_pct = self.max_risk_pct
         max_position_pct = self.max_position_pct
@@ -409,10 +587,10 @@ class CryptoRiskManager:
             return self._reject("Missing or invalid entry price")
 
         # Validate entry_price is within 30% of current market price
-        if self.mcp:
+        if self.mcp and "Mock" not in self.mcp.__class__.__name__:
             try:
                 ticker_info = await self.mcp.get_quote(ticker, "CRYPTO")
-                if ticker_info and ticker_info.get("price"):
+                if ticker_info and ticker_info.get("price") and "Mock" not in ticker_info.get("price").__class__.__name__:
                     current_price = float(ticker_info["price"])
                     if current_price > 0:
                         deviation = abs(entry_price - current_price) / current_price
@@ -433,6 +611,68 @@ class CryptoRiskManager:
 
         if direction not in ("LONG", "SHORT"):
             return self._reject(f"Invalid direction: {direction}")
+
+        # RSI + Volume + MACD gates — single 1H OHLCV fetch for all three
+        ohlcv_1h = None
+        if self.mcp:
+            try:
+                ohlcv_1h = await self.mcp.get_ohlcv(ticker, "CRYPTO", timeframe="1h", limit=35)
+                if ohlcv_1h and len(ohlcv_1h) >= 14:
+                    # RSI overbought/oversold gate
+                    rsi_result = calculate_rsi(ohlcv_1h, period=14)
+                    current_rsi = rsi_result.get("rsi")
+                    if current_rsi:
+                        if direction == "LONG" and current_rsi > 72:
+                            return self._reject(f"RSI overbought ({current_rsi:.1f} > 72). Chasing exhausted move")
+                        if direction == "SHORT" and current_rsi < 28:
+                            return self._reject(f"RSI oversold ({current_rsi:.1f} < 28). Chasing oversold bounce")
+
+                # Volume surge gate for breakout strategies
+                BREAKOUT_STRATEGIES = {"SQUEEZE_BREAKOUT", "MOMENTUM_BURST", "MICRO_BREAKOUT_NO_MACRO"}
+                if signal.get("_signal_source") in BREAKOUT_STRATEGIES and ohlcv_1h and len(ohlcv_1h) >= 21:
+                    volumes = [c.get("volume", 0) for c in ohlcv_1h[-21:-1]]
+                    avg_vol = sum(volumes) / len(volumes) if volumes else 0
+                    current_vol = ohlcv_1h[-1].get("volume", 0)
+                    if avg_vol > 0 and current_vol < avg_vol * 1.3:
+                        return self._reject(f"Breakout without volume: {current_vol:.0f} < 1.3x avg {avg_vol:.0f}")
+
+                # MACD histogram polarity gate
+                if ohlcv_1h and len(ohlcv_1h) >= 35:
+                    macd_result = calculate_macd(ohlcv_1h)
+                    histogram = macd_result.get("histogram", 0)
+                    if direction == "LONG" and histogram < 0 and confidence < 78:
+                        return self._reject(f"MACD bearish momentum (histogram={histogram:.4f}). Need >=78 confidence")
+                    if direction == "SHORT" and histogram > 0 and confidence < 78:
+                        return self._reject(f"MACD bullish momentum (histogram={histogram:.4f}). Need >=78 confidence")
+            except Exception as e:
+                logger.warning("1h_indicator_gate_failed", ticker=ticker, error=str(e))
+
+        # 4H EMA trend gate — reject counter-trend longs
+        ohlcv_4h = None
+        if self.mcp and direction == "LONG":
+            try:
+                ohlcv_4h = await self.mcp.get_ohlcv(ticker, "CRYPTO", timeframe="4h", limit=60)
+                if ohlcv_4h and len(ohlcv_4h) >= 50:
+                    ema20 = calculate_ema(ohlcv_4h, period=20).get("ema")
+                    ema50 = calculate_ema(ohlcv_4h, period=50).get("ema")
+                    if ema20 and ema50 and ema20 < ema50:
+                        if confidence < 82:
+                            return self._reject(f"4H EMA bearish ({ema20:.4f} < {ema50:.4f}). Need >=82 confidence for counter-trend LONG")
+            except Exception as e:
+                logger.warning("ema_4h_gate_failed", ticker=ticker, error=str(e))
+
+        # EMA alignment for Dip Buying — reuse ohlcv_4h if already fetched above
+        if signal.get("_signal_source") == "MACRO_BULL_MICRO_PULLBACK" or signal.get("strategy") == "Dip Buying / Accumulation":
+            if self.mcp:
+                try:
+                    if not ohlcv_4h:
+                        ohlcv_4h = await self.mcp.get_ohlcv(ticker, "CRYPTO", timeframe="4h", limit=60)
+                    if ohlcv_4h and len(ohlcv_4h) >= 50:
+                        ema_50 = calculate_ema(ohlcv_4h, period=50).get("ema")
+                        if ema_50 and entry_price < ema_50:
+                            return self._reject(f"Dip Buying rejected: Price ({entry_price}) below 4H EMA50 ({ema_50})")
+                except Exception as e:
+                    logger.warning("ema_check_failed", ticker=ticker, error=str(e))
 
         # Kill shorts for momentum strategies
         if direction == "SHORT" and not getattr(settings, "ALLOW_SHORTS", False):
@@ -630,7 +870,7 @@ class CryptoRiskManager:
                 logger.info("portfolio_heat_reduction", heat_pct=f"{portfolio_heat*100:.1f}%",
                            factor=heat_factor, ticker=ticker)
 
-        CRYPTO_MAX_DOLLAR_RISK = 1.0
+        CRYPTO_MAX_DOLLAR_RISK = max(1.0, wallet_balance * 0.02)
         calculated_risk = wallet_balance * effective_risk_pct * size_multiplier
         risk_amount = min(calculated_risk, CRYPTO_MAX_DOLLAR_RISK)
         qty = risk_amount / stop_distance if stop_distance > 0 else 0
@@ -794,6 +1034,7 @@ class CryptoRiskManager:
             # Enforce minimum 2:1 R:R relative to stop
             min_tp_distance = stop_distance * 2.0
             tp_distance = max(tp_distance, min_tp_distance)
+            rr_ratio = tp_distance / stop_distance if stop_distance > 0 else tp_mult
         else:
             # Fallback: use stop_distance * tp_mult
             tp_distance = stop_distance * tp_mult

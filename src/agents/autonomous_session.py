@@ -35,7 +35,7 @@ DEFAULT_MAX_POS = 3
 DEFAULT_INTERVAL_MIN = 15
 PROGRESS_COOLDOWN_SEC = 1800  # 30 min
 REDIS_COOLDOWN_PREFIX = "karsa:auto:cooldown:"  # per-ticker re-entry cooldown
-REENTRY_COOLDOWN_SEC = 7200  # 2 hours after position close
+REENTRY_COOLDOWN_SEC = 1800  # 30min — crypto moves fast, 2h was too long
 MAX_CONSECUTIVE_SCAN_FAILURES = 5
 DEFAULT_MAX_DD_PCT = 10.0  # auto-stop if DD exceeds this %
 
@@ -70,7 +70,17 @@ class AutonomousSessionManager:
             pass
 
         risk_pct = float(config.get("risk_pct", DEFAULT_RISK_PCT))
+        # Safety cap: risk_pct above 5% is suicidal with leverage
+        MAX_RISK_PCT = 5.0
+        if risk_pct > MAX_RISK_PCT:
+            logger.warning("risk_pct_capped", original=risk_pct, capped=MAX_RISK_PCT)
+            risk_pct = MAX_RISK_PCT
         max_pos = int(config.get("max_pos", DEFAULT_MAX_POS))
+        # Safety cap: max positions
+        MAX_ALLOWED_POS = 5
+        if max_pos > MAX_ALLOWED_POS:
+            logger.warning("max_pos_capped", original=max_pos, capped=MAX_ALLOWED_POS)
+            max_pos = MAX_ALLOWED_POS
         interval = int(config.get("interval", DEFAULT_INTERVAL_MIN))
         duration_min = int(config.get("duration_min", 0))
 
@@ -535,8 +545,6 @@ class AutonomousSessionManager:
                         continue
 
                     # 3. Scan for signals (TTL-based dedup — 4h prevents re-entry into same setup)
-                    from src.agents.orchestrator import _signal_cache
-                    _signal_cache.clear()
                     # TTL dedup: processed signals get 4-hour expiry via Redis
                     # Prevents re-entry while allowing new breakouts
                     # Use _scan_crypto_parallel directly — skip scan_all_markets which auto-executes with regime gate
@@ -615,6 +623,25 @@ class AutonomousSessionManager:
             if "_cash_sized_qty" in signal:
                 signal["qty"] = signal["_cash_sized_qty"]
 
+            # Coin Regime Gate
+            try:
+                from src.advisory.coin_regime import CoinRegimeEngine
+                # bybit client has cache (RedisClient) which is what CoinRegimeEngine wants
+                cre = CoinRegimeEngine(self.orchestrator.mcp, self.bybit.cache)
+                coin_regime = await cre.get_regime(ticker)
+                
+                # Assign regime_at_entry so it goes to DB
+                signal["regime_at_entry"] = coin_regime.state if coin_regime else "UNKNOWN"
+                
+                # Block trades in adverse coin-level regimes (not just DEAD_CHOP)
+                BLOCKED_COIN_REGIMES = {"DEAD_CHOP", "CHOP", "UNKNOWN"}
+                if coin_regime and coin_regime.state in BLOCKED_COIN_REGIMES:
+                    logger.info("asm_execute_blocked_coin_regime", ticker=ticker, reason=coin_regime.state)
+                    return
+            except Exception as e:
+                logger.warning("asm_coin_regime_check_failed", ticker=ticker, error=str(e))
+                signal["regime_at_entry"] = "UNKNOWN"
+
             # Execute through existing orchestrator pipeline — reuse cached regime
             if regime is None:
                 from src.advisory.crypto_regime import CryptoRegimeFilter
@@ -643,7 +670,7 @@ class AutonomousSessionManager:
     async def _apply_cash_sizing(self, signal: dict) -> dict:
         """Override position sizing to use available cash, not total equity."""
         config = await self._get_config()
-        risk_pct = config.get("risk_pct", DEFAULT_RISK_PCT) / 100
+        risk_pct = min(config.get("risk_pct", DEFAULT_RISK_PCT), 5.0) / 100  # Safety cap 5%
 
         wallet = await self.bybit.get_wallet_balance(coin="USDT")
         if wallet.get("error"):
@@ -701,10 +728,11 @@ class AutonomousSessionManager:
     async def _check_regime(self) -> tuple[bool, str]:
         """Returns (should_pause, alert_message).
 
-        Previously paused on PURE_DEAD_CHOP, but individual coins can still
-        have good setups (FULL_ALIGNMENT, SQUEEZE_ALERT, TREND_BULL) even when
-        BTC global regime is dead chop. Now only pauses on extreme fear (<15)
-        or when the global regime AND all coin regimes are hostile.
+        Pauses on:
+        - Extreme fear (fear_greed < 15)
+        - BEAR global regime (no new longs in downtrend)
+        - CHOP global regime (no trades in choppy market)
+        - UNKNOWN regime (fail-closed, not fail-open)
         """
         try:
             from src.advisory.crypto_regime import CryptoRegimeFilter
@@ -713,14 +741,19 @@ class AutonomousSessionManager:
             state = regime.get("state", "UNKNOWN")
             fear_greed = regime.get("fear_greed", 50)
 
-            # Only pause on extreme market fear
+            # Pause on extreme market fear
             if fear_greed is not None and fear_greed < 15:
                 return True, f"⏸️ <b>ASM paused</b> — extreme fear ({fear_greed}). Re-checking every 10min."
+
+            # Pause on hostile global regimes
+            if state in ("BEAR", "CHOP", "UNKNOWN"):
+                return True, f"⏸️ <b>ASM paused</b> — global regime {state}. No new entries."
 
             return False, ""
         except Exception as e:
             logger.warning("asm_regime_check_failed", error=str(e))
-            return False, ""
+            # Fail-closed: pause on regime check failure instead of trading blind
+            return True, f"⏸️ <b>ASM paused</b> — regime check failed ({e}). Re-checking."
 
     # ── MTM Report ─────────────────────────────────────────────
 
