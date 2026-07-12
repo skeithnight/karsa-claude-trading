@@ -75,12 +75,13 @@ class PositionManager:
     async def sync_from_exchange(self, cmd: SyncFromExchange) -> Position:
         pos = self._get(cmd.position_id)
         pos.quantity = cmd.exchange_size
+        db_id = cmd.position_id.split(":")[1] if ":" in cmd.position_id else None
         if cmd.exchange_status == "CLOSED":
             pos.transition(PositionState.EXITING)
             pos.transition(PositionState.CLOSED)
             pos.closed_at = datetime.now(timezone.utc)
         pos.bump_version()
-        await self._emit("PositionSynced", pos)
+        await self._persist("PositionSynced", pos, db_id=db_id)
         return pos
 
     # --- Queries ---

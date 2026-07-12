@@ -78,14 +78,8 @@ class NotificationRouter:
         if not self._bot or not self._chat_id:
             return
 
-        # Respect alerts_enabled toggle for trade alerts only
-        if category == NotificationCategory.ASM_TRADE and self._redis:
-            try:
-                enabled = await self._redis.get("karsa:alerts_enabled")
-                if enabled is not None and enabled.decode() == "false":
-                    return
-            except Exception:
-                pass  # If Redis fails, send anyway
+        # ASM_TRADE always sends — trade alerts are critical, not optional.
+        # alerts_enabled toggle now only suppresses ASM_REGIME (informational).
 
         try:
             kwargs = {

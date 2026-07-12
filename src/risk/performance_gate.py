@@ -121,21 +121,21 @@ class GateResult:
 
 CHECKPOINTS: dict[str, list[Checkpoint]] = {
     Bucket.MEME: [
-        Checkpoint(after_minutes=15,   min_gain_pct=-1.0, reason="meme_15m_crash"),
-        Checkpoint(after_minutes=30,   min_gain_pct=-0.5, reason="meme_30m_thesis_failed"),
-        Checkpoint(after_minutes=60,   min_gain_pct=-1.0, reason="meme_1h_consolidation"),
-        Checkpoint(after_minutes=120,  min_gain_pct=1.0,  reason="meme_2h_weak"),
-        Checkpoint(after_minutes=240,  min_gain_pct=2.0,  reason="meme_4h_dead"),
-        Checkpoint(after_minutes=480,  min_gain_pct=3.0,  reason="meme_8h_stale"),
-        Checkpoint(after_minutes=1440, min_gain_pct=5.0,  reason="meme_24h_underperform"),
+        # ponytail: meme needs more room — 15min is noise
+        Checkpoint(after_minutes=30,   min_gain_pct=-1.0, reason="meme_30m_crash"),
+        Checkpoint(after_minutes=60,   min_gain_pct=-1.0, reason="meme_1h_thesis_failed"),
+        Checkpoint(after_minutes=120,  min_gain_pct=-1.0, reason="meme_2h_consolidation"),
+        Checkpoint(after_minutes=240,  min_gain_pct=1.0,  reason="meme_4h_weak"),
+        Checkpoint(after_minutes=480,  min_gain_pct=2.0,  reason="meme_8h_dead"),
+        Checkpoint(after_minutes=1440, min_gain_pct=3.0,  reason="meme_24h_stale"),
     ],
     Bucket.STANDARD: [
-        Checkpoint(after_minutes=15,   min_gain_pct=-1.0, reason="std_15m_crash"),
-        Checkpoint(after_minutes=30,   min_gain_pct=-0.5, reason="std_30m_thesis_failed"),
-        Checkpoint(after_minutes=60,   min_gain_pct=-5.0, reason="std_1h_crash"),
-        Checkpoint(after_minutes=240,  min_gain_pct=-2.0, reason="std_4h_bleeding"),
-        Checkpoint(after_minutes=720,  min_gain_pct=1.0,  reason="std_12h_not_profitable"),
-        Checkpoint(after_minutes=1440, min_gain_pct=1.0,  reason="std_24h_weak"),
+        # ponytail: first check at 30min — 15min is noise for standard
+        Checkpoint(after_minutes=30,   min_gain_pct=-1.0, reason="std_30m_crash"),
+        Checkpoint(after_minutes=60,   min_gain_pct=-1.0, reason="std_1h_thesis_failed"),
+        Checkpoint(after_minutes=240,  min_gain_pct=-5.0, reason="std_4h_crash"),
+        Checkpoint(after_minutes=720,  min_gain_pct=-2.0, reason="std_12h_bleeding"),
+        Checkpoint(after_minutes=1440, min_gain_pct=1.0,  reason="std_24h_not_profitable"),
         Checkpoint(after_minutes=4320, min_gain_pct=2.0,  reason="std_72h_stale"),
     ],
     Bucket.CORE: [
@@ -174,13 +174,18 @@ def get_adaptive_checkpoints(bucket: Bucket, volatility_regime: str | None = Non
     ]
 
 # Zone boundaries
-HARD_FAIL_THRESHOLD = -8.0   # gain < -8% at any checkpoint = hard fail
-CLEAR_WIN_THRESHOLD = 3.0    # gain > +3% at checkpoint = clear win
+HARD_FAIL_THRESHOLD = -8.0   # gain < -8% at any checkpoint = hard fail (global fallback)
+BUCKET_HARD_FAIL = {          # per-bucket overrides
+    Bucket.MEME: -3.0,        # meme: tight leash, cut fast
+    Bucket.STANDARD: -7.0,    # standard: moderate tolerance
+    Bucket.CORE: -8.0,        # core: full threshold
+}
+CLEAR_WIN_THRESHOLD = 2.0    # gain > +3% at checkpoint = clear win
 DRAWDOWN_TRIGGER_PCT = 3.0   # drop > 3% from peak = trigger AI
 CONSECUTIVE_HOLDS_LIMIT = 3  # force exit after 3 consecutive AI holds on negative
 PRICE_STALE_SEC = 120        # price data older than 2 min → skip hard fail
 CLEAR_WIN_STOP_FLOOR = 1.0   # minimum dynamic stop % on clear win (covers fees)
-CLEAR_WIN_STOP_RATIO = 0.3   # lock in 30% of peak gain as dynamic stop
+CLEAR_WIN_STOP_RATIO = 0.5   # lock in 30% of peak gain as dynamic stop
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -406,11 +411,12 @@ class PerformanceGate:
             except Exception:
                 pass
 
-        # Classify zone
-        if gain_pct <= HARD_FAIL_THRESHOLD:
+        # Classify zone — per-bucket hard fail threshold
+        hard_fail_limit = BUCKET_HARD_FAIL.get(bucket, HARD_FAIL_THRESHOLD)
+        if gain_pct <= hard_fail_limit:
             zone = Zone.HARD_FAIL
             action = GateAction.EXIT
-            reason = f"{active_checkpoint.reason}: gain {gain_pct:+.1f}% <= {HARD_FAIL_THRESHOLD}% hard fail"
+            reason = f"{active_checkpoint.reason}: gain {gain_pct:+.1f}% <= {hard_fail_limit}% hard fail ({bucket.value})"
             record_perf_gate_zone(zone.value, bucket.value)
             record_perf_gate_exit("hard_fail")
         elif gain_pct >= CLEAR_WIN_THRESHOLD:

@@ -77,8 +77,10 @@ _signal_cache: dict[str, float] = {}
 _SIGNAL_DEDUP_SECONDS = 4 * 3600  # 4 hours
 
 # Required fields for a valid signal from an agent
-_REQUIRED_SIGNAL_FIELDS = {"ticker", "direction"}  # confidence may be "confidence" or "confidence_score"
+_REQUIRED_SIGNAL_FIELDS = {"ticker", "direction", "confidence_score"}  # confidence must be present
 _VALID_DIRECTIONS = {"LONG", "SHORT", "CLOSE"}
+# Price fields required for LONG/SHORT signals (not CLOSE)
+_REQUIRED_PRICE_FIELDS = {"entry_price", "stop_loss_price", "target_price"}
 
 
 class Orchestrator:
@@ -296,10 +298,9 @@ class Orchestrator:
                     continue
                 ticker = result.get("ticker", "")
                 trace_data = result.pop("_trace", None)
-                issues = self._validate_signal(result, market)
-                if issues:
-                    logger.warning("invalid_signal", market=market, ticker=ticker, issues=issues)
-                    continue
+                # FIX: Check confidence BEFORE price validation.
+                # Analyst prompt tells LLM to return null prices for confidence < 50,
+                # but validator rejects null prices unconditionally — skip low-confidence signals.
                 confidence = result.get("confidence_score") or result.get("confidence", 0)
                 # Apply confidence calibration if available
                 if self.calibrator:
@@ -308,6 +309,12 @@ class Orchestrator:
                         result["confidence_score"] = confidence
                     except Exception:
                         pass
+                if confidence < min_conf:
+                    continue  # silent skip — not a malformed signal
+                issues = self._validate_signal(result, market)
+                if issues:
+                    logger.warning("invalid_signal", market=market, ticker=ticker, issues=issues)
+                    continue
                 # Decision Engine (Phase 5 — weighted vote fusion)
                 if hasattr(self, 'decision_engine') and self.decision_engine:
                     try:
@@ -402,12 +409,9 @@ class Orchestrator:
                 # Phase 2: Extract and save reasoning trace (if captured)
                 trace_data = result.pop("_trace", None)
 
-                # Validate signal structure
-                issues = self._validate_signal(result, market)
-                if issues:
-                    logger.warning("invalid_signal", market=market, ticker=ticker, issues=issues)
-                    continue
-
+                # FIX: Check confidence BEFORE price validation.
+                # Analyst prompt tells LLM to return null prices for confidence < 50,
+                # but validator rejects null prices unconditionally.
                 # Profile-aware confidence gate for crypto
                 min_conf = 50
                 profile_name = "default"
@@ -424,6 +428,28 @@ class Orchestrator:
                     try:
                         confidence = await self.calibrator.calibrate_signal(confidence)
                         result["confidence_score"] = confidence
+                    except Exception:
+                        pass
+                if confidence < min_conf:
+                    continue  # silent skip — analyst said "no trade"
+
+                # Validate signal structure (only for high-confidence signals)
+                issues = self._validate_signal(result, market)
+                if issues:
+                    logger.warning("invalid_signal", market=market, ticker=ticker, issues=issues)
+                    continue
+                # Apply regime-specific confidence_boost from strategy config
+                if market == "CRYPTO":
+                    try:
+                        from src.advisory.strategy_selector import STRATEGY_CONFIGS
+                        regime_state = result.get("regime_at_entry") or "UNKNOWN"
+                        strategy_cfg = STRATEGY_CONFIGS.get(regime_state, {})
+                        boost = strategy_cfg.get("confidence_boost", 0)
+                        if boost != 0:
+                            confidence = confidence + boost
+                            result["confidence_score"] = confidence
+                            result["confidence_boost_applied"] = boost
+                            logger.info("confidence_boost_applied", ticker=ticker, regime=regime_state, boost=boost, final_confidence=confidence)
                     except Exception:
                         pass
                 if confidence >= min_conf:
@@ -819,6 +845,10 @@ class Orchestrator:
                             open_positions = [p for p in open_positions if p.get("symbol") != ticker]
                             logger.info("crypto_close_executed", ticker=ticker,
                                         size=close_pos.get("size"), avg_price=close_pos.get("avg_price"))
+                            # FIX: Write exit data to DB so reconciler does not create ghost
+                            await self._close_crypto_position(
+                                ticker, fill_price=close_pos.get("avg_price"), pnl=None,
+                            )
                             await self._notify_crypto_trade(signal, {"qty": close_pos.get("size")})
                         else:
                             signal["status"] = "FAILED"
@@ -854,6 +884,10 @@ class Orchestrator:
                         close_result = await sor.close_position(ticker, existing_pos)
                         if close_result.get("success"):
                             open_positions = [p for p in open_positions if p.get("symbol") != ticker]
+                            # FIX: Write exit data to DB
+                            await self._close_crypto_position(
+                                ticker, fill_price=existing_pos.get("avg_price"), pnl=None,
+                            )
                             logger.info("crypto_counter_trade_closed", ticker=ticker)
                         else:
                             logger.warning("crypto_counter_trade_close_failed", ticker=ticker,
@@ -1075,8 +1109,8 @@ class Orchestrator:
                     highest_price=entry_price,
                     trailing_stop_price=None,  # set by trailing stop manager
                     entry_funding_rate=entry_funding_rate,
-                    regime_at_entry=regime_at_entry,
-                    signal_source=signal.get("strategy", "crypto_analyst"),
+                    regime_at_entry=str(regime_at_entry)[:20] if regime_at_entry else None,
+                    signal_source=str(signal.get("strategy", "crypto_analyst"))[:50],
                     partial_exits_taken=0,
                     last_management_check=datetime.utcnow(),
                 ))
@@ -1084,12 +1118,41 @@ class Orchestrator:
         except Exception as e:
             logger.error("crypto_position_save_failed", error=str(e))
 
+    async def _close_crypto_position(self, ticker: str, fill_price=None, pnl=None):
+        """Mark OPEN position as CLOSED in DB after exchange close succeeds."""
+        try:
+            from src.models.tables import CryptoPosition
+            from src.models.database import async_session
+            from sqlalchemy import select
+            from datetime import datetime
+            from decimal import Decimal
+
+            async with async_session() as session:
+                result = await session.execute(
+                    select(CryptoPosition).where(
+                        CryptoPosition.ticker == ticker,
+                        CryptoPosition.status == "OPEN",
+                    )
+                )
+                pos = result.scalars().first()
+                if not pos:
+                    logger.warning("close_position_no_db_row", ticker=ticker)
+                    return
+                if fill_price is not None:
+                    pos.current_price = Decimal(str(fill_price))
+                if pnl is not None:
+                    pos.unrealized_pnl = Decimal(str(pnl))
+                pos.status = "CLOSED"
+                pos.last_synced_at = datetime.utcnow()
+                await session.commit()
+                logger.info("crypto_position_closed_in_db", ticker=ticker,
+                            exit_price=fill_price, pnl=pnl)
+        except Exception as e:
+            logger.error("close_position_db_write_failed", ticker=ticker, error=str(e))
+
     async def _notify_crypto_trade(self, signal: dict, risk_result: dict):
         """Send Telegram notification for an executed crypto trade."""
         try:
-            alerts_on = await self.cache.redis.get("karsa:alerts_enabled")
-            if alerts_on in ("0", b"0"):
-                return
             import httpx
             from src.utils.trader_format import signal_card
             
@@ -1125,9 +1188,6 @@ class Orchestrator:
     async def _notify_risk_rejection(self, signal: dict, risk_result: dict):
         """Send Telegram notification when a signal is rejected by risk gates."""
         try:
-            alerts_on = await self.cache.redis.get("karsa:alerts_enabled")
-            if alerts_on in ("0", b"0"):
-                return
             import httpx
             ticker = signal.get("ticker", "?")
             direction = signal.get("direction", "?")
@@ -1170,11 +1230,36 @@ class Orchestrator:
             if direction not in _VALID_DIRECTIONS:
                 issues.append(f"invalid direction: {direction}")
 
-            # Price sanity
-            for price_field in ("entry_price", "target_price", "stop_loss_price"):
-                val = signal.get(price_field)
-                if val is not None and val <= 0:
-                    issues.append(f"{price_field} must be positive, got {val}")
+            # Price sanity — require prices for LONG/SHORT, not CLOSE
+            if direction in ("LONG", "SHORT"):
+                for price_field in _REQUIRED_PRICE_FIELDS:
+                    val = signal.get(price_field)
+                    if val is None:
+                        issues.append(f"missing required price field: {price_field}")
+                    elif val <= 0:
+                        issues.append(f"{price_field} must be positive, got {val}")
+
+                # R:R check — stop_loss must be on correct side of entry
+                entry = signal.get("entry_price")
+                sl = signal.get("stop_loss_price")
+                tp = signal.get("target_price")
+                if entry and sl and tp and entry > 0 and sl > 0 and tp > 0:
+                    if direction == "LONG":
+                        if sl >= entry:
+                            issues.append(f"LONG stop_loss ({sl}) must be below entry ({entry})")
+                        if tp <= entry:
+                            issues.append(f"LONG target ({tp}) must be above entry ({entry})")
+                    elif direction == "SHORT":
+                        if sl <= entry:
+                            issues.append(f"SHORT stop_loss ({sl}) must be above entry ({entry})")
+                        if tp >= entry:
+                            issues.append(f"SHORT target ({tp}) must be below entry ({entry})")
+            else:
+                # CLOSE direction — price sanity only if provided
+                for price_field in ("entry_price", "target_price", "stop_loss_price"):
+                    val = signal.get(price_field)
+                    if val is not None and val <= 0:
+                        issues.append(f"{price_field} must be positive, got {val}")
 
         return issues
 
@@ -1233,18 +1318,39 @@ class Orchestrator:
                 await self._save_signal(result)
 
         # Auto-execute crypto signals (same path as scan_all_markets)
-        if market == "CRYPTO" and not result.get("error") and result.get("confidence_score", 0) >= 50:
+        if market == "CRYPTO" and not result.get("error"):
+            # Profile-aware confidence gate (was hardcoded 50)
+            min_conf = 50
+            if self.profile_manager:
+                try:
+                    p = await self.profile_manager.get_active_profile()
+                    min_conf = p.min_confidence
+                except Exception:
+                    pass
+            # Apply confidence_boost from strategy config
             try:
-                from src.advisory.crypto_regime import CryptoRegimeFilter
-                regime_filter = CryptoRegimeFilter(self.mcp)
-                regime = await regime_filter.get_current_regime()
-                # Phase 1: Update strategy for single-ticker scan too
-                self.crypto_agent.update_strategy(regime.get("state", "UNKNOWN"))
-                executed = await self._auto_execute_crypto([result], regime)
-                if executed:
-                    return executed[0]
-            except Exception as e:
-                logger.error("crypto_auto_execute_single_failed", ticker=ticker, error=str(e))
+                from src.advisory.strategy_selector import STRATEGY_CONFIGS
+                regime_state = result.get("regime_at_entry") or "UNKNOWN"
+                strategy_cfg = STRATEGY_CONFIGS.get(regime_state, {})
+                boost = strategy_cfg.get("confidence_boost", 0)
+                if boost != 0:
+                    conf = result.get("confidence_score", 0) + boost
+                    result["confidence_score"] = conf
+                    result["confidence_boost_applied"] = boost
+            except Exception:
+                pass
+            if result.get("confidence_score", 0) >= min_conf:
+                try:
+                    from src.advisory.crypto_regime import CryptoRegimeFilter
+                    regime_filter = CryptoRegimeFilter(self.mcp)
+                    regime = await regime_filter.get_current_regime()
+                    # Phase 1: Update strategy for single-ticker scan too
+                    self.crypto_agent.update_strategy(regime.get("state", "UNKNOWN"))
+                    executed = await self._auto_execute_crypto([result], regime)
+                    if executed:
+                        return executed[0]
+                except Exception as e:
+                    logger.error("crypto_auto_execute_single_failed", ticker=ticker, error=str(e))
 
         return result
 

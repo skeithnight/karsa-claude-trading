@@ -33,7 +33,7 @@ REGIME_TRAIL_MULTIPLIER = {
 
 # Redis cooldown key prefix — prevents rapid stop amendments
 COOLDOWN_KEY_PREFIX = "karsa:trailing_stop_cooldown"
-COOLDOWN_SEC = 300  # 5 min between amendments per ticker
+COOLDOWN_SEC = 60  # 1 min between amendments per ticker (reduced from 5 min)
 
 
 class TrailingStopManager:
@@ -66,15 +66,9 @@ class TrailingStopManager:
                     actions.append(recovered)
                 continue
 
-            # Use current regime for trailing (not regime_at_entry) to adapt to regime changes
+            # FIX: Use regime_at_entry for trailing stop, not current regime.
+            # Dynamic regime switching mid-trade causes unpredictable stop tightening/loosening.
             regime = pos.regime_at_entry or "TREND_BULL"
-            try:
-                if self._redis:
-                    cached_regime = await self._redis.get("karsa:crypto_regime_state")
-                    if cached_regime:
-                        regime = cached_regime
-            except Exception:
-                pass
             multiplier = REGIME_TRAIL_MULTIPLIER.get(regime, 2.0)
             if multiplier == 0:
                 logger.debug("trailing_disabled_chop", ticker=pos.ticker)
@@ -111,11 +105,20 @@ class TrailingStopManager:
                 else:
                     new_trail_stop = new_highest + trail_distance
 
-                # Ensure trailing stop doesn't go below entry (breakeven floor)
+                # Ensure trailing stop covers fees — floor at entry + 0.5*ATR (covers ~0.11% taker round-trip at 5x)
                 if pos.side == "Buy":
-                    new_trail_stop = max(new_trail_stop, entry_price + atr * Decimal("0.1"))
+                    new_trail_stop = max(new_trail_stop, entry_price + atr * Decimal("0.5"))
                 else:
-                    new_trail_stop = min(new_trail_stop, entry_price - atr * Decimal("0.1"))
+                    new_trail_stop = min(new_trail_stop, entry_price - atr * Decimal("0.5"))
+
+                # One-way ratchet: stop must only move toward profit, never backward
+                old_stop = pos.trailing_stop_price
+                if old_stop:
+                    old_stop_dec = Decimal(str(old_stop))
+                    if pos.side == "Buy":
+                        new_trail_stop = max(new_trail_stop, old_stop_dec)
+                    else:
+                        new_trail_stop = min(new_trail_stop, old_stop_dec)
 
                 # Guard: SL must be on correct side of current price
                 if pos.side == "Buy" and new_trail_stop >= current:
@@ -123,8 +126,7 @@ class TrailingStopManager:
                 if pos.side == "Sell" and new_trail_stop <= current:
                     continue
 
-                # Check if stop actually changed
-                old_stop = pos.trailing_stop_price
+                # Check if stop actually changed (after ratchet applied)
                 if old_stop and abs(new_trail_stop - Decimal(str(old_stop))) < atr * Decimal("0.05"):
                     # Stop change is < 5% of ATR — noise, skip
                     continue

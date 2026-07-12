@@ -667,7 +667,7 @@ TRADE_CLOSED_PNL = Histogram(
     "Realized PnL per closed trade in USD",
     buckets=[-500, -200, -100, -50, -10, 0, 10, 50, 100, 200, 500])
 
-REALIZED_PNL_TOTAL = Counter(
+REALIZED_PNL_TOTAL = Gauge(
     "karsa_realized_pnl_total",
     "Cumulative realized PnL in USD across all closed trades",
     ["symbol"],

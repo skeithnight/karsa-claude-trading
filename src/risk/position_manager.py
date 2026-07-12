@@ -29,11 +29,21 @@ PARTIAL_EXIT_TARGETS = [
     # Remaining 50% with trailing stop
 ]
 
-# Time-based exit: close stale positions fast
-TIME_EXIT_MAX_HOURS = 3          # hard exit after 3h with < 1% gain
-TIME_EXIT_MIN_GAIN_PCT = Decimal("1.0")
-STAGNATION_EXIT_HOURS = 2        # exit stagnant positions after 2h
-STAGNATION_MAX_ABS_PNL = Decimal("0.5")  # abs(gain) < 0.5% = stagnant
+# Time-based exit: let 4H setups develop, still kill dead capital
+STAGNATION_EXIT_HOURS = 4        # exit stagnant positions after 4h
+STAGNATION_MAX_ABS_PNL = Decimal("0.3")  # abs(gain) < 0.3% = stagnant
+TIME_EXIT_MAX_HOURS = 6          # hard exit after 6h with < 0.5% gain
+TIME_EXIT_MIN_GAIN_PCT = Decimal("0.5")
+
+# Regime-aware hard time exits — override flat TIME_EXIT_MAX_HOURS
+REGIME_TIME_EXIT_HOURS = {
+    "FULL_TREND_ALIGNMENT": Decimal("12"),
+    "TREND_BULL": Decimal("8"),
+    "MEAN_REVERSION": Decimal("6"),
+    "MICRO_BREAKOUT": Decimal("4"),
+    "CHOP": Decimal("3"),
+}
+# Stagnation exit is always 4h regardless of regime
 
 # Anti-churn: minimum hold time before exit evaluation
 MIN_HOLD_SECONDS = 300  # 5 minutes
@@ -304,8 +314,8 @@ class PositionManager:
         """Check for stale positions that should be closed.
 
         Two exit conditions:
-        1. Stagnation: open > 2h and abs(gain) < 0.5% → exit (no momentum)
-        2. Hard time: open > 3h and gain < 1% → exit (capital efficiency)
+        1. Stagnation: open > 4h and abs(gain) < 0.3% → exit (no momentum)
+        2. Hard time: regime-aware (FULL_TREND=12h, MICRO=4h, default=6h) with < 0.5% gain
         Returns list of close actions.
         """
         actions = []
@@ -335,7 +345,7 @@ class PositionManager:
                 else:
                     gain_pct = ((entry_price - current_price) / entry_price) * 100
 
-                # 1. Stagnation exit: 2h+ with no movement
+                # 1. Stagnation exit: 4h+ with no movement
                 if hours_open >= STAGNATION_EXIT_HOURS and abs(gain_pct) < STAGNATION_MAX_ABS_PNL:
                     actions.append({
                         "position_id": pos.id,
@@ -351,8 +361,11 @@ class PositionManager:
                                 gain_pct=float(gain_pct))
                     continue
 
-                # 2. Hard time exit: 3h+ with < 1% gain
-                if hours_open < TIME_EXIT_MAX_HOURS:
+                # 2. Hard time exit: regime-aware
+                #    FULL_TREND_ALIGNMENT=12h, TREND_BULL=8h, MICRO_BREAKOUT=4h, CHOP=3h, default=6h
+                regime = getattr(pos, "regime_at_entry", None)
+                hard_exit_hours = REGIME_TIME_EXIT_HOURS.get(regime, TIME_EXIT_MAX_HOURS)
+                if hours_open < hard_exit_hours:
                     continue
 
                 if gain_pct >= TIME_EXIT_MIN_GAIN_PCT:

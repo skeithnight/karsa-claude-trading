@@ -46,10 +46,10 @@ class Settings(BaseSettings):
     CRYPTO_FUNDING_ALERT_THRESHOLD: float = 0.05
     CRYPTO_FUNDING_HARD_REJECT_PCT: float = 0.05  # Gate 7: hard reject if funding > 0.05% per 8h
     CRYPTO_FUNDING_DRAG_MAX_PCT: float = 30.0     # Gate 7: max funding cost as % of target move
-    CRYPTO_MAX_SL_PCT: float = 1.5  # max stop-loss distance from entry (1.5% default)
-    CRYPTO_SL_MODE: str = "fixed"  # "atr" (ATR-based) or "fixed" (fixed dollar distance)
+    CRYPTO_MAX_SL_PCT: float = 3.0  # max stop-loss distance from entry (3% default — raised from 1.5%)
+    CRYPTO_SL_MODE: str = "atr"  # "atr" (ATR-based, adapts to volatility) or "fixed" (fixed dollar distance)
     CRYPTO_FIXED_SL_DISTANCE: float = 1.5  # dollar distance from entry when mode=fixed
-    ALLOW_SHORTS: bool = False  # Momentum strategies are long-biased
+    ALLOW_SHORTS: bool = True  # Enable shorts for bear regimes — long-only loses in downtrends
     CRYPTO_LIQUIDATION_WARN_PCT: float = 20.0
     CRYPTO_LIQUIDATION_ALERT_PCT: float = 10.0
     CRYPTO_LIQUIDATION_FORCE_CLOSE_PCT: float = 5.0

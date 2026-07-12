@@ -5,18 +5,8 @@ import urllib.parse
 def apply_patches():
     proxy_url = os.environ.get("BYBIT_PROXY")
     if proxy_url:
-        # Patch python's standard SSL context to disable verification globally
-        ssl._create_default_https_context = ssl._create_unverified_context
-        ssl.create_default_context = ssl._create_unverified_context
-        
-        # Force disable SSL verification on ALL contexts
-        original_wrap_socket = ssl.SSLContext.wrap_socket
-        if getattr(original_wrap_socket, '__name__', '') != 'patched_wrap_socket':
-            def patched_wrap_socket(self_ctx, *args, **kwargs):
-                self_ctx.check_hostname = False
-                self_ctx.verify_mode = ssl.CERT_NONE
-                return original_wrap_socket(self_ctx, *args, **kwargs)
-            ssl.SSLContext.wrap_socket = patched_wrap_socket
+        # Security: Global SSL verification MUST NOT be disabled.
+        # Removed vulnerable monkey patch that set ssl._create_unverified_context.
         
         # We also need to force the SOCKS5 proxy for websocket-client
         try:

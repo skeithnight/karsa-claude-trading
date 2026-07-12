@@ -400,7 +400,7 @@ async def alertmanager_webhook(payload: dict):
             if chat_id and telegram_app:
                 from src.notifications.router import NotificationRouter, NotificationCategory
                 notifier = NotificationRouter(telegram_app.bot, chat_id)
-                await notifier.send(text, NotificationCategory.INFRASTRUCTURE)
+                await notifier.send(text, NotificationCategory.INFRASTRUCTURE, force=True)
                 logger.info("alert_forwarded", status=status, severity=severity)
         except Exception as e:
             logger.error("alert_forward_failed", error=str(e))

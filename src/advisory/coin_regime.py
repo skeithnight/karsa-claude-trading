@@ -45,8 +45,8 @@ class CoinRegimeEngine:
             # Fetch MTF data in parallel
             # limit=150 is enough for 120 bbw lookback + 20 period
             ohlcv_15m, ohlcv_4h, ohlcv_1d = await asyncio.gather(
-                self.mcp.get_ohlcv(symbol, "CRYPTO", timeframe="15", limit=150),
-                self.mcp.get_ohlcv(symbol, "CRYPTO", timeframe="240", limit=60),
+                self.mcp.get_ohlcv(symbol, "CRYPTO", timeframe="15m", limit=150),
+                self.mcp.get_ohlcv(symbol, "CRYPTO", timeframe="4h", limit=60),
                 self.mcp.get_ohlcv(symbol, "CRYPTO", timeframe="D", limit=60),
             )
 

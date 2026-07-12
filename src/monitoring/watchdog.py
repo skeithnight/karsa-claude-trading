@@ -456,7 +456,7 @@ class ServiceWatchdog:
             import httpx
             start = time.monotonic()
             async with httpx.AsyncClient(
-                proxies={"https://": "socks5h://warp:1080"},
+                proxy="socks5h://warp:1080",
                 timeout=8.0,
             ) as client:
                 resp = await client.get("https://api.bybit.com/v5/market/time")

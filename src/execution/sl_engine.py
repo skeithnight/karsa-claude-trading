@@ -126,7 +126,8 @@ class StopLossEngine:
         if not pos:
             return
 
-        stop_loss = pos.get("stop_loss", 0)
+        # Use effective_stop (tightest of fixed SL and trailing stop)
+        stop_loss = pos.get("effective_stop", 0) or pos.get("stop_loss", 0)
         side = pos.get("side", "")
         size = pos.get("size", 0)
         if not stop_loss or not size:
@@ -137,7 +138,8 @@ class StopLossEngine:
 
         if breached:
             logger.warning("sl_breached", ticker=ticker, price=price,
-                          stop_loss=stop_loss, side=side, size=size)
+                          stop_loss=stop_loss, trailing_stop=pos.get("trailing_stop", 0),
+                          side=side, size=size)
             record_sl_breach(ticker)
             await self._execute_close(ticker, side, size, price, stop_loss)
 
@@ -159,9 +161,23 @@ class StopLossEngine:
                 if not sl_price:
                     sl_price = await self._fetch_stop_price(sym)
 
+                # Also fetch trailing stop price for tighter enforcement
+                trailing_sl = float(p.get("trailingStop", 0) or p.get("trailing_stop", 0) or 0)
+                if not trailing_sl:
+                    trailing_sl = await self._fetch_trailing_stop_price(sym)
+                # Use whichever is tighter — trailing stop should be ahead of fixed SL for winning positions
+                side = p.get("side", "")
+                effective_sl = sl_price
+                if trailing_sl > 0:
+                    if side == "Buy" and trailing_sl > sl_price:
+                        effective_sl = trailing_sl  # trailing is tighter (higher) for longs
+                    elif side == "Sell" and trailing_sl < sl_price:
+                        effective_sl = trailing_sl  # trailing is tighter (lower) for shorts
                 self._position_cache[sym] = {
                     "stop_loss": sl_price,
-                    "side": p.get("side", ""),
+                    "trailing_stop": trailing_sl,
+                    "effective_stop": effective_sl,
+                    "side": side,
                     "size": size,
                     "entry_price": float(p.get("entry_price", 0) or p.get("avgPrice", 0) or 0),
                 }
@@ -176,6 +192,18 @@ class StopLossEngine:
             if resp and isinstance(resp, list):
                 for order in resp:
                     if order.get("stopOrderType") in ("StopLoss", "Stop"):
+                        return float(order.get("triggerPrice", 0) or order.get("stopPrice", 0) or 0)
+        except Exception:
+            pass
+        return 0.0
+
+    async def _fetch_trailing_stop_price(self, ticker: str) -> float:
+        """Fetch trailing stop price from open conditional orders."""
+        try:
+            resp = await self._bybit.get_open_orders(category="linear", symbol=ticker)
+            if resp and isinstance(resp, list):
+                for order in resp:
+                    if order.get("stopOrderType") in ("TrailingStop", "StopLoss"):
                         return float(order.get("triggerPrice", 0) or order.get("stopPrice", 0) or 0)
         except Exception:
             pass
@@ -275,6 +303,16 @@ class StopLossEngine:
                             exit_price=fill_price,
                             pnl=round(pnl_usdt, 4),
                             pnl_pct=round(pnl_pct, 2))
+                            
+                # Fix Bug #1: SL close was missing cooldown
+                if pnl_usdt < 0:
+                    from src.risk.circuit_breaker import CircuitBreakerManager
+                    cb = CircuitBreakerManager(self._redis, self._bybit)
+                    await cb.record_symbol_loss(ticker)
+                else:
+                    from src.risk.circuit_breaker import CircuitBreakerManager
+                    cb = CircuitBreakerManager(self._redis, self._bybit)
+                    await cb.record_symbol_cooldown(ticker)
 
         except Exception as e:
             logger.error("sl_pnl_record_failed", ticker=ticker, error=str(e))
