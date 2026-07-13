@@ -109,16 +109,9 @@ class PositionReconciler:
         return drifts
 
     async def _get_exchange_positions(self) -> list[dict]:
-        """Fetch open positions from Bybit."""
+        """Fetch open positions from Bybit via BybitClient (retry/throttle/circuit-breaker)."""
         try:
-            resp = await asyncio.to_thread(
-                self.bybit._http_client.get_positions,
-                category="linear",
-                settleCoin="USDT",
-            )
-            if resp.get("retCode") == 0:
-                return [p for p in resp.get("result", {}).get("list", [])
-                        if float(p.get("size", 0)) > 0]
+            return await self.bybit.get_positions()
         except Exception as e:
             logger.error("exchange_positions_fetch_failed", error=str(e))
         return []

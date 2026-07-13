@@ -119,18 +119,53 @@ class BybitClient:
         self._last_request = time.time()
 
     async def _execute_async(self, func, *args, **kwargs):
-        """Execute a sync pybit call with asyncio.Lock, Semaphore, and Hard Timeout."""
-        async with self._semaphore:
-            async with self._api_lock:
-                try:
-                    kwargs.setdefault("timeout", 5)
-                    return await asyncio.wait_for(
-                        asyncio.to_thread(func, *args, **kwargs),
-                        timeout=15.0
-                    )
-                except asyncio.TimeoutError:
-                    logger.error("pybit_call_timeout_hard", func=func.__name__ if hasattr(func, '__name__') else str(func))
-                    return {"retMsg": "Hard timeout via asyncio", "retCode": 504, "result": {}}
+        """Execute a sync pybit call with asyncio.Lock, Semaphore, retry, and Hard Timeout."""
+        func_name = func.__name__ if hasattr(func, '__name__') else str(func)
+        last_exc = None
+        for attempt in range(_MAX_RETRIES):
+            async with self._semaphore:
+                async with self._api_lock:
+                    try:
+                        kwargs.setdefault("timeout", 5)
+                        resp = await asyncio.wait_for(
+                            asyncio.to_thread(func, *args, **kwargs),
+                            timeout=15.0
+                        )
+                        ret_code = resp.get("retCode") if isinstance(resp, dict) else None
+                        if ret_code in _RETRYABLE_CODES and attempt < _MAX_RETRIES - 1:
+                            delay = _RETRY_DELAYS[attempt] + random.uniform(0, _JITTER_MAX)
+                            logger.warning("pybit_retryable_error", func=func_name, retCode=ret_code, attempt=attempt + 1, delay=round(delay, 2))
+                            self._record_failure("bybit")
+                            await asyncio.sleep(delay)
+                            continue
+                        if ret_code is not None and ret_code != 0:
+                            self._record_failure("bybit")
+                        else:
+                            self._record_success("bybit")
+                        return resp
+                    except asyncio.TimeoutError:
+                        last_exc = "timeout"
+                        self._record_failure("bybit")
+                        if attempt < _MAX_RETRIES - 1:
+                            delay = _RETRY_DELAYS[attempt] + random.uniform(0, _JITTER_MAX)
+                            logger.warning("pybit_retryable_error", func=func_name, retCode=504, attempt=attempt + 1, delay=round(delay, 2))
+                            await asyncio.sleep(delay)
+                            continue
+                        logger.error("pybit_call_timeout_hard", func=func_name)
+                        return {"retMsg": "Hard timeout via asyncio", "retCode": 504, "result": {}}
+                    except Exception as exc:
+                        last_exc = exc
+                        self._record_failure("bybit")
+                        if attempt < _MAX_RETRIES - 1:
+                            delay = _RETRY_DELAYS[attempt] + random.uniform(0, _JITTER_MAX)
+                            logger.warning("pybit_retryable_error", func=func_name, error=str(exc)[:120], attempt=attempt + 1, delay=round(delay, 2))
+                            await asyncio.sleep(delay)
+                            continue
+                        raise
+        # Safety net — should not reach here
+        if isinstance(last_exc, Exception):
+            raise last_exc
+        return {"retMsg": "Max retries exhausted", "retCode": 504, "result": {}}
 
     def _safe_pybit_call(self, func, *args, **kwargs):
         """DEPRECATED: Use _execute_async instead."""
@@ -398,12 +433,11 @@ class BybitClient:
 
         try:
             bybit_interval = _INTERVAL_MAP.get(interval, "D")
-            async with self._semaphore:
-                await self._throttle()
-                resp = await asyncio.wait_for(
-                    self._execute_async( self._http_client.get_kline, category="linear", symbol=symbol, interval=bybit_interval, limit=limit),
-                    timeout=10.0,
-                )
+            await self._throttle()
+            resp = await asyncio.wait_for(
+                self._execute_async( self._http_client.get_kline, category="linear", symbol=symbol, interval=bybit_interval, limit=limit),
+                timeout=15.0,
+            )
 
             if resp.get("retCode") != 0:
                 raise Exception(f"Bybit API error: {resp.get('retMsg')}")
@@ -637,6 +671,7 @@ class BybitClient:
                 )
 
             if resp.get("retCode") != 0:
+                logger.warning("bybit_open_orders_api_error", retCode=resp.get("retCode"), retMsg=resp.get("retMsg", "")[:120])
                 return []
 
             return resp.get("result", {}).get("list", [])
@@ -679,6 +714,7 @@ class BybitClient:
                 )
 
             if resp.get("retCode") != 0:
+                logger.warning("bybit_positions_api_error", retCode=resp.get("retCode"), retMsg=resp.get("retMsg", "")[:120])
                 return []
 
             positions = []

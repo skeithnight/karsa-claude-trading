@@ -314,22 +314,15 @@ class TrailingStopManager:
         return None
 
     async def _get_ohlcv(self, ticker: str) -> list[dict] | None:
-        """Fetch recent 1h OHLCV for ATR calculation."""
+        """Fetch recent 1h OHLCV for ATR calculation via BybitClient (retry/throttle)."""
         try:
-            resp = await asyncio.to_thread(
-                self.bybit._http_client.get_kline,
-                category="linear",
-                symbol=ticker,
-                interval="60",
-                limit=20,
-            )
-            if resp.get("retCode") == 0:
-                items = resp.get("result", {}).get("list", [])
+            klines = await self.bybit.get_ohlcv(ticker, interval="1h", limit=20)
+            if klines:
                 return [
-                    {"open": float(k[1]), "high": float(k[2]),
-                     "low": float(k[3]), "close": float(k[4]),
-                     "volume": float(k[5])}
-                    for k in reversed(items)
+                    {"open": k["open"], "high": k["high"],
+                     "low": k["low"], "close": k["close"],
+                     "volume": k["volume"]}
+                    for k in klines
                 ]
         except Exception as e:
             logger.warning("ohlcv_fetch_failed", ticker=ticker, error=str(e))

@@ -248,8 +248,15 @@ CREATE TABLE IF NOT EXISTS crypto_positions (
     regime_at_entry VARCHAR(20),
     signal_source VARCHAR(50),
     partial_exits_taken INT DEFAULT 0,
-    last_management_check TIMESTAMP
+    last_management_check TIMESTAMP,
+    scale_in_taken BOOLEAN DEFAULT FALSE,
+    bucket VARCHAR(20) DEFAULT 'standard',
+    last_judgment JSONB,
+    last_judgment_at TIMESTAMP,
+    judge_escalated BOOLEAN DEFAULT FALSE,
+    dynamic_stop_pct NUMERIC(18, 4)
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_crypto_positions_ticker_side_open ON crypto_positions (ticker, side) WHERE status = 'OPEN';
 CREATE INDEX IF NOT EXISTS idx_crypto_positions_status ON crypto_positions(status);
 CREATE INDEX IF NOT EXISTS idx_crypto_positions_ticker ON crypto_positions(ticker);
 
@@ -286,6 +293,7 @@ CREATE TABLE IF NOT EXISTS crypto_regime_history (
     regime VARCHAR(20) NOT NULL,
     hurst NUMERIC(6, 4),
     adx NUMERIC(6, 2),
+    volatility_regime VARCHAR(50),
     btc_dominance NUMERIC(6, 2),
     market_season VARCHAR(20),
     details JSONB,
