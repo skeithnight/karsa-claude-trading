@@ -9,7 +9,7 @@ import redis.asyncio as redis
 
 from fastapi import FastAPI
 from telegram import Update
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 from src.config import settings
 from src.bot.crypto_handlers import (
@@ -75,6 +75,17 @@ async def lifespan(app: FastAPI):
     
     # Unified Callback Handler
     telegram_app.add_handler(CallbackQueryHandler(button_callback))
+
+    # Global error handler — Telegram swallows unhandled exceptions silently
+    async def _global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+        logger.error("telegram_handler_exception", error=str(context.error)[:200], exc_info=context.error)
+        try:
+            if update and hasattr(update, "effective_message") and update.effective_message:
+                await update.effective_message.reply_text("⚠️ System error. Please try again.")
+        except Exception:
+            pass
+
+    telegram_app.add_error_handler(_global_error_handler)
 
     # Wire up orchestrator
     redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)

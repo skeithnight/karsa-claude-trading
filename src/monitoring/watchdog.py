@@ -67,8 +67,15 @@ SCORE_WEIGHTS = {
     "db_pool": 15,      # DB health — 15%
     "event_loop": 10,   # Event loop responsiveness — 10%
     "warp_proxy": 15,   # WARP SOCKS5 proxy health — 15%
+    "threadpool": 10,   # Asyncio thread pool exhaustion — 10%
     "memory": 5,        # Memory health — 5%
-    "pool_leak": 10,    # DB pool overflow leak — 10%
+    "pool_leak": 5,     # DB pool overflow leak — 5%
+    "tasks": 5,         # Asyncio task leak — 5%
+    "fds": 5,           # File Descriptor leak — 5%
+    "zombie_ws": 10,    # Zombie Websocket — 10%
+    "api_rate": 10,     # API Rate Burn — 10%
+    "disk": 10,         # Disk Space — 10%
+    "position_sync": 15,# Position Integrity Drift — 15%
 }
 
 # Score thresholds
@@ -289,29 +296,58 @@ class ServiceWatchdog:
     # ── Signal collection ───────────────────────────────────
 
     async def _collect_signals(self) -> list[HealthSignal]:
-        """Collect health signals from all subsystems."""
+        """Collect health signals from all subsystems with hard timeouts."""
         signals = []
 
-        # 1. Redis connectivity (weight: 25)
-        signals.append(await self._check_redis())
+        async def _safe_check(name: str, coro: Awaitable[HealthSignal]) -> HealthSignal:
+            try:
+                return await asyncio.wait_for(coro, timeout=5.0)
+            except asyncio.TimeoutError:
+                return HealthSignal(name, False, 0, "watchdog check timed out")
+            except Exception as e:
+                return HealthSignal(name, False, 0, f"check crash: {str(e)[:50]}")
 
-        # 2. Subsystem heartbeats (weight: 20)
+        # 1. Redis connectivity
+        signals.append(await _safe_check("redis", self._check_redis()))
+
+        # 2. Subsystem heartbeats
         signals.append(self._check_heartbeats())
 
-        # 3. DB pool health (weight: 15)
-        signals.append(await self._check_db_pool())
+        # 3. DB pool health
+        signals.append(await _safe_check("db_pool", self._check_db_pool()))
 
-        # 4. Event loop responsiveness (weight: 10)
+        # 4. Event loop responsiveness
         signals.append(self._check_event_loop())
 
-        # 5. WARP SOCKS5 proxy (weight: 15)
-        signals.append(await self._check_warp_proxy())
+        # 5. WARP SOCKS5 proxy
+        signals.append(await _safe_check("warp_proxy", self._check_warp_proxy()))
+        
+        # 6. Thread pool health
+        signals.append(await _safe_check("threadpool", self._check_threadpool()))
 
-        # 6. Memory health (weight: 5)
+        # 7. Memory health
         signals.append(self._check_memory())
 
-        # 7. DB pool leak detection (weight: 10)
-        signals.append(await self._check_pool_leak())
+        # 8. DB pool leak detection
+        signals.append(await _safe_check("pool_leak", self._check_pool_leak()))
+
+        # 9. Task leaks
+        signals.append(self._check_tasks())
+
+        # 10. File Descriptors
+        signals.append(self._check_fds())
+
+        # 11. Zombie Websocket
+        signals.append(await _safe_check("zombie_ws", self._check_zombie_ws()))
+
+        # 12. API Rate Limit Burning
+        signals.append(await _safe_check("api_rate", self._check_api_rate()))
+
+        # 13. Disk Space
+        signals.append(self._check_disk_space())
+
+        # 14. Position Integrity Drift (every 5m)
+        signals.append(await _safe_check("position_sync", self._check_position_sync()))
 
         return signals
 
@@ -404,6 +440,19 @@ class ServiceWatchdog:
             return HealthSignal("event_loop", True, score, f"lag={lag:.1f}s")
         else:
             return HealthSignal("event_loop", True, 100, f"lag={lag:.1f}s")
+
+    async def _check_threadpool(self) -> HealthSignal:
+        """Check if asyncio thread pool is exhausted (which freezes bybit and DNS)."""
+        start = time.monotonic()
+        try:
+            # Submit a dummy task to the threadpool. If exhausted, this will queue forever.
+            await asyncio.to_thread(time.sleep, 0)
+            latency = time.monotonic() - start
+            score = max(0, 100 - latency * 50)  # 2s = 0 score
+            return HealthSignal("threadpool", True, score, f"latency={latency*1000:.0f}ms")
+        except Exception as e:
+            return HealthSignal("threadpool", False, 0, str(e)[:80])
+
 
     def _check_memory(self) -> HealthSignal:
         """Check process memory health."""
@@ -499,6 +548,118 @@ class ServiceWatchdog:
             return HealthSignal("pool_leak", True, 100, f"idle={idle}")
         except Exception as e:
             return HealthSignal("pool_leak", True, 50, str(e)[:80])
+
+
+    def _check_tasks(self) -> HealthSignal:
+        try:
+            tasks = len(asyncio.all_tasks())
+            if tasks > 1000:
+                return HealthSignal("tasks", False, 0, f"{tasks} active tasks")
+            if tasks > 500:
+                return HealthSignal("tasks", True, 50, f"{tasks} active tasks (elevated)")
+            return HealthSignal("tasks", True, 100, f"{tasks} tasks")
+        except Exception as e:
+            return HealthSignal("tasks", False, 0, str(e)[:80])
+
+    def _check_fds(self) -> HealthSignal:
+        try:
+            import psutil
+            import resource
+            p = psutil.Process()
+            fds = p.num_fds()
+            _, hard_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+            limit = min(hard_limit, 4096)  # Cap limit if OS says infinity
+            ratio = fds / limit
+            if ratio > 0.8:
+                return HealthSignal("fds", False, 0, f"{fds}/{limit} FDs")
+            if ratio > 0.6:
+                return HealthSignal("fds", True, 50, f"{fds}/{limit} FDs")
+            return HealthSignal("fds", True, 100, f"{fds}/{limit} FDs")
+        except Exception as e:
+            # Not all OS support num_fds
+            return HealthSignal("fds", True, 100, str(e)[:80])
+
+    async def _check_zombie_ws(self) -> HealthSignal:
+        try:
+            raw = await self._redis.get("karsa:watchdog:ws_last_msg")
+            if not raw:
+                return HealthSignal("zombie_ws", True, 100, "no ws data")
+            
+            last_msg = float(raw)
+            age = time.time() - last_msg
+            if age > 15:
+                return HealthSignal("zombie_ws", False, 0, f"stale {age:.1f}s")
+            return HealthSignal("zombie_ws", True, 100, f"age {age:.1f}s")
+        except Exception as e:
+            return HealthSignal("zombie_ws", False, 0, str(e)[:80])
+
+    async def _check_api_rate(self) -> HealthSignal:
+        try:
+            raw = await self._redis.get("karsa:metrics:http_429")
+            count = int(raw) if raw else 0
+            
+            last_count = getattr(self, "_last_429_count", 0)
+            delta = count - last_count
+            self._last_429_count = count
+            
+            if delta > 10:
+                return HealthSignal("api_rate", False, 0, f"+{delta} bans")
+            elif delta > 0:
+                return HealthSignal("api_rate", True, 50, f"+{delta} bans")
+            return HealthSignal("api_rate", True, 100, f"bans={count}")
+        except Exception as e:
+            return HealthSignal("api_rate", False, 0, str(e)[:80])
+
+    def _check_disk_space(self) -> HealthSignal:
+        try:
+            import shutil
+            usage = shutil.disk_usage("/")
+            free_ratio = usage.free / usage.total
+            if free_ratio < 0.05:
+                return HealthSignal("disk", False, 0, f"{free_ratio*100:.1f}% free")
+            if free_ratio < 0.15:
+                return HealthSignal("disk", True, 50, f"{free_ratio*100:.1f}% free")
+            return HealthSignal("disk", True, 100, f"{free_ratio*100:.1f}% free")
+        except Exception as e:
+            return HealthSignal("disk", False, 0, str(e)[:80])
+
+    async def _check_position_sync(self) -> HealthSignal:
+        self._sync_cycle = getattr(self, "_sync_cycle", 0) + 1
+        # Only check every 10 cycles (5 minutes)
+        if self._sync_cycle % 10 != 0:
+            return HealthSignal("position_sync", True, getattr(self, "_last_sync_score", 100), "skip")
+            
+        try:
+            from src.data.bybit_client import BybitClient
+            from src.models.database import get_engine
+            from src.models.tables import CryptoPosition
+            from sqlalchemy.ext.asyncio import AsyncSession
+            from sqlalchemy import select
+            
+            client = BybitClient()
+            resp = await client._execute_async(client._http_client.get_positions, category="linear", settleCoin="USDT")
+            if resp.get("retCode") != 0:
+                return HealthSignal("position_sync", True, 100, "bybit api failed")
+                
+            bybit_positions = [p for p in resp.get("result", {}).get("list", []) if float(p.get("size", 0)) > 0]
+            bybit_symbols = {p["symbol"] for p in bybit_positions}
+            
+            engine = get_engine()
+            async with AsyncSession(engine) as session:
+                result = await session.execute(select(CryptoPosition).where(CryptoPosition.status == "OPEN"))
+                db_positions = result.scalars().all()
+                db_symbols = {p.ticker for p in db_positions}
+                
+            diff = bybit_symbols.symmetric_difference(db_symbols)
+            if diff:
+                self._last_sync_score = 0
+                return HealthSignal("position_sync", False, 0, f"mismatch: {','.join(diff)}")
+                
+            self._last_sync_score = 100
+            return HealthSignal("position_sync", True, 100, f"sync ok ({len(db_symbols)})")
+        except Exception as e:
+            self._last_sync_score = 50
+            return HealthSignal("position_sync", True, 50, str(e)[:80])
 
     # ── Health scoring ──────────────────────────────────────
 

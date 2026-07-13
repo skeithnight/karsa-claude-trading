@@ -77,7 +77,14 @@ async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t0 = time.monotonic()
     r = _get_redis(context)
     orch = context.bot_data.get("orchestrator")
-    bybit = _get_bybit(context)
+
+    # Graceful startup guard — _get_bybit raises RuntimeError if orchestrator not ready
+    try:
+        bybit = _get_bybit(context)
+    except RuntimeError:
+        logger.warning("dashboard_cmd_orchestrator_not_ready")
+        await update.effective_message.reply_text("⏳ System is starting up. Please try again in a few seconds.")
+        return
 
     # --- Parallel fetch all data with timing ---
     async def _fetch_redis():
@@ -1762,7 +1769,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Add fallback routing for root commands matching the UI structure
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await dashboard_cmd(update, context)
+    try:
+        await dashboard_cmd(update, context)
+    except Exception as e:
+        logger.error("start_cmd_failed", error=str(e)[:200])
+        try:
+            await update.effective_message.reply_text("⚠️ Failed to load dashboard. Please try again.")
+        except Exception:
+            pass
 
 
 # --- /replay command — reconstruct position timeline from event store ---

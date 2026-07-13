@@ -193,17 +193,8 @@ class CircuitBreakerManager:
             if already_active:
                 return None
 
-            # Fetch open positions
-            resp = await asyncio.to_thread(
-                self.bybit._http_client.get_positions,
-                category="linear",
-                settleCoin="USDT",
-            )
-            if resp.get("retCode") != 0:
-                return None
-
-            positions = [p for p in resp.get("result", {}).get("list", [])
-                         if float(p.get("size", 0)) > 0]
+            # Fetch open positions via BybitClient (retry/throttle/circuit-breaker)
+            positions = await self.bybit.get_positions()
             if len(positions) < 2:
                 return None
 

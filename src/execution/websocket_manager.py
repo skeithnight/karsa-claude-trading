@@ -214,6 +214,7 @@ class WebSocketManager:
 
             # Publish for SL engine and other subscribers
             await self._redis.publish(REDIS_TICK_CHANNEL, json.dumps(price_data))
+            await self._redis.set("karsa:watchdog:ws_last_msg", str(time.time()), ex=60)
             update_ws_health_tick()
 
         except Exception as e:
