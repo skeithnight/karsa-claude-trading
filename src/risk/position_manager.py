@@ -139,6 +139,7 @@ class PositionManager:
 
         Returns execution result dict.
         """
+        import asyncio
         try:
             async with async_session() as session:
                 pos = await session.get(CryptoPosition, position_id)
@@ -155,11 +156,11 @@ class PositionManager:
                 sor = SmartOrderRouter(self.bybit)
 
                 # Build a reduce-only signal
-                exit_side = "Sell" if pos.side == "Buy" else "Buy"
+                exit_direction = "SHORT" if pos.side == "Buy" else "LONG"
                 result = await sor.execute_order(
                     signal={
                         "ticker": pos.ticker,
-                        "direction": "CLOSE",
+                        "direction": exit_direction,
                         "confidence": 100,
                     },
                     risk_params={

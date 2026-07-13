@@ -92,7 +92,7 @@ class BybitClient:
         self._min_interval = 0.1  # 100ms between requests
 
         # Thread safety for sync pybit calls through SOCKS proxy
-        self._api_lock = threading.Lock()
+        self._api_lock = asyncio.Lock()
         self._semaphore = asyncio.Semaphore(5)
 
     def _is_blocked(self, provider: str) -> bool:
@@ -118,17 +118,24 @@ class BybitClient:
             await asyncio.sleep(self._min_interval - elapsed)
         self._last_request = time.time()
 
-    def _safe_pybit_call(self, func, *args, **kwargs):
-        """Thread-safe wrapper for sync pybit calls.
+    async def _execute_async(self, func, *args, **kwargs):
+        """Execute a sync pybit call with asyncio.Lock, Semaphore, and Hard Timeout."""
+        async with self._semaphore:
+            async with self._api_lock:
+                try:
+                    kwargs.setdefault("timeout", 5)
+                    return await asyncio.wait_for(
+                        asyncio.to_thread(func, *args, **kwargs),
+                        timeout=15.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.error("pybit_call_timeout_hard", func=func.__name__ if hasattr(func, '__name__') else str(func))
+                    return {"retMsg": "Hard timeout via asyncio", "retCode": 504, "result": {}}
 
-        Serializes concurrent calls through the SOCKS5 proxy to prevent
-        urllib3 connection pool race conditions. Passes timeout=5 to the
-        pybit method so the underlying requests call drops the socket
-        at the OS level (prevents thread leaks when WARP hangs).
-        """
-        with self._api_lock:
-            kwargs.setdefault("timeout", 5)
-            return func(*args, **kwargs)
+    def _safe_pybit_call(self, func, *args, **kwargs):
+        """DEPRECATED: Use _execute_async instead."""
+        kwargs.setdefault("timeout", 5)
+        return func(*args, **kwargs)
 
     def _init_ws(self):
         """Initialize WebSocket client if not exists."""
@@ -227,7 +234,7 @@ class BybitClient:
             async with self._semaphore:
                 await self._throttle()
                 resp = await asyncio.wait_for(
-                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_tickers, category="linear"),
+                    self._execute_async( self._http_client.get_tickers, category="linear"),
                     timeout=10.0,
                 )
 
@@ -278,7 +285,7 @@ class BybitClient:
             async with self._semaphore:
                 await self._throttle()
                 resp = await asyncio.wait_for(
-                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_tickers, category="linear"),
+                    self._execute_async( self._http_client.get_tickers, category="linear"),
                     timeout=10.0,
                 )
 
@@ -327,7 +334,7 @@ class BybitClient:
             async with self._semaphore:
                 await self._throttle()
                 resp = await asyncio.wait_for(
-                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_tickers, category="linear", symbol=symbol),
+                    self._execute_async( self._http_client.get_tickers, category="linear", symbol=symbol),
                     timeout=10.0,
                 )
 
@@ -394,7 +401,7 @@ class BybitClient:
             async with self._semaphore:
                 await self._throttle()
                 resp = await asyncio.wait_for(
-                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_kline, category="linear", symbol=symbol, interval=bybit_interval, limit=limit),
+                    self._execute_async( self._http_client.get_kline, category="linear", symbol=symbol, interval=bybit_interval, limit=limit),
                     timeout=10.0,
                 )
 
@@ -427,7 +434,7 @@ class BybitClient:
             async with self._semaphore:
                 await self._throttle()
                 resp = await asyncio.wait_for(
-                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_funding_rate_history, category="linear", symbol=symbol, limit=1),
+                    self._execute_async( self._http_client.get_funding_rate_history, category="linear", symbol=symbol, limit=1),
                     timeout=10.0,
                 )
 
@@ -463,7 +470,7 @@ class BybitClient:
             async with self._semaphore:
                 await self._throttle()
                 resp = await asyncio.wait_for(
-                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_funding_rate_history, **params),
+                    self._execute_async( self._http_client.get_funding_rate_history, **params),
                     timeout=10.0,
                 )
 
@@ -495,7 +502,7 @@ class BybitClient:
             async with self._semaphore:
                 await self._throttle()
                 resp = await asyncio.wait_for(
-                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_open_interest, category="linear", symbol=symbol, intervalTime="1d", limit=1),
+                    self._execute_async( self._http_client.get_open_interest, category="linear", symbol=symbol, intervalTime="1d", limit=1),
                     timeout=10.0,
                 )
 
@@ -523,7 +530,7 @@ class BybitClient:
             async with self._semaphore:
                 await self._throttle()
                 resp = await asyncio.wait_for(
-                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_orderbook, category="linear", symbol=symbol, limit=limit),
+                    self._execute_async( self._http_client.get_orderbook, category="linear", symbol=symbol, limit=limit),
                     timeout=10.0,
                 )
 
@@ -592,7 +599,7 @@ class BybitClient:
             async with self._semaphore:
                 await self._throttle()
                 resp = await asyncio.wait_for(
-                    asyncio.to_thread(self._safe_pybit_call, self._http_client.place_order, **params),
+                    self._execute_async( self._http_client.place_order, **params),
                     timeout=10.0,
                 )
 
@@ -625,7 +632,7 @@ class BybitClient:
             async with self._semaphore:
                 await self._throttle()
                 resp = await asyncio.wait_for(
-                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_open_orders, **params),
+                    self._execute_async( self._http_client.get_open_orders, **params),
                     timeout=10.0,
                 )
 
@@ -644,7 +651,7 @@ class BybitClient:
             async with self._semaphore:
                 await self._throttle()
                 resp = await asyncio.wait_for(
-                    asyncio.to_thread(self._safe_pybit_call, self._http_client.cancel_order, category="linear", symbol=symbol, orderId=order_id),
+                    self._execute_async( self._http_client.cancel_order, category="linear", symbol=symbol, orderId=order_id),
                     timeout=10.0,
                 )
 
@@ -667,7 +674,7 @@ class BybitClient:
             async with self._semaphore:
                 await self._throttle()
                 resp = await asyncio.wait_for(
-                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_positions, **params),
+                    self._execute_async( self._http_client.get_positions, **params),
                     timeout=10.0,
                 )
 
@@ -710,7 +717,7 @@ class BybitClient:
             async with self._semaphore:
                 await self._throttle()
                 resp = await asyncio.wait_for(
-                    asyncio.to_thread(self._safe_pybit_call, self._http_client.set_trading_stop, category="linear", symbol=symbol, stopLoss=str(stop_price), tpslMode="Full", positionIdx=0),
+                    self._execute_async( self._http_client.set_trading_stop, category="linear", symbol=symbol, stopLoss=str(stop_price), tpslMode="Full", positionIdx=0),
                     timeout=10.0,
                 )
 
@@ -730,7 +737,7 @@ class BybitClient:
             async with self._semaphore:
                 await self._throttle()
                 resp = await asyncio.wait_for(
-                    asyncio.to_thread(self._safe_pybit_call, self._http_client.set_trading_stop, category="linear", symbol=symbol, takeProfit=str(tp_price), tpslMode="Full", positionIdx=0),
+                    self._execute_async( self._http_client.set_trading_stop, category="linear", symbol=symbol, takeProfit=str(tp_price), tpslMode="Full", positionIdx=0),
                     timeout=10.0,
                 )
 
@@ -750,7 +757,7 @@ class BybitClient:
             async with self._semaphore:
                 await self._throttle()
                 resp = await asyncio.wait_for(
-                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_order_history, category="linear", orderId=order_id),
+                    self._execute_async( self._http_client.get_order_history, category="linear", orderId=order_id),
                     timeout=10.0,
                 )
 
@@ -784,7 +791,7 @@ class BybitClient:
             async with self._semaphore:
                 await self._throttle()
                 resp = await asyncio.wait_for(
-                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_closed_pnl, **params),
+                    self._execute_async( self._http_client.get_closed_pnl, **params),
                     timeout=10.0,
                 )
 
@@ -821,7 +828,7 @@ class BybitClient:
                 if coin:
                     params["coin"] = coin
                 resp = await asyncio.wait_for(
-                    asyncio.to_thread(self._safe_pybit_call, self._http_client.get_wallet_balance, **params),
+                    self._execute_async( self._http_client.get_wallet_balance, **params),
                     timeout=10.0,
                 )
 
